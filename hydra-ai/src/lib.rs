@@ -1,0 +1,163 @@
+use anyhow::Result;
+use moka::future::Cache;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
+use tracing::{debug, error, info};
+
+mod models;
+use models::qwen2_infer::Qwen2Infer;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct PeerInfo {
+    pub peer_id: String,
+    pub trust_score: u32,
+    pub current_debt: i64,
+    pub rtt_ms: Option<u64>,
+    pub bandwidth_bps: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct RouteRequest {
+    pub target: String,
+    pub protocol: String,
+    pub peers: Vec<PeerInfo>,
+    pub diagnostic_context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingInstruction {
+    pub path: Vec<String>,
+    pub transport: String,
+    pub max_price: f64,
+}
+
+pub struct AiNegotiator {
+    infer: Arc<Mutex<Option<Qwen2Infer>>>,
+    cache: Cache<RouteRequest, RoutingInstruction>,
+}
+
+impl AiNegotiator {
+    pub fn new() -> Self {
+        // Cache responses for 5 minutes, max 1000 items
+        let cache = Cache::builder()
+            .max_capacity(1000)
+            .time_to_live(Duration::from_secs(5 * 60))
+            .build();
+
+        Self {
+            infer: Arc::new(Mutex::new(None)),
+            cache,
+        }
+    }
+
+    pub async fn load_model(&self, model_path: PathBuf, tokenizer_path: PathBuf) -> Result<()> {
+        info!("Loading AI model from {:?}", model_path);
+        let infer = Qwen2Infer::load(&model_path, Some(&tokenizer_path))?;
+        *self.infer.lock().await = Some(infer);
+        info!("AI model loaded successfully");
+        Ok(())
+    }
+
+    pub async fn decide_route(&self, request: RouteRequest) -> Result<RoutingInstruction> {
+        // 1. Check cache
+        if let Some(instruction) = self.cache.get(&request).await {
+            info!("Cache hit for route to {}", request.target);
+            return Ok(instruction);
+        }
+
+        info!("AI Negotiator deciding route for: {}", request.target);
+
+        // 2. Direct fast-path for localhost or no peers
+        if request.peers.is_empty() || request.target.contains("localhost") {
+            let decision = RoutingInstruction {
+                path: vec![],
+                transport: "raw".to_string(),
+                max_price: 0.0,
+            };
+            self.cache.insert(request, decision.clone()).await;
+            return Ok(decision);
+        }
+
+        // 3. Construct prompt
+        let prompt = format!(
+            "<|im_start|>system\nYou are a network routing agent. Output ONLY a valid JSON object. No explanation.\n\
+            Given the request and available peers (trust_score 0-100, current_debt in bytes, rtt_ms for latency, bandwidth_bps for throughput), select the best next_hop peer_id.\n\
+            If no peer is reliable (trust < 50), output next_hop: null.\n\
+            Format: {{\"next_hop\": \"<peer_id>\" | null, \"transport\": \"vless\" | \"raw\", \"max_price\": <float>}}<|im_end|>\n\
+            <|im_start|>user\nRequest: Target={}, Protocol={}\nPeers: {}\n<|im_end|>\n<|im_start|>assistant\n",
+            request.target,
+            request.protocol,
+            serde_json::to_string(&request.peers)?
+        );
+
+        debug!("Prompt for AI: {}", prompt);
+
+        // 4. Run inference if model is loaded, otherwise fallback to simple logic
+        let mut infer_guard = self.infer.lock().await;
+        if let Some(infer) = infer_guard.as_mut() {
+            match infer.generate(&prompt, 128) {
+                Ok(response) => {
+                    debug!("Raw AI Response: {}", response);
+
+                    // Simple JSON extraction regex or find bounds
+                    let json_str = if let Some(start) = response.find('{') {
+                        if let Some(end) = response.rfind('}') {
+                            &response[start..=end]
+                        } else {
+                            &response[start..]
+                        }
+                    } else {
+                        &response
+                    };
+
+                    match serde_json::from_str::<RoutingInstruction>(json_str) {
+                        Ok(decision) => {
+                            self.cache.insert(request, decision.clone()).await;
+                            return Ok(decision);
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to parse AI response as JSON: {}. Response: {}",
+                                e, response
+                            );
+                            // Fallback on error
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Model inference failed: {}", e);
+                }
+            }
+        } else {
+            debug!("Model not loaded, using fallback heuristic");
+        }
+
+        // 5. Fallback logic
+        let mut sorted_peers = request.peers.clone();
+        sorted_peers.sort_by(|a, b| {
+            b.trust_score
+                .cmp(&a.trust_score)
+                .then_with(|| a.current_debt.cmp(&b.current_debt))
+        });
+
+        let decision = if sorted_peers[0].trust_score < 50 {
+            RoutingInstruction {
+                path: vec![],
+                transport: "raw".to_string(),
+                max_price: 0.0,
+            }
+        } else {
+            RoutingInstruction {
+                path: vec![sorted_peers[0].peer_id.clone()],
+                transport: "vless".to_string(),
+                max_price: 0.001,
+            }
+        };
+
+        self.cache.insert(request, decision.clone()).await;
+        Ok(decision)
+    }
+}

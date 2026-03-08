@@ -1,0 +1,418 @@
+pub mod diagnostics;
+pub mod telemetry;
+
+use anyhow::{Context, Result, anyhow};
+use diagnostics::{DiagnosticRequest, DiagnosticResponse};
+use libp2p::{
+    PeerId, StreamProtocol, Swarm,
+    futures::{StreamExt, stream::BoxStream},
+    kad::{self, store::MemoryStore},
+    mdns, noise, ping,
+    request_response::{self, ProtocolSupport},
+    swarm::{NetworkBehaviour, SwarmEvent},
+    tcp, yamux,
+};
+use libp2p_stream as p2p_stream;
+use std::sync::Arc;
+use std::time::Duration;
+use telemetry::{PeerMetrics, TelemetryStore};
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, error, info};
+
+#[derive(NetworkBehaviour)]
+#[behaviour(out_event = "HydraEvent")]
+pub struct HydraBehaviour {
+    pub kademlia: kad::Behaviour<MemoryStore>,
+    pub mdns: mdns::tokio::Behaviour,
+    pub stream: p2p_stream::Behaviour,
+    pub ping: ping::Behaviour,
+    pub diagnostics: request_response::cbor::Behaviour<DiagnosticRequest, DiagnosticResponse>,
+}
+
+#[derive(Debug)]
+pub enum HydraEvent {
+    Kademlia(kad::Event),
+    Mdns(mdns::Event),
+    Stream(()),
+    Ping(ping::Event),
+    Diagnostics(request_response::Event<DiagnosticRequest, DiagnosticResponse>),
+}
+
+impl From<kad::Event> for HydraEvent {
+    fn from(event: kad::Event) -> Self {
+        HydraEvent::Kademlia(event)
+    }
+}
+
+impl From<mdns::Event> for HydraEvent {
+    fn from(event: mdns::Event) -> Self {
+        HydraEvent::Mdns(event)
+    }
+}
+
+impl From<()> for HydraEvent {
+    fn from(_: ()) -> Self {
+        HydraEvent::Stream(())
+    }
+}
+
+impl From<ping::Event> for HydraEvent {
+    fn from(event: ping::Event) -> Self {
+        HydraEvent::Ping(event)
+    }
+}
+
+impl From<request_response::Event<DiagnosticRequest, DiagnosticResponse>> for HydraEvent {
+    fn from(event: request_response::Event<DiagnosticRequest, DiagnosticResponse>) -> Self {
+        HydraEvent::Diagnostics(event)
+    }
+}
+
+pub type P2PStream = libp2p::Stream;
+
+pub enum P2PCommand {
+    GetPeers {
+        resp: oneshot::Sender<Vec<PeerId>>,
+    },
+    OpenStream {
+        peer_id: PeerId,
+        protocol: String,
+        resp: oneshot::Sender<Result<libp2p::Stream>>,
+    },
+    DiagnosticRequest {
+        peer_id: PeerId,
+        request: DiagnosticRequest,
+        resp: oneshot::Sender<Result<DiagnosticResponse>>,
+    },
+}
+
+pub struct P2PNode {
+    swarm: Swarm<HydraBehaviour>,
+    cmd_rx: mpsc::Receiver<P2PCommand>,
+    incoming_streams: BoxStream<'static, (PeerId, libp2p::Stream)>,
+    telemetry: Arc<TelemetryStore>,
+    p2p: P2PHandle,
+}
+
+#[derive(Clone)]
+pub struct P2PHandle {
+    cmd_tx: mpsc::Sender<P2PCommand>,
+    telemetry: Arc<TelemetryStore>,
+}
+
+impl P2PHandle {
+    pub async fn get_peers(&self) -> Result<Vec<PeerId>> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(P2PCommand::GetPeers { resp: tx })
+            .await
+            .map_err(|e| anyhow!("Failed to send GetPeers command: {}", e))?;
+        rx.await
+            .map_err(|e| anyhow!("Failed to receive GetPeers response: {}", e))
+    }
+
+    pub async fn get_telemetry(&self, peer_id: &PeerId) -> Option<PeerMetrics> {
+        self.telemetry.get_metrics(peer_id).await
+    }
+
+    pub async fn update_bandwidth(&self, peer_id: PeerId, bytes: u64, duration: Duration) {
+        self.telemetry
+            .update_bandwidth(peer_id, bytes, duration)
+            .await
+    }
+
+    pub async fn open_stream(&self, peer_id: PeerId, protocol: String) -> Result<libp2p::Stream> {
+        let (tx, rx) = oneshot::channel::<Result<libp2p::Stream>>();
+        self.cmd_tx
+            .send(P2PCommand::OpenStream {
+                peer_id,
+                protocol,
+                resp: tx,
+            })
+            .await
+            .map_err(|e| anyhow!("Failed to send OpenStream command: {}", e))?;
+        rx.await
+            .map_err(|e| anyhow!("Failed to receive OpenStream response: {}", e))?
+    }
+
+    pub async fn send_diagnostic_request(
+        &self,
+        peer_id: PeerId,
+        request: DiagnosticRequest,
+    ) -> Result<DiagnosticResponse> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(P2PCommand::DiagnosticRequest {
+                peer_id,
+                request,
+                resp: tx,
+            })
+            .await
+            .map_err(|e| anyhow!("Failed to send DiagnosticRequest command: {}", e))?;
+        rx.await
+            .map_err(|e| anyhow!("Failed to receive DiagnosticRequest response: {}", e))?
+    }
+}
+
+impl P2PNode {
+    pub async fn new() -> Result<(Self, P2PHandle)> {
+        let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_tcp(
+                tcp::Config::default(),
+                noise::Config::new,
+                yamux::Config::default,
+            )?
+            .with_behaviour(|key| {
+                let peer_id = PeerId::from(key.public());
+                let store = MemoryStore::new(peer_id);
+                let kademlia = kad::Behaviour::new(peer_id, store);
+                let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
+                let stream = p2p_stream::Behaviour::new();
+                let ping = ping::Behaviour::new(
+                    ping::Config::new().with_interval(Duration::from_secs(15)),
+                );
+                let diagnostics = request_response::cbor::Behaviour::<
+                    DiagnosticRequest,
+                    DiagnosticResponse,
+                >::new(
+                    [(
+                        StreamProtocol::new("/hydra/diag/1.0.0"),
+                        ProtocolSupport::Full,
+                    )],
+                    request_response::Config::default(),
+                );
+                Ok(HydraBehaviour {
+                    kademlia,
+                    mdns,
+                    stream,
+                    ping,
+                    diagnostics,
+                })
+            })
+            .map_err(|e| anyhow!("Failed to build behaviour: {}", e))?
+            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+            .build();
+
+        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+
+        let mut control = swarm.behaviour_mut().stream.new_control();
+        let incoming_streams = control
+            .accept(libp2p::StreamProtocol::new("/hydra/tunnel/1.0.0"))
+            .map_err(|e| anyhow!("Failed to accept protocol: {}", e))?;
+
+        let (tx, rx) = mpsc::channel(32);
+        let telemetry = Arc::new(TelemetryStore::new());
+        let p2p_handle = P2PHandle {
+            cmd_tx: tx,
+            telemetry: telemetry.clone(),
+        };
+        Ok((
+            Self {
+                swarm,
+                cmd_rx: rx,
+                incoming_streams: incoming_streams.boxed(),
+                telemetry,
+                p2p: p2p_handle.clone(),
+            },
+            p2p_handle,
+        ))
+    }
+
+    pub async fn run(mut self) -> Result<()> {
+        let mut pending_diag_requests: std::collections::HashMap<
+            request_response::OutboundRequestId,
+            oneshot::Sender<Result<DiagnosticResponse>>,
+        > = std::collections::HashMap::new();
+
+        loop {
+            tokio::select! {
+                event = self.swarm.select_next_some() => {
+                    match event {
+                        SwarmEvent::NewListenAddr { address, .. } => {
+                            info!("P2P node listening on {}", address);
+                        }
+                        SwarmEvent::Behaviour(HydraEvent::Mdns(mdns::Event::Discovered(list))) => {
+                            for (peer_id, multiaddr) in list {
+                                info!("mDNS discovered peer: {} at {}", peer_id, multiaddr);
+                                self.swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr);
+                            }
+                        }
+                        SwarmEvent::Behaviour(HydraEvent::Ping(ping::Event { peer, result, .. })) => {
+                            match result {
+                                Ok(rtt) => {
+                                    debug!("Ping to {}: {:?}", peer, rtt);
+                                    self.telemetry.update_rtt(peer, rtt).await;
+                                }
+                                Err(e) => debug!("Ping to {} failed: {}", peer, e),
+                            }
+                        }
+                        SwarmEvent::Behaviour(HydraEvent::Diagnostics(request_response::Event::Message { peer, message, .. })) => {
+                            match message {
+                                request_response::Message::Request { request_id: _, request, channel } => {
+                                    info!("Received diagnostic request from {}: {:?}", peer, request);
+                                    // Handle diagnostic request
+                                    let response = match request {
+                                        DiagnosticRequest::PingTarget { target } => {
+                                            // Real TCP connect check to measure reachability and latency
+                                            let start = std::time::Instant::now();
+                                            match tokio::net::TcpStream::connect(&target).await {
+                                                Ok(_) => {
+                                                    let latency_ms = Some(start.elapsed().as_millis() as u64);
+                                                    DiagnosticResponse::PingResult { reachable: true, latency_ms, error: None }
+                                                }
+                                                Err(e) => {
+                                                    DiagnosticResponse::PingResult { reachable: false, latency_ms: None, error: Some(e.to_string()) }
+                                                }
+                                            }
+                                        }
+                                    };
+                                    let _ = self.swarm.behaviour_mut().diagnostics.send_response(channel, response);
+                                }
+                                request_response::Message::Response { request_id, response } => {
+                                    info!("Received diagnostic response from {}: {:?}", peer, response);
+                                    if let Some(resp_sender) = pending_diag_requests.remove(&request_id) {
+                                        let _ = resp_sender.send(Ok(response));
+                                    }
+                                }
+                            }
+                        }
+                        SwarmEvent::Behaviour(HydraEvent::Diagnostics(request_response::Event::OutboundFailure { request_id, error, .. })) => {
+                            if let Some(resp_sender) = pending_diag_requests.remove(&request_id) {
+                                let _ = resp_sender.send(Err(anyhow!("Diagnostic request failed: {}", error)));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Some((peer_id, mut stream)) = self.incoming_streams.next() => {
+                    info!("Incoming tunnel stream from {}", peer_id);
+                    let p2p_clone = self.p2p.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_incoming_tunnel(peer_id, &mut stream, p2p_clone).await {
+                            error!("Error handling tunnel from {}: {}", peer_id, e);
+                        }
+                    });
+                }
+                cmd = self.cmd_rx.recv() => {
+                    if let Some(cmd) = cmd {
+                        match cmd {
+                            P2PCommand::GetPeers { resp } => {
+                                let mut peers = Vec::new();
+                                for bucket in self.swarm.behaviour_mut().kademlia.kbuckets() {
+                                    for entry in bucket.iter() {
+                                        peers.push(*entry.node.key.preimage());
+                                    }
+                                }
+                                let _ = resp.send(peers);
+                            }
+                            P2PCommand::OpenStream { peer_id, protocol, resp } => {
+                                let mut control = self.swarm.behaviour_mut().stream.new_control();
+                                tokio::spawn(async move {
+                                    let protocol_static: &'static str = Box::leak(protocol.into_boxed_str());
+                                    match control.open_stream(peer_id, StreamProtocol::new(protocol_static)).await {
+                                        Ok(s) => { let _ = resp.send(Ok(s)); }
+                                        Err(e) => { let _ = resp.send(Err(anyhow!(e))); }
+                                    }
+                                });
+                            }
+                            P2PCommand::DiagnosticRequest { peer_id, request, resp } => {
+                                let request_id = self.swarm.behaviour_mut().diagnostics.send_request(&peer_id, request);
+                                pending_diag_requests.insert(request_id, resp);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn handle_incoming_tunnel(
+    _peer_id: PeerId,
+    stream: &mut libp2p::Stream,
+    p2p: P2PHandle,
+) -> Result<()> {
+    use tokio::net::TcpStream;
+
+    // 1. Read target address from stream
+    let mut len_buf = [0u8; 2];
+    libp2p::futures::AsyncReadExt::read_exact(stream, &mut len_buf)
+        .await
+        .context("Failed to read target len")?;
+    let len = u16::from_be_bytes(len_buf) as usize;
+
+    let mut buf = vec![0u8; len];
+    libp2p::futures::AsyncReadExt::read_exact(stream, &mut buf)
+        .await
+        .context("Failed to read target addr")?;
+    let target = String::from_utf8(buf).context("Invalid target addr UTF-8")?;
+
+    info!("Tunneling to target: {}", target);
+
+    if target.starts_with("peer:") {
+        let next_peer_str = &target[5..];
+        let next_peer: PeerId = next_peer_str
+            .parse()
+            .context("Invalid peer ID for multi-hop")?;
+
+        match p2p
+            .open_stream(next_peer, "/hydra/tunnel/1.0.0".to_string())
+            .await
+        {
+            Ok(mut outbound) => {
+                libp2p::futures::AsyncWriteExt::write_all(stream, &[0x00])
+                    .await
+                    .context("Failed to send success byte")?;
+
+                let (mut ri, mut wi) = libp2p::futures::AsyncReadExt::split(stream);
+                let (mut ro, mut wo) = libp2p::futures::AsyncReadExt::split(&mut outbound);
+
+                let client_to_target = libp2p::futures::io::copy(&mut ri, &mut wo);
+                let target_to_client = libp2p::futures::io::copy(&mut ro, &mut wi);
+
+                tokio::select! {
+                    res = client_to_target => debug!("Tunnel to target finished: {:?}", res),
+                    res = target_to_client => debug!("Target to tunnel finished: {:?}", res),
+                }
+            }
+            Err(e) => {
+                error!("Failed to connect to next hop {}: {}", next_peer, e);
+                let _ = libp2p::futures::AsyncWriteExt::write_all(stream, &[0x01]).await; // Failure byte
+            }
+        }
+    } else {
+        // 2. Connect to target directly
+        match TcpStream::connect(&target).await {
+            Ok(mut outbound) => {
+                libp2p::futures::AsyncWriteExt::write_all(stream, &[0x00])
+                    .await
+                    .context("Failed to send success byte")?;
+
+                // Bridge futures-based stream to tokio-based outbound
+                use tokio_util::compat::FuturesAsyncReadCompatExt;
+                use tokio_util::compat::FuturesAsyncWriteCompatExt;
+
+                let (ri, wi) = libp2p::futures::AsyncReadExt::split(stream);
+                let (mut ro, mut wo) = outbound.split();
+
+                let mut ri_compat = ri.compat();
+                let mut wi_compat = wi.compat_write();
+
+                let client_to_target = tokio::io::copy(&mut ri_compat, &mut wo);
+                let target_to_client = tokio::io::copy(&mut ro, &mut wi_compat);
+
+                tokio::select! {
+                    res = client_to_target => debug!("Tunnel to target finished: {:?}", res),
+                    res = target_to_client => debug!("Target to tunnel finished: {:?}", res),
+                }
+            }
+            Err(e) => {
+                error!("Failed to connect to target {}: {}", target, e);
+                let _ = libp2p::futures::AsyncWriteExt::write_all(stream, &[0x01]).await; // Failure byte
+            }
+        }
+    }
+
+    Ok(())
+}

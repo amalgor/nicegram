@@ -1,0 +1,17 @@
+[package]
+name = "hydra-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+libp2p = { workspace = true }
+futures = "0.3"
+hydra-p2p = { path = "../hydra-p2p" }
+hydra-ai = { path = "../hydra-ai" }
+hydra-econ = { path = "../hydra-econ" }
