@@ -5100,15 +5100,18 @@ name = "rust_lib_hydra_mobile"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "flutter_rust_bridge",
  "hydra-ai",
  "hydra-config",
+ "hydra-content",
  "hydra-core",
  "hydra-econ",
  "hydra-p2p",
  "lazy_static",
  "libp2p",
  "reqwest 0.13.2",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
