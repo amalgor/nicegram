@@ -12,9 +12,12 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
+use hydra_config::NetworkConfig;
 use libp2p_stream as p2p_stream;
 use std::sync::Arc;
 use std::time::Duration;
+
+pub const TUNNEL_PROTOCOL: StreamProtocol = StreamProtocol::new("/hydra/tunnel/1.0.0");
 use telemetry::{PeerMetrics, TelemetryStore};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info};
@@ -23,7 +26,7 @@ use tracing::{debug, error, info};
 #[behaviour(out_event = "HydraEvent")]
 pub struct HydraBehaviour {
     pub kademlia: kad::Behaviour<MemoryStore>,
-    pub mdns: mdns::tokio::Behaviour,
+    pub mdns: libp2p::swarm::behaviour::toggle::Toggle<mdns::tokio::Behaviour>,
     pub stream: p2p_stream::Behaviour,
     pub ping: ping::Behaviour,
     pub diagnostics: request_response::cbor::Behaviour<DiagnosticRequest, DiagnosticResponse>,
@@ -76,7 +79,7 @@ pub enum P2PCommand {
     },
     OpenStream {
         peer_id: PeerId,
-        protocol: String,
+        protocol: StreamProtocol,
         resp: oneshot::Sender<Result<libp2p::Stream>>,
     },
     DiagnosticRequest {
@@ -121,7 +124,7 @@ impl P2PHandle {
             .await
     }
 
-    pub async fn open_stream(&self, peer_id: PeerId, protocol: String) -> Result<libp2p::Stream> {
+    pub async fn open_stream(&self, peer_id: PeerId, protocol: StreamProtocol) -> Result<libp2p::Stream> {
         let (tx, rx) = oneshot::channel::<Result<libp2p::Stream>>();
         self.cmd_tx
             .send(P2PCommand::OpenStream {
@@ -155,19 +158,29 @@ impl P2PHandle {
 }
 
 impl P2PNode {
-    pub async fn new() -> Result<(Self, P2PHandle)> {
-        let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+    pub async fn new(keypair: Option<libp2p::identity::Keypair>, listen_port: u16, network_config: &NetworkConfig) -> Result<(Self, P2PHandle)> {
+        let local_key = keypair.unwrap_or_else(libp2p::identity::Keypair::generate_ed25519);
+        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
                 noise::Config::new,
                 yamux::Config::default,
             )?
+            .with_dns()?
             .with_behaviour(|key| {
                 let peer_id = PeerId::from(key.public());
                 let store = MemoryStore::new(peer_id);
-                let kademlia = kad::Behaviour::new(peer_id, store);
-                let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
+                
+let kademlia = kad::Behaviour::new(peer_id, store);
+
+                let mdns_enabled = listen_port == 0; // Disable on bootstrap node to avoid error 126 spam
+                let mdns = if mdns_enabled {
+                    Some(mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?)
+                } else {
+                    None
+                };
+                let mdns = libp2p::swarm::behaviour::toggle::Toggle::from(mdns);
                 let stream = p2p_stream::Behaviour::new();
                 let ping = ping::Behaviour::new(
                     ping::Config::new().with_interval(Duration::from_secs(15)),
@@ -194,14 +207,31 @@ impl P2PNode {
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
             .build();
 
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{}", listen_port).parse()?)?;
 
         let mut control = swarm.behaviour_mut().stream.new_control();
         let incoming_streams = control
-            .accept(libp2p::StreamProtocol::new("/hydra/tunnel/1.0.0"))
+            .accept(TUNNEL_PROTOCOL)
             .map_err(|e| anyhow!("Failed to accept protocol: {}", e))?;
 
+        
         let (tx, rx) = mpsc::channel(32);
+        
+        for boot_addr_str in &network_config.bootstrap_nodes {
+            match boot_addr_str.parse::<libp2p::Multiaddr>() {
+                Ok(boot_addr) => {
+                    if let Err(e) = swarm.dial(boot_addr) {
+                        tracing::warn!("Failed to dial bootstrap node {}: {}", boot_addr_str, e);
+                    } else {
+                        tracing::info!("Dialing bootstrap node at {}", boot_addr_str);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Invalid bootstrap node address '{}': {}", boot_addr_str, e);
+                }
+            }
+        }
+
         let telemetry = Arc::new(TelemetryStore::new());
         let p2p_handle = P2PHandle {
             cmd_tx: tx,
@@ -231,6 +261,13 @@ impl P2PNode {
                     match event {
                         SwarmEvent::NewListenAddr { address, .. } => {
                             info!("P2P node listening on {}", address);
+                        }
+                        SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                            info!("Established connection to {}", peer_id);
+                            self.swarm.behaviour_mut().kademlia.add_address(&peer_id, endpoint.get_remote_address().clone());
+                        }
+                        SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                            tracing::error!("Outgoing connection error to {:?}: {}", peer_id, error);
                         }
                         SwarmEvent::Behaviour(HydraEvent::Mdns(mdns::Event::Discovered(list))) => {
                             for (peer_id, multiaddr) in list {
@@ -309,8 +346,7 @@ impl P2PNode {
                             P2PCommand::OpenStream { peer_id, protocol, resp } => {
                                 let mut control = self.swarm.behaviour_mut().stream.new_control();
                                 tokio::spawn(async move {
-                                    let protocol_static: &'static str = Box::leak(protocol.into_boxed_str());
-                                    match control.open_stream(peer_id, StreamProtocol::new(protocol_static)).await {
+                                    match control.open_stream(peer_id, protocol).await {
                                         Ok(s) => { let _ = resp.send(Ok(s)); }
                                         Err(e) => { let _ = resp.send(Err(anyhow!(e))); }
                                     }
@@ -357,7 +393,7 @@ async fn handle_incoming_tunnel(
             .context("Invalid peer ID for multi-hop")?;
 
         match p2p
-            .open_stream(next_peer, "/hydra/tunnel/1.0.0".to_string())
+            .open_stream(next_peer, TUNNEL_PROTOCOL)
             .await
         {
             Ok(mut outbound) => {

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use hydra_p2p::P2PHandle;
 use libp2p::PeerId;
 
@@ -19,7 +19,7 @@ impl OnionRouter {
 
         let mut current_stream = self
             .p2p
-            .open_stream(path[0], "/hydra/tunnel/1.0.0".to_string())
+            .open_stream(path[0], hydra_p2p::TUNNEL_PROTOCOL)
             .await?;
 
         // Inform each hop about the next hop

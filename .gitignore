@@ -1,0 +1,20 @@
+# Build artifacts
+/target/
+
+# Runtime data (not source code)
+/hydra_db/
+/hydra-core/hydra_db/
+/hydra-core/run.log
+/hydra-core/hydra_identity.bin
+
+# Large model files (download separately)
+/models/*.gguf
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,26 @@
+[package]
+name = "rust_lib_hydra_mobile"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.11.1"
+hydra-config = { path = "../../hydra-config" }
+hydra-core = { path = "../../hydra-core" }
+hydra-ai = { path = "../../hydra-ai" }
+hydra-p2p = { path = "../../hydra-p2p" }
+hydra-econ = { path = "../../hydra-econ" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+lazy_static = "1.5.0"
+tun2proxy = "0.7.19"
+reqwest = { version = "0.13.2", default-features = false, features = ["stream", "rustls", "charset", "http2"] }
+libp2p = "0.56"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

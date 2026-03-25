@@ -7,6 +7,8 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 
+use hydra_config::AiConfig;
+
 mod models;
 use models::qwen2_infer::Qwen2Infer;
 
@@ -37,19 +39,20 @@ pub struct RoutingInstruction {
 pub struct AiNegotiator {
     infer: Arc<Mutex<Option<Qwen2Infer>>>,
     cache: Cache<RouteRequest, RoutingInstruction>,
+    max_generation_tokens: usize,
 }
 
 impl AiNegotiator {
-    pub fn new() -> Self {
-        // Cache responses for 5 minutes, max 1000 items
+    pub fn new(config: &AiConfig) -> Self {
         let cache = Cache::builder()
-            .max_capacity(1000)
-            .time_to_live(Duration::from_secs(5 * 60))
+            .max_capacity(config.cache_max_items)
+            .time_to_live(Duration::from_secs(config.cache_ttl_seconds))
             .build();
 
         Self {
             infer: Arc::new(Mutex::new(None)),
             cache,
+            max_generation_tokens: config.max_generation_tokens,
         }
     }
 
@@ -82,15 +85,27 @@ impl AiNegotiator {
         }
 
         // 3. Construct prompt
+        let diag_section = match &request.diagnostic_context {
+            Some(ctx) => format!("\nDiagnostic context (previous attempt failed): {}", ctx),
+            None => String::new(),
+        };
+
         let prompt = format!(
             "<|im_start|>system\nYou are a network routing agent. Output ONLY a valid JSON object. No explanation.\n\
-            Given the request and available peers (trust_score 0-100, current_debt in bytes, rtt_ms for latency, bandwidth_bps for throughput), select the best next_hop peer_id.\n\
-            If no peer is reliable (trust < 50), output next_hop: null.\n\
-            Format: {{\"next_hop\": \"<peer_id>\" | null, \"transport\": \"vless\" | \"raw\", \"max_price\": <float>}}<|im_end|>\n\
-            <|im_start|>user\nRequest: Target={}, Protocol={}\nPeers: {}\n<|im_end|>\n<|im_start|>assistant\n",
+            Given the request and available peers (trust_score 0-100, current_debt in bytes, rtt_ms for latency, bandwidth_bps for throughput), \
+            select the best routing path as an ordered list of peer_ids.\n\
+            If no peer is reliable (trust < 50), output an empty path for direct connection.\n\
+            Format: {{\"path\": [\"<peer_id>\", ...], \"transport\": \"vless\" | \"raw\", \"max_price\": <float>}}\n\
+            Rules:\n\
+            - path: array of peer_id strings forming the route. Empty array [] means direct connection.\n\
+            - transport: \"vless\" for tunneled, \"raw\" for direct.\n\
+            - max_price: max acceptable price in credits per MB (use 0.0 for direct).\n\
+            - Prefer peers with high trust_score, low rtt_ms, high bandwidth_bps, low current_debt.<|im_end|>\n\
+            <|im_start|>user\nRequest: Target={}, Protocol={}\nPeers: {}{}<|im_end|>\n<|im_start|>assistant\n",
             request.target,
             request.protocol,
-            serde_json::to_string(&request.peers)?
+            serde_json::to_string(&request.peers)?,
+            diag_section
         );
 
         debug!("Prompt for AI: {}", prompt);
@@ -98,7 +113,7 @@ impl AiNegotiator {
         // 4. Run inference if model is loaded, otherwise fallback to simple logic
         let mut infer_guard = self.infer.lock().await;
         if let Some(infer) = infer_guard.as_mut() {
-            match infer.generate(&prompt, 128) {
+            match infer.generate(&prompt, self.max_generation_tokens) {
                 Ok(response) => {
                     debug!("Raw AI Response: {}", response);
 

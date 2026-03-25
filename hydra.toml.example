@@ -1,0 +1,26 @@
+# Hydra Node Configuration
+# Copy this file to hydra.toml and customize as needed.
+# All paths are relative to the directory where hydra-core is run.
+
+# Network: SOCKS5 proxy and P2P settings
+[network]
+socks5_port = 1080
+p2p_listen_port = 0  # 0 = random ephemeral port
+bootstrap_nodes = ["/dns4/boot.ze1.org/tcp/33097"]
+
+# AI model inference
+[ai]
+model_path = "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+tokenizer_path = "models/tokenizer.json"
+max_generation_tokens = 128
+cache_ttl_seconds = 300   # route decision cache TTL
+cache_max_items = 1000    # route decision cache capacity
+
+# Economic ledger and reputation
+[econ]
+db_path = "hydra_db"
+settlement_threshold_bytes = 10000000  # 10 MB
+
+# Bootstrap node (only used with --bootstrap flag)
+[bootstrap]
+listen_port = 33097

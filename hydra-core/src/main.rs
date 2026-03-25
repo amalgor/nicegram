@@ -1,8 +1,10 @@
 use anyhow::Result;
 use hydra_ai::AiNegotiator;
+use hydra_config::HydraConfig;
 use hydra_core::Socks5Server;
 use hydra_econ::EconLedger;
 use hydra_p2p::P2PNode;
+use libp2p::identity::Keypair;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,17 +14,37 @@ use tracing_subscriber;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
+    // Load configuration (hydra.toml in current directory, or defaults)
+    let config = HydraConfig::load(&PathBuf::from("hydra.toml"))?;
+
+    // Check if we are running as a bootstrap node
+    let is_bootstrap = std::env::args().any(|arg| arg == "--bootstrap");
+    
+    // Load or create identity
+    let id_path = PathBuf::from("hydra_identity.bin");
+    let keypair = if id_path.exists() {
+        let bytes = std::fs::read(&id_path)?;
+        Keypair::from_protobuf_encoding(&bytes)?
+    } else {
+        let kp = Keypair::generate_ed25519();
+        std::fs::write(&id_path, kp.to_protobuf_encoding()?)?;
+        kp
+    };
+    
+    tracing::info!("Using PeerID: {}", keypair.public().to_peer_id());
+
     // Initialize Economic Ledger
-    let econ = Arc::new(EconLedger::new("hydra_db")?);
+    let econ = Arc::new(EconLedger::new(config.econ.db_path.to_str().unwrap())?);
 
     // Initialize AI Negotiator
-    let ai = Arc::new(AiNegotiator::new());
+    let ai = Arc::new(AiNegotiator::new(&config.ai));
 
     // Load AI Model
-    let model_path = PathBuf::from("models/qwen2.5-1.5b-instruct-q4_k_m.gguf");
-    let tokenizer_path = PathBuf::from("models/tokenizer.json");
-    if model_path.exists() && tokenizer_path.exists() {
-        if let Err(e) = ai.load_model(model_path, tokenizer_path).await {
+    if config.ai.model_path.exists() && config.ai.tokenizer_path.exists() {
+        if let Err(e) = ai.load_model(
+            config.ai.model_path.clone(),
+            config.ai.tokenizer_path.clone(),
+        ).await {
             tracing::error!(
                 "Failed to load AI model: {}. Falling back to heuristic routing.",
                 e
@@ -30,25 +52,36 @@ async fn main() -> Result<()> {
         }
     } else {
         tracing::warn!(
-            "AI model files not found in 'models/' directory. Using heuristic routing. Download them with: \n\
-            mkdir -p models && wget -O models/qwen2.5-1.5b-instruct-q4_k_m.gguf https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf\n\
-            wget -O models/tokenizer.json https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/main/tokenizer.json"
+            "AI model files not found: model={}, tokenizer={}",
+            config.ai.model_path.display(),
+            config.ai.tokenizer_path.display()
         );
     }
 
     // Start P2P Node
-    let (p2p_node, p2p_handle) = P2PNode::new().await?;
+    let (p2p_node, p2p_handle) = {
+        let port = if is_bootstrap {
+            config.bootstrap.listen_port
+        } else {
+            config.network.p2p_listen_port
+        };
+        P2PNode::new(Some(keypair), port, &config.network).await?
+    };
     tokio::spawn(async move {
         if let Err(e) = p2p_node.run().await {
             tracing::error!("P2P node error: {}", e);
         }
     });
 
-    // Start Socks5 Server
-    let addr = SocketAddr::from(([127, 0, 0, 1], 1080));
-    let server = Socks5Server::new(addr, ai, p2p_handle, econ);
-
-    server.run().await?;
+    if is_bootstrap {
+        tracing::info!("Running as Bootstrap Node. SOCKS5 disabled.");
+        std::future::pending::<()>().await;
+    } else {
+        // Start Socks5 Server
+        let addr = SocketAddr::from(([127, 0, 0, 1], config.network.socks5_port));
+        let server = Socks5Server::new(addr, ai, p2p_handle, econ);
+        server.run().await?;
+    }
 
     Ok(())
 }

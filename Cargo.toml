@@ -1,9 +1,11 @@
 [workspace]
 members = [
+    "hydra-config",
     "hydra-core",
     "hydra-ai",
     "hydra-p2p",
     "hydra-econ",
+    "hydra_mobile/rust"
 ]
 resolver = "2"
 

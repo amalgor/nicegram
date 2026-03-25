@@ -190,7 +190,7 @@ async fn handle_connection(
                 let onion = crate::onion::OnionRouter::new(p2p.clone());
                 onion.build_circuit(&path_peer_ids, &target_addr).await
             } else {
-                p2p.open_stream(next_hop, "/hydra/tunnel/1.0.0".to_string())
+                p2p.open_stream(next_hop, hydra_p2p::TUNNEL_PROTOCOL)
                     .await
                     .map_err(|e| anyhow::anyhow!(e))
             };
