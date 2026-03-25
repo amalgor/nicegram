@@ -97,6 +97,7 @@ class _MainScreenState extends State<MainScreen> {
     const ConnectScreen(),
     const NetworkLogsScreen(),
     const ModelsScreen(),
+    const ContentScreen(),
   ];
 
   @override
@@ -126,6 +127,10 @@ class _MainScreenState extends State<MainScreen> {
           NavigationDestination(
             icon: Icon(Icons.smart_toy),
             label: 'AI Models',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.article),
+            label: 'Content',
           ),
         ],
       ),
@@ -474,6 +479,309 @@ class _ModelsScreenState extends State<ModelsScreen> with AutomaticKeepAliveClie
           ),
         );
       },
+    );
+  }
+}
+
+
+class ContentScreen extends StatefulWidget {
+  const ContentScreen({super.key});
+
+  @override
+  State<ContentScreen> createState() => _ContentScreenState();
+}
+
+class _ContentScreenState extends State<ContentScreen> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  // Auth state: disconnected, need_phone, need_code, need_password:<hint>, authorized:<name>, error:<msg>
+  String _authState = 'disconnected';
+  final TextEditingController _phoneController = TextEditingController();
+  final TextEditingController _codeController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  bool _isLoading = false;
+  String? _errorMessage;
+
+  // Dialogs loaded after auth
+  List<dynamic> _dialogs = [];
+
+  String get _authStatus {
+    if (_authState.startsWith('authorized:')) return _authState.substring(11);
+    return _authState;
+  }
+
+  bool get _isAuthorized => _authState.startsWith('authorized:');
+  bool get _needsPhone => _authState == 'need_phone';
+  bool get _needsCode => _authState == 'need_code';
+  bool get _needsPassword => _authState.startsWith('need_password:');
+
+  String get _passwordHint {
+    if (_authState.startsWith('need_password:')) {
+      return _authState.substring(14);
+    }
+    return '';
+  }
+
+  void _setLoading(bool v) => setState(() { _isLoading = v; _errorMessage = null; });
+  void _setError(String msg) => setState(() { _isLoading = false; _errorMessage = msg; });
+
+  Future<void> _connectTelegram() async {
+    _setLoading(true);
+    try {
+      // TODO: These calls require flutter_rust_bridge_codegen to generate Dart bindings
+      // from hydra_mobile/rust/src/api/content.rs
+      // For now, show a placeholder message
+      final dir = await getApplicationDocumentsDirectory();
+      // await initContentEngine(baseDir: dir.path);
+      // final state = await telegramConnect();
+      // setState(() { _authState = state; _isLoading = false; });
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Bridge codegen required. Run: flutter_rust_bridge_codegen generate';
+      });
+    } catch (e) {
+      _setError('$e');
+    }
+  }
+
+  Future<void> _sendPhone() async {
+    if (_phoneController.text.isEmpty) return;
+    _setLoading(true);
+    try {
+      // final state = await telegramSendPhone(phone: _phoneController.text);
+      // setState(() { _authState = state; _isLoading = false; });
+      _setError('Bridge codegen required');
+    } catch (e) {
+      _setError('$e');
+    }
+  }
+
+  Future<void> _sendCode() async {
+    if (_codeController.text.isEmpty) return;
+    _setLoading(true);
+    try {
+      // final state = await telegramSendCode(code: _codeController.text);
+      // setState(() { _authState = state; _isLoading = false; });
+      _setError('Bridge codegen required');
+    } catch (e) {
+      _setError('$e');
+    }
+  }
+
+  Future<void> _sendPassword() async {
+    if (_passwordController.text.isEmpty) return;
+    _setLoading(true);
+    try {
+      // final state = await telegramSendPassword(password: _passwordController.text);
+      // setState(() { _authState = state; _isLoading = false; });
+      _setError('Bridge codegen required');
+    } catch (e) {
+      _setError('$e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_isAuthorized) {
+      return _buildContentView();
+    }
+
+    return _buildAuthView();
+  }
+
+  Widget _buildAuthView() {
+    return Padding(
+      padding: const EdgeInsets.all(24.0),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Icon(
+            Icons.telegram,
+            size: 64,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Telegram Content Intelligence',
+            style: Theme.of(context).textTheme.headlineSmall,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Connect your Telegram account to enable TLDR folding, summarization, and attention tracking.',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 32),
+
+          if (_errorMessage != null) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                _errorMessage!,
+                style: const TextStyle(color: Colors.redAccent),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          if (_authState == 'disconnected') ...[
+            FilledButton.icon(
+              onPressed: _connectTelegram,
+              icon: const Icon(Icons.link),
+              label: const Text('Connect to Telegram'),
+            ),
+          ],
+
+          if (_needsPhone) ...[
+            TextField(
+              controller: _phoneController,
+              decoration: const InputDecoration(
+                labelText: 'Phone Number',
+                hintText: '+1 234 567 8900',
+                prefixIcon: Icon(Icons.phone),
+              ),
+              keyboardType: TextInputType.phone,
+            ),
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: _sendPhone,
+              child: const Text('Send Code'),
+            ),
+          ],
+
+          if (_needsCode) ...[
+            TextField(
+              controller: _codeController,
+              decoration: const InputDecoration(
+                labelText: 'Login Code',
+                hintText: 'Enter code from Telegram',
+                prefixIcon: Icon(Icons.lock_outline),
+              ),
+              keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: _sendCode,
+              child: const Text('Verify Code'),
+            ),
+          ],
+
+          if (_needsPassword) ...[
+            Text('2FA Password required (hint: $_passwordHint)'),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _passwordController,
+              decoration: const InputDecoration(
+                labelText: 'Password',
+                prefixIcon: Icon(Icons.key),
+              ),
+              obscureText: true,
+            ),
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: _sendPassword,
+              child: const Text('Submit Password'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContentView() {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Content Intelligence',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  Text(
+                    'Signed in as $_authStatus',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+              IconButton(
+                icon: const Icon(Icons.logout),
+                tooltip: 'Disconnect',
+                onPressed: () {
+                  setState(() {
+                    _authState = 'disconnected';
+                    _dialogs = [];
+                  });
+                },
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _dialogs.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.chat_bubble_outline, size: 48, color: Colors.grey),
+                      const SizedBox(height: 16),
+                      const Text('No dialogs loaded yet.'),
+                      const SizedBox(height: 8),
+                      FilledButton.icon(
+                        onPressed: () {
+                          // TODO: await telegramGetDialogs() after codegen
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Bridge codegen required for dialog loading')),
+                          );
+                        },
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Load Dialogs'),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  itemCount: _dialogs.length,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemBuilder: (context, index) {
+                    final dialog = _dialogs[index];
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          child: Text(
+                            (dialog['title'] as String? ?? '?')[0].toUpperCase(),
+                          ),
+                        ),
+                        title: Text(dialog['title'] ?? 'Unknown'),
+                        subtitle: Text(
+                          dialog['is_private'] == true ? '[PRIVATE]' : '[PUBLIC]',
+                        ),
+                        trailing: const Icon(Icons.chevron_right),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 }
