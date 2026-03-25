@@ -21,6 +21,19 @@ cache_max_items = 1000    # route decision cache capacity
 db_path = "hydra_db"
 settlement_threshold_bytes = 10000000  # 10 MB
 
+# Telegram client (grammers MTProto)
+# Obtain API credentials at https://my.telegram.org
+[telegram]
+api_id = 0           # your Telegram API ID (integer)
+api_hash = ""        # your Telegram API hash (string)
+session_path = "telegram.session"
+
+# Content Intelligence: summarization, TLDR folding, attention tracking
+[content]
+db_path = "content.db"
+summarization_max_tokens = 512
+cache_ttl_seconds = 3600  # how long processed summaries are cached
+
 # Bootstrap node (only used with --bootstrap flag)
 [bootstrap]
 listen_port = 33097

@@ -9,8 +9,8 @@ use tracing::{debug, error, info};
 
 use hydra_config::AiConfig;
 
-mod models;
-use models::qwen2_infer::Qwen2Infer;
+pub mod models;
+pub use models::qwen2_infer::Qwen2Infer;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct PeerInfo {
@@ -54,6 +54,11 @@ impl AiNegotiator {
             cache,
             max_generation_tokens: config.max_generation_tokens,
         }
+    }
+
+    /// Access the underlying inference engine for direct generation (used by hydra-content summarizer)
+    pub fn infer(&self) -> &Arc<Mutex<Option<Qwen2Infer>>> {
+        &self.infer
     }
 
     pub async fn load_model(&self, model_path: PathBuf, tokenizer_path: PathBuf) -> Result<()> {

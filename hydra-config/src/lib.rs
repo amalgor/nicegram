@@ -69,6 +69,48 @@ impl Default for EconConfig {
     }
 }
 
+/// Telegram client configuration (grammers MTProto)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramConfig {
+    /// Telegram API ID (obtain at https://my.telegram.org)
+    pub api_id: i32,
+    /// Telegram API hash
+    pub api_hash: String,
+    /// Path to session file (persists auth between restarts)
+    pub session_path: PathBuf,
+}
+
+impl Default for TelegramConfig {
+    fn default() -> Self {
+        Self {
+            api_id: 0,
+            api_hash: String::new(),
+            session_path: PathBuf::from("telegram.session"),
+        }
+    }
+}
+
+/// Content Intelligence configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentConfig {
+    /// Path to SQLite database for attention tracking and content cache
+    pub db_path: PathBuf,
+    /// Max tokens for summarization prompt
+    pub summarization_max_tokens: usize,
+    /// Content cache TTL in seconds (how long processed summaries are cached)
+    pub cache_ttl_seconds: u64,
+}
+
+impl Default for ContentConfig {
+    fn default() -> Self {
+        Self {
+            db_path: PathBuf::from("content.db"),
+            summarization_max_tokens: 512,
+            cache_ttl_seconds: 3600,
+        }
+    }
+}
+
 /// Bootstrap node specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootstrapConfig {
@@ -90,6 +132,8 @@ pub struct HydraConfig {
     pub network: NetworkConfig,
     pub ai: AiConfig,
     pub econ: EconConfig,
+    pub telegram: TelegramConfig,
+    pub content: ContentConfig,
     pub bootstrap: BootstrapConfig,
 }
 
@@ -128,6 +172,12 @@ impl HydraConfig {
         }
         if self.econ.db_path.is_relative() {
             self.econ.db_path = base_dir.join(&self.econ.db_path);
+        }
+        if self.telegram.session_path.is_relative() {
+            self.telegram.session_path = base_dir.join(&self.telegram.session_path);
+        }
+        if self.content.db_path.is_relative() {
+            self.content.db_path = base_dir.join(&self.content.db_path);
         }
     }
 

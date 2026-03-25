@@ -1,0 +1,23 @@
+[package]
+name = "hydra-content"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hydra-config = { path = "../hydra-config" }
+hydra-ai = { path = "../hydra-ai" }
+
+grammers-client = "0.9"
+grammers-mtsender = "0.9"
+grammers-session = "0.9"
+grammers-tl-types = "0.9"
+
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+rusqlite = { version = "0.35", features = ["bundled"] }
+uuid = { version = "1.16", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }

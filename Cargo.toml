@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "hydra-config",
+    "hydra-content",
     "hydra-core",
     "hydra-ai",
     "hydra-p2p",
