@@ -13,7 +13,20 @@ pub struct Qwen2Infer {
 
 impl Qwen2Infer {
     pub fn load(model_path: &PathBuf, tokenizer_path: Option<&PathBuf>) -> Result<Self> {
-        let device = Device::Cpu;
+        let device = match Device::cuda_if_available(0) {
+            Ok(dev) => {
+                if dev.is_cuda() {
+                    tracing::info!("Using CUDA GPU for inference");
+                } else {
+                    tracing::info!("CUDA not available, using CPU for inference");
+                }
+                dev
+            }
+            Err(_) => {
+                tracing::info!("Using CPU for inference");
+                Device::Cpu
+            }
+        };
         let mut file = std::fs::File::open(model_path)?;
         let gguf = candle_core::quantized::gguf_file::Content::read(&mut file)?;
         let model = ModelWeights::from_gguf(gguf, &mut file, &device)?;
