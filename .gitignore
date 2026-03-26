@@ -1,6 +1,10 @@
 # Build artifacts
 /target/
 
+# Config with secrets (API keys)
+/hydra.toml
+/telegram.session
+
 # Runtime data (not source code)
 /hydra_db/
 /hydra-core/hydra_db/

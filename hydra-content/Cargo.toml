@@ -18,6 +18,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
-rusqlite = { version = "0.35", features = ["bundled"] }
+rusqlite = "0.35"
 uuid = { version = "1.16", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+tracing-subscriber = { workspace = true }
+
+[[bin]]
+name = "tg-test"
+path = "src/bin/tg_test.rs"
