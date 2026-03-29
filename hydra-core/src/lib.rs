@@ -1,9 +1,15 @@
+pub mod connections;
 pub mod onion;
+pub mod relay;
+pub mod socks;
 use anyhow::Result;
+use connections::{ConnectionRegistry, RouteType};
 use hydra_ai::{AiNegotiator, RouteRequest};
+use hydra_config::RelayConfig;
 use hydra_econ::EconLedger;
 use hydra_p2p::P2PHandle;
 use libp2p::PeerId;
+use relay::RelayConnection;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,6 +21,9 @@ pub struct Socks5Server {
     ai: Arc<AiNegotiator>,
     p2p: P2PHandle,
     econ: Arc<EconLedger>,
+    relay: Option<Arc<RelayConnection>>,
+    relay_mode: String,
+    registry: Arc<ConnectionRegistry>,
 }
 
 impl Socks5Server {
@@ -23,13 +32,29 @@ impl Socks5Server {
         ai: Arc<AiNegotiator>,
         p2p: P2PHandle,
         econ: Arc<EconLedger>,
+        relay_config: &RelayConfig,
     ) -> Self {
+        let relay = if !relay_config.endpoints.is_empty() && relay_config.mode != "never" {
+            Some(Arc::new(RelayConnection::new(
+                relay_config.endpoints.clone(),
+                relay_config.device_id.clone(),
+            )))
+        } else {
+            None
+        };
         Self {
             addr,
             ai,
             p2p,
             econ,
+            relay,
+            relay_mode: relay_config.mode.clone(),
+            registry: Arc::new(ConnectionRegistry::new()),
         }
+    }
+
+    pub fn registry(&self) -> Arc<ConnectionRegistry> {
+        self.registry.clone()
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -43,12 +68,19 @@ impl Socks5Server {
             let ai = self.ai.clone();
             let p2p = self.p2p.clone();
             let econ = self.econ.clone();
+            let relay = self.relay.clone();
+            let relay_mode = self.relay_mode.clone();
+            let registry = self.registry.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, ai, p2p, econ).await {
+                if let Err(e) =
+                    handle_connection(stream, ai, p2p, econ, relay, relay_mode, registry).await
+                {
                     error!("Error handling connection from {}: {}", peer_addr, e);
                 }
             });
+
+            self.registry.gc(500);
         }
     }
 }
@@ -58,6 +90,9 @@ async fn handle_connection(
     ai: Arc<AiNegotiator>,
     p2p: P2PHandle,
     econ: Arc<EconLedger>,
+    relay: Option<Arc<RelayConnection>>,
+    relay_mode: String,
+    registry: Arc<ConnectionRegistry>,
 ) -> Result<()> {
     // 1. Negotiation (Handshake)
     let mut buf = [0u8; 2];
@@ -141,7 +176,44 @@ async fn handle_connection(
 
     info!("Target requested: {}", target_addr);
 
-    // 3. AI Routing Decision
+    // Register connection in the tracking registry
+    let is_telegram = socks::is_telegram_target(&target_addr);
+    let should_proxy = is_telegram && relay_mode != "never";
+    let conn_id = registry.register(&target_addr, should_proxy);
+    info!("Connection #{}: target={}, telegram={}, proxy={}", conn_id, target_addr, is_telegram, should_proxy);
+
+    // Selective routing: Telegram traffic goes through relay by default,
+    // other traffic goes direct unless relay_mode == "always"
+    if !should_proxy && relay_mode != "always" {
+        info!("Connection #{}: direct passthrough (non-Telegram)", conn_id);
+        registry.update_route(conn_id, RouteType::Direct, Some("Direct: non-Telegram traffic".to_string()));
+
+        match TcpStream::connect(&target_addr).await {
+            Ok(outbound) => {
+                stream.write_all(&socks::success_reply()).await?;
+                let (mut ri, mut wi) = stream.into_split();
+                let (mut ro, mut wo) = outbound.into_split();
+
+                let c2t = tokio::io::copy(&mut ri, &mut wo);
+                let t2c = tokio::io::copy(&mut ro, &mut wi);
+
+                let (res_up, res_down) = tokio::join!(c2t, t2c);
+                let up = res_up.unwrap_or(0);
+                let down = res_down.unwrap_or(0);
+                registry.update_bytes(conn_id, up, down);
+                registry.close(conn_id);
+                return Ok(());
+            }
+            Err(e) => {
+                error!("Connection #{}: direct connect to {} failed: {}", conn_id, target_addr, e);
+                stream.write_all(&socks::failure_reply()).await?;
+                registry.close(conn_id);
+                return Ok(());
+            }
+        }
+    }
+
+    // 3. AI Routing Decision (for proxied connections)
     let peers = p2p.get_peers().await?;
     let mut peer_infos = Vec::new();
     for peer_id in peers {
@@ -171,7 +243,7 @@ async fn handle_connection(
         max_retries -= 1;
 
         let instruction = ai.decide_route(route_request.clone()).await?;
-        info!("AI Routing instruction: {:?}", instruction);
+        info!("Connection #{}: AI routing instruction: {:?}", conn_id, instruction);
 
         // 4. Execution
         if !instruction.path.is_empty() {
@@ -210,10 +282,10 @@ async fn handle_connection(
                     tunnel.read_exact(&mut resp).await?;
 
                     if resp[0] == 0x00 {
-                        info!("Tunnel established to {} via {}", target_addr, next_hop_str);
-                        stream
-                            .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-                            .await?;
+                        info!("Connection #{}: tunnel established to {} via {}", conn_id, target_addr, next_hop_str);
+                        let route_reason = format!("P2P via peer {}", next_hop_str);
+                        registry.update_route(conn_id, RouteType::P2P, Some(route_reason));
+                        stream.write_all(&socks::success_reply()).await?;
 
                         let (mut ri, mut wi) = stream.into_split();
                         let (rt, wt) = tunnel.split();
@@ -236,10 +308,12 @@ async fn handle_connection(
                         let total_bytes = bytes_c2t + bytes_t2c;
 
                         info!(
-                            "P2P Transfer finished: {} bytes sent, {} bytes received. Total: {}. Duration: {:?}",
-                            bytes_c2t, bytes_t2c, total_bytes, duration
+                            "Connection #{}: P2P transfer finished: {} up, {} down. Total: {}. Duration: {:?}",
+                            conn_id, bytes_c2t, bytes_t2c, total_bytes, duration
                         );
 
+                        registry.update_bytes(conn_id, bytes_c2t, bytes_t2c);
+                        registry.close(conn_id);
                         p2p.update_bandwidth(next_hop, total_bytes, duration).await;
 
                         if econ.update_debt(&next_hop_str, total_bytes as i64)? {
@@ -307,25 +381,54 @@ async fn handle_connection(
                     // Loop continues
                 }
             }
-        } else {
-            info!("Direct connection to {}", target_addr);
+        } else if relay_mode == "always" || (relay.is_some() && instruction.path.is_empty()) {
+            if let Some(ref relay_conn) = relay {
+                info!("Connection #{}: attempting WSS relay to {}", conn_id, target_addr);
+                registry.update_route(conn_id, RouteType::Relay, Some("Routed via Cloudflare WSS relay".to_string()));
+                match relay_conn.connect_to_target(&target_addr).await {
+                    Ok(outbound) => {
+                        stream.write_all(&socks::success_reply()).await?;
+
+                        let (mut ri, mut wi) = stream.into_split();
+                        let (mut ro, mut wo) = outbound.into_split();
+
+                        let client_to_target = tokio::io::copy(&mut ri, &mut wo);
+                        let target_to_client = tokio::io::copy(&mut ro, &mut wi);
+
+                        let (res_up, res_down) = tokio::join!(client_to_target, target_to_client);
+                        let up = res_up.unwrap_or(0);
+                        let down = res_down.unwrap_or(0);
+                        registry.update_bytes(conn_id, up, down);
+                        registry.close(conn_id);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        error!("WSS relay failed: {}. Falling back to direct.", e);
+                        route_request.diagnostic_context = Some(format!(
+                            "WSS relay failed: {}. Trying direct.",
+                            e
+                        ));
+                    }
+                }
+            }
+            info!("Connection #{}: direct connection to {}", conn_id, target_addr);
+            registry.update_route(conn_id, RouteType::Direct, Some("Direct fallback after relay unavailable".to_string()));
             match TcpStream::connect(&target_addr).await {
                 Ok(outbound) => {
-                    stream
-                        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-                        .await?;
+                    stream.write_all(&socks::success_reply()).await?;
 
                     let (mut ri, mut wi) = stream.into_split();
                     let (mut ro, mut wo) = outbound.into_split();
 
-                    let client_to_target = tokio::io::copy(&mut ri, &mut wo);
-                    let target_to_client = tokio::io::copy(&mut ro, &mut wi);
+                    let c2t = tokio::io::copy(&mut ri, &mut wo);
+                    let t2c = tokio::io::copy(&mut ro, &mut wi);
 
-                    tokio::select! {
-                        res = client_to_target => debug!("Client to target finished: {:?}", res),
-                        res = target_to_client => debug!("Target to client finished: {:?}", res),
-                    }
-                    return Ok(()); // Success
+                    let (res_up, res_down) = tokio::join!(c2t, t2c);
+                    let up = res_up.unwrap_or(0);
+                    let down = res_down.unwrap_or(0);
+                    registry.update_bytes(conn_id, up, down);
+                    registry.close(conn_id);
+                    return Ok(());
                 }
                 Err(e) => {
                     error!("Failed to connect to target {}: {}", target_addr, e);
@@ -374,8 +477,8 @@ async fn handle_connection(
     }
 
     // If we exhaust retries
-    stream
-        .write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-        .await?;
+    error!("Connection #{}: all routing attempts exhausted for {}", conn_id, target_addr);
+    stream.write_all(&socks::failure_reply()).await?;
+    registry.close(conn_id);
     Ok(())
 }

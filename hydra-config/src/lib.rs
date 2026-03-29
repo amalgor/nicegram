@@ -5,6 +5,7 @@ use tracing::info;
 
 /// Network configuration: SOCKS5 proxy, P2P listener, bootstrap nodes
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NetworkConfig {
     /// Port for local SOCKS5 proxy server
     pub socks5_port: u16,
@@ -26,11 +27,10 @@ impl Default for NetworkConfig {
 
 /// AI model inference configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AiConfig {
-    /// Path to GGUF model weights file
+    /// Path to GGUF model weights file (llama.cpp — tokenizer embedded in GGUF)
     pub model_path: PathBuf,
-    /// Path to tokenizer JSON file
-    pub tokenizer_path: PathBuf,
     /// Maximum tokens to generate per inference call
     pub max_generation_tokens: usize,
     /// Route decision cache: time-to-live in seconds
@@ -42,8 +42,7 @@ pub struct AiConfig {
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
-            model_path: PathBuf::from("models/qwen2.5-1.5b-instruct-q4_k_m.gguf"),
-            tokenizer_path: PathBuf::from("models/tokenizer.json"),
+            model_path: PathBuf::from("models/qwen2.5-0.5b.gguf"),
             max_generation_tokens: 128,
             cache_ttl_seconds: 300,
             cache_max_items: 1000,
@@ -53,6 +52,7 @@ impl Default for AiConfig {
 
 /// Economic ledger and reputation configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EconConfig {
     /// Path to sled database directory
     pub db_path: PathBuf,
@@ -71,6 +71,7 @@ impl Default for EconConfig {
 
 /// Telegram client configuration (grammers MTProto)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TelegramConfig {
     /// Telegram API ID (obtain at https://my.telegram.org)
     pub api_id: i32,
@@ -92,6 +93,7 @@ impl Default for TelegramConfig {
 
 /// Content Intelligence configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ContentConfig {
     /// Path to SQLite database for attention tracking and content cache
     pub db_path: PathBuf,
@@ -111,8 +113,59 @@ impl Default for ContentConfig {
     }
 }
 
+/// Cloudflare Worker relay configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RelayConfig {
+    /// WSS relay endpoint URLs (Cloudflare Workers or compatible)
+    pub endpoints: Vec<String>,
+    /// Relay mode: "auto" (use when direct fails), "always" (force relay), "never" (disable)
+    pub mode: String,
+    /// Device ID for quota tracking (auto-generated if empty)
+    pub device_id: String,
+}
+
+impl Default for RelayConfig {
+    fn default() -> Self {
+        Self {
+            endpoints: Vec::new(),
+            mode: "auto".to_string(),
+            device_id: String::new(),
+        }
+    }
+}
+
+/// Crypto settlement configuration (Circle USDC)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CryptoConfig {
+    /// Enable crypto settlement
+    pub enabled: bool,
+    /// Circle API key (developer-controlled wallets)
+    pub circle_api_key: String,
+    /// Target chain for settlement
+    pub settlement_chain: String,
+    /// Wallet set ID (created via Circle API)
+    pub wallet_set_id: String,
+    /// Entity secret for signing (hex-encoded)
+    pub entity_secret: String,
+}
+
+impl Default for CryptoConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            circle_api_key: String::new(),
+            settlement_chain: "ARB-SEPOLIA".to_string(),
+            wallet_set_id: String::new(),
+            entity_secret: String::new(),
+        }
+    }
+}
+
 /// Bootstrap node specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BootstrapConfig {
     /// Fixed port for bootstrap node
     pub listen_port: u16,
@@ -128,12 +181,15 @@ impl Default for BootstrapConfig {
 
 /// Root configuration for the entire Hydra node
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct HydraConfig {
     pub network: NetworkConfig,
     pub ai: AiConfig,
     pub econ: EconConfig,
     pub telegram: TelegramConfig,
     pub content: ContentConfig,
+    pub relay: RelayConfig,
+    pub crypto: CryptoConfig,
     pub bootstrap: BootstrapConfig,
 }
 
@@ -167,9 +223,6 @@ impl HydraConfig {
         if self.ai.model_path.is_relative() {
             self.ai.model_path = base_dir.join(&self.ai.model_path);
         }
-        if self.ai.tokenizer_path.is_relative() {
-            self.ai.tokenizer_path = base_dir.join(&self.ai.tokenizer_path);
-        }
         if self.econ.db_path.is_relative() {
             self.econ.db_path = base_dir.join(&self.econ.db_path);
         }
@@ -188,5 +241,168 @@ impl HydraConfig {
         std::fs::write(path, content)?;
         info!("Default configuration written to {}", path.display());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_default_config_values() {
+        let config = HydraConfig::default();
+        assert_eq!(config.network.socks5_port, 1080);
+        assert_eq!(config.network.p2p_listen_port, 0);
+        assert_eq!(config.ai.max_generation_tokens, 128);
+        assert_eq!(config.ai.cache_ttl_seconds, 300);
+        assert_eq!(config.ai.cache_max_items, 1000);
+        assert_eq!(config.econ.settlement_threshold_bytes, 10_000_000);
+        assert_eq!(config.relay.mode, "auto");
+        assert!(config.relay.endpoints.is_empty());
+        assert!(!config.crypto.enabled);
+        assert_eq!(config.crypto.settlement_chain, "ARB-SEPOLIA");
+        assert_eq!(config.bootstrap.listen_port, 33097);
+    }
+
+    #[test]
+    fn test_load_missing_file_returns_defaults() {
+        let config = HydraConfig::load(Path::new("/nonexistent/hydra.toml")).unwrap();
+        assert_eq!(config.network.socks5_port, 1080);
+        assert_eq!(config.relay.mode, "auto");
+    }
+
+    #[test]
+    fn test_load_partial_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hydra.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "[network]\nsocks5_port = 9090").unwrap();
+
+        let config = HydraConfig::load(&path).unwrap();
+        assert_eq!(config.network.socks5_port, 9090);
+        // Other sections get defaults
+        assert_eq!(config.ai.max_generation_tokens, 128);
+    }
+
+    #[test]
+    fn test_load_full_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hydra.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"
+[network]
+socks5_port = 2080
+p2p_listen_port = 5000
+bootstrap_nodes = ["/ip4/1.2.3.4/tcp/1234"]
+
+[ai]
+model_path = "my_model.gguf"
+max_generation_tokens = 256
+cache_ttl_seconds = 600
+cache_max_items = 500
+
+[econ]
+db_path = "my_db"
+settlement_threshold_bytes = 5000000
+
+[telegram]
+api_id = 12345
+api_hash = "abc123"
+session_path = "my.session"
+
+[content]
+db_path = "my_content.db"
+summarization_max_tokens = 1024
+cache_ttl_seconds = 7200
+
+[relay]
+endpoints = ["wss://relay.example.com"]
+mode = "always"
+device_id = "dev-001"
+
+[crypto]
+enabled = true
+circle_api_key = "key123"
+settlement_chain = "ETH-MAINNET"
+wallet_set_id = "ws-1"
+entity_secret = "secret"
+
+[bootstrap]
+listen_port = 44444
+"#
+        )
+        .unwrap();
+
+        let config = HydraConfig::load(&path).unwrap();
+        assert_eq!(config.network.socks5_port, 2080);
+        assert_eq!(config.network.p2p_listen_port, 5000);
+        assert_eq!(config.ai.max_generation_tokens, 256);
+        assert_eq!(config.relay.mode, "always");
+        assert_eq!(config.relay.endpoints, vec!["wss://relay.example.com"]);
+        assert!(config.crypto.enabled);
+        assert_eq!(config.bootstrap.listen_port, 44444);
+    }
+
+    #[test]
+    fn test_resolve_paths() {
+        let mut config = HydraConfig::default();
+        let base = Path::new("/data/hydra");
+        config.resolve_paths(base);
+
+        assert_eq!(config.ai.model_path, PathBuf::from("/data/hydra/models/qwen2.5-0.5b.gguf"));
+        assert_eq!(config.econ.db_path, PathBuf::from("/data/hydra/hydra_db"));
+        assert_eq!(config.telegram.session_path, PathBuf::from("/data/hydra/telegram.session"));
+        assert_eq!(config.content.db_path, PathBuf::from("/data/hydra/content.db"));
+    }
+
+    #[test]
+    fn test_resolve_paths_absolute_unchanged() {
+        let mut config = HydraConfig::default();
+        config.ai.model_path = PathBuf::from("/absolute/model.gguf");
+        config.econ.db_path = PathBuf::from("/absolute/db");
+
+        let base = Path::new("/data/hydra");
+        config.resolve_paths(base);
+
+        assert_eq!(config.ai.model_path, PathBuf::from("/absolute/model.gguf"));
+        assert_eq!(config.econ.db_path, PathBuf::from("/absolute/db"));
+    }
+
+    #[test]
+    fn test_write_and_reload_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hydra.toml");
+
+        HydraConfig::write_defaults(&path).unwrap();
+        assert!(path.exists());
+
+        let reloaded = HydraConfig::load(&path).unwrap();
+        assert_eq!(reloaded.network.socks5_port, 1080);
+        assert_eq!(reloaded.relay.mode, "auto");
+    }
+
+    #[test]
+    fn test_invalid_toml_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hydra.toml");
+        std::fs::write(&path, "this is not valid toml [[[").unwrap();
+
+        let result = HydraConfig::load(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_with_base_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hydra.toml");
+        std::fs::write(&path, "[network]\nsocks5_port = 3000\n").unwrap();
+
+        let base = Path::new("/app/data");
+        let config = HydraConfig::load_with_base_dir(&path, base).unwrap();
+        assert_eq!(config.network.socks5_port, 3000);
+        assert_eq!(config.ai.model_path, PathBuf::from("/app/data/models/qwen2.5-0.5b.gguf"));
     }
 }

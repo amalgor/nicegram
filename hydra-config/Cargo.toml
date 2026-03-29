@@ -8,3 +8,6 @@ serde = { workspace = true }
 toml = "0.8"
 anyhow = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

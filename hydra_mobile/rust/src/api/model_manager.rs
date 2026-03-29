@@ -125,21 +125,13 @@ pub async fn set_active_model(id: String) -> anyhow::Result<()> {
         ));
     }
 
-    let tokenizer_path = models_dir.join("tokenizer.json");
-    if !tokenizer_path.exists() {
-        return Err(anyhow::anyhow!(
-            "Tokenizer not found at {}. Ensure tokenizer.json is in the models directory.",
-            tokenizer_path.display()
-        ));
-    }
-
     let ai_guard = SHARED_AI.lock().await;
     let ai = ai_guard.as_ref().ok_or_else(|| {
         anyhow::anyhow!("Hydra node not started yet. Start the node before switching models.")
     })?;
 
     tracing::info!("Reloading AI model: {} from {}", id, model_path.display());
-    ai.load_model(model_path.clone(), tokenizer_path).await?;
+    ai.load_model(model_path.clone()).await?;
     tracing::info!("AI model switched to: {}", model_path.display());
 
     Ok(())

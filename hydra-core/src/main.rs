@@ -39,12 +39,9 @@ async fn main() -> Result<()> {
     // Initialize AI Negotiator
     let ai = Arc::new(AiNegotiator::new(&config.ai));
 
-    // Load AI Model
-    if config.ai.model_path.exists() && config.ai.tokenizer_path.exists() {
-        if let Err(e) = ai.load_model(
-            config.ai.model_path.clone(),
-            config.ai.tokenizer_path.clone(),
-        ).await {
+    // Load AI Model (llama.cpp — tokenizer is embedded in GGUF)
+    if config.ai.model_path.exists() {
+        if let Err(e) = ai.load_model(config.ai.model_path.clone()).await {
             tracing::error!(
                 "Failed to load AI model: {}. Falling back to heuristic routing.",
                 e
@@ -52,9 +49,8 @@ async fn main() -> Result<()> {
         }
     } else {
         tracing::warn!(
-            "AI model files not found: model={}, tokenizer={}",
-            config.ai.model_path.display(),
-            config.ai.tokenizer_path.display()
+            "AI model not found: {}. Using heuristic routing.",
+            config.ai.model_path.display()
         );
     }
 
@@ -79,7 +75,7 @@ async fn main() -> Result<()> {
     } else {
         // Start Socks5 Server
         let addr = SocketAddr::from(([127, 0, 0, 1], config.network.socks5_port));
-        let server = Socks5Server::new(addr, ai, p2p_handle, econ);
+        let server = Socks5Server::new(addr, ai, p2p_handle, econ, &config.relay);
         server.run().await?;
     }
 

@@ -1,85 +1,91 @@
 use anyhow::Result;
-use candle_core::{Device, Tensor};
-use candle_transformers::generation::LogitsProcessor;
-use candle_transformers::models::quantized_qwen2::ModelWeights;
+use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::llama_batch::LlamaBatch;
+use llama_cpp_2::model::LlamaModel;
+use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::sampling::LlamaSampler;
+use llama_cpp_2::token::LlamaToken;
 use std::path::PathBuf;
-use tokenizers::Tokenizer;
 
 pub struct Qwen2Infer {
-    model: ModelWeights,
-    tokenizer: Tokenizer,
-    device: Device,
+    model: LlamaModel,
+    backend: LlamaBackend,
 }
 
 impl Qwen2Infer {
-    pub fn load(model_path: &PathBuf, tokenizer_path: Option<&PathBuf>) -> Result<Self> {
-        let device = match Device::cuda_if_available(0) {
-            Ok(dev) => {
-                if dev.is_cuda() {
-                    tracing::info!("Using CUDA GPU for inference");
-                } else {
-                    tracing::info!("CUDA not available, using CPU for inference");
-                }
-                dev
-            }
-            Err(_) => {
-                tracing::info!("Using CPU for inference");
-                Device::Cpu
-            }
-        };
-        let mut file = std::fs::File::open(model_path)?;
-        let gguf = candle_core::quantized::gguf_file::Content::read(&mut file)?;
-        let model = ModelWeights::from_gguf(gguf, &mut file, &device)?;
+    pub fn load(model_path: &PathBuf, _tokenizer_path: Option<&PathBuf>) -> Result<Self> {
+        let backend = LlamaBackend::init()?;
+        llama_cpp_2::send_logs_to_tracing(llama_cpp_2::LogOptions::default());
 
-        let tokenizer = if let Some(tp) = tokenizer_path {
-            Tokenizer::from_file(tp)
-                .map_err(|e| anyhow::anyhow!("Error loading tokenizer: {}", e))?
-        } else {
-            anyhow::bail!("Tokenizer path is required");
-        };
+        let model_params = LlamaModelParams::default();
+        tracing::info!("Loading GGUF model via llama.cpp: {}", model_path.display());
 
-        Ok(Self {
-            model,
-            tokenizer,
-            device,
-        })
+        let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
+            .map_err(|e| anyhow::anyhow!("Failed to load GGUF model: {:?}", e))?;
+
+        tracing::info!("Model loaded. Vocab size: {}", model.n_vocab());
+
+        Ok(Self { model, backend })
     }
 
     pub fn generate(&mut self, prompt: &str, max_tokens: usize) -> Result<String> {
-        let tokens = self
-            .tokenizer
-            .encode(prompt, true)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        let mut tokens = tokens.get_ids().to_vec();
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(std::num::NonZeroU32::new(2048));
 
-        let mut logits_processor = LogitsProcessor::new(299792458, None, None);
-        let mut generated_tokens = vec![];
-        let mut index_pos = 0;
+        let mut ctx = self.model.new_context(&self.backend, ctx_params)
+            .map_err(|e| anyhow::anyhow!("Failed to create context: {:?}", e))?;
 
-        for _ in 0..max_tokens {
-            let context_size = if index_pos == 0 { tokens.len() } else { 1 };
-            let start_pos = tokens.len() - context_size;
+        let tokens = self.model.str_to_token(prompt, llama_cpp_2::model::AddBos::Always)
+            .map_err(|e| anyhow::anyhow!("Tokenization failed: {:?}", e))?;
 
-            let input = Tensor::new(&tokens[start_pos..], &self.device)?.unsqueeze(0)?;
-            let logits = self.model.forward(&input, index_pos)?;
-            let logits = logits.squeeze(0)?.squeeze(0)?; // Assuming seq_len=1 for generation
-
-            let next_token = logits_processor.sample(&logits)?;
-            tokens.push(next_token);
-            generated_tokens.push(next_token);
-            index_pos += context_size;
-
-            // Check if EOS or specific stop tokens are generated
-            // Qwen2 EOS is often 151645 or 151643
-            if next_token == 151645 || next_token == 151643 {
-                break;
-            }
+        let mut batch = LlamaBatch::new(2048, 1);
+        let last_idx = (tokens.len() - 1) as i32;
+        for (i, token) in tokens.iter().enumerate() {
+            batch.add(*token, i as i32, &[0], i as i32 == last_idx)
+                .map_err(|_| anyhow::anyhow!("Failed to add token to batch"))?;
         }
 
-        let output = self
-            .tokenizer
-            .decode(&generated_tokens, true)
-            .map_err(|e| anyhow::anyhow!(e))?;
+        ctx.decode(&mut batch)
+            .map_err(|e| anyhow::anyhow!("Decode failed: {:?}", e))?;
+
+        let mut sampler = LlamaSampler::chain_simple([
+            LlamaSampler::temp(0.7),
+            LlamaSampler::dist(299792458),
+        ]);
+
+        let mut output_tokens: Vec<LlamaToken> = Vec::new();
+        let mut n_cur = batch.n_tokens();
+
+        for _ in 0..max_tokens {
+            let token = sampler.sample(&ctx, n_cur - 1);
+            sampler.accept(token);
+
+            if self.model.is_eog_token(token) {
+                break;
+            }
+
+            output_tokens.push(token);
+
+            batch.clear();
+            batch.add(token, n_cur, &[0], true)
+                .map_err(|_| anyhow::anyhow!("Failed to add token to batch"))?;
+
+            ctx.decode(&mut batch)
+                .map_err(|e| anyhow::anyhow!("Decode failed: {:?}", e))?;
+
+            n_cur += 1;
+        }
+
+        let mut output_bytes: Vec<u8> = Vec::new();
+        for t in &output_tokens {
+            match self.model.token_to_piece_bytes(*t, 64, true, None) {
+                Ok(bytes) => output_bytes.extend_from_slice(&bytes),
+                Err(_) => {}
+            }
+        }
+        let output = String::from_utf8_lossy(&output_bytes).into_owned();
+
         Ok(output)
     }
 }

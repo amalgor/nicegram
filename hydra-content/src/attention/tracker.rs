@@ -1,148 +1,122 @@
 use anyhow::{Context, Result};
 use crate::models::{AttentionEvent, InteractionType};
 use chrono::Utc;
-use rusqlite::Connection;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tracing::info;
 
+/// Persistent store for attention events and content cache.
+/// Uses JSON file storage to avoid sqlite dependency conflicts with grammers-session's libsql.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct StoreData {
+    events: Vec<AttentionEvent>,
+    content_cache: HashMap<String, CachedContent>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct CachedContent {
+    chat_id: i64,
+    content_json: String,
+    created_at: String,
+}
+
 /// Tracks user attention events: what was expanded, how long was read, etc.
-/// Stores data in a local SQLite database on the device.
+/// Persists data to a JSON file on the device.
 pub struct AttentionTracker {
-    db: Mutex<Connection>,
+    path: PathBuf,
+    data: Mutex<StoreData>,
 }
 
 impl AttentionTracker {
-    /// Open or create the attention tracking database at the given path.
+    /// Open or create the attention tracking store at the given path.
     pub fn new(db_path: &Path) -> Result<Self> {
-        let conn = Connection::open(db_path)
-            .context("Failed to open attention tracking database")?;
+        let data = if db_path.exists() {
+            let content = std::fs::read_to_string(db_path)
+                .context("Failed to read attention tracker file")?;
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            StoreData::default()
+        };
 
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS attention_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id TEXT NOT NULL,
-                chat_id INTEGER NOT NULL,
-                max_depth_reached INTEGER NOT NULL,
-                total_read_time_ms INTEGER NOT NULL,
-                interaction TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_attention_chat ON attention_events(chat_id);
-            CREATE INDEX IF NOT EXISTS idx_attention_ts ON attention_events(timestamp);
-
-            CREATE TABLE IF NOT EXISTS content_cache (
-                message_id TEXT PRIMARY KEY,
-                chat_id INTEGER NOT NULL,
-                content_json TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_cache_chat ON content_cache(chat_id);
-            "
-        ).context("Failed to create attention tracking tables")?;
-
-        info!("Attention tracker database initialized at {}", db_path.display());
+        info!("Attention tracker initialized at {}", db_path.display());
 
         Ok(Self {
-            db: Mutex::new(conn),
+            path: db_path.to_path_buf(),
+            data: Mutex::new(data),
         })
+    }
+
+    fn save(&self, data: &StoreData) -> Result<()> {
+        let json = serde_json::to_string(data)
+            .context("Failed to serialize attention data")?;
+        std::fs::write(&self.path, json)
+            .context("Failed to write attention tracker file")?;
+        Ok(())
     }
 
     /// Record an attention event (user expanded content, read it, etc.)
     pub fn record_event(&self, event: &AttentionEvent) -> Result<()> {
-        let db = self.db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
-        db.execute(
-            "INSERT INTO attention_events (message_id, chat_id, max_depth_reached, total_read_time_ms, interaction, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![
-                event.message_id,
-                event.chat_id,
-                event.max_depth_reached,
-                event.total_read_time_ms,
-                interaction_to_str(event.interaction),
-                event.timestamp.to_rfc3339(),
-            ],
-        ).context("Failed to insert attention event")?;
-        Ok(())
+        let mut data = self.data.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        data.events.push(event.clone());
+        self.save(&data)
     }
 
     /// Cache a processed message's content tree as JSON for quick retrieval.
     pub fn cache_content(&self, message_id: &str, chat_id: i64, content_json: &str) -> Result<()> {
-        let db = self.db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
-        db.execute(
-            "INSERT OR REPLACE INTO content_cache (message_id, chat_id, content_json, created_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![
-                message_id,
-                chat_id,
-                content_json,
-                Utc::now().to_rfc3339(),
-            ],
-        ).context("Failed to cache content")?;
-        Ok(())
+        let mut data = self.data.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        data.content_cache.insert(message_id.to_string(), CachedContent {
+            chat_id,
+            content_json: content_json.to_string(),
+            created_at: Utc::now().to_rfc3339(),
+        });
+        self.save(&data)
     }
 
     /// Get cached content JSON for a message. Returns None if not cached.
     pub fn get_cached_content(&self, message_id: &str) -> Result<Option<String>> {
-        let db = self.db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
-        let mut stmt = db.prepare(
-            "SELECT content_json FROM content_cache WHERE message_id = ?1"
-        )?;
-        let result = stmt.query_row(rusqlite::params![message_id], |row| {
-            row.get::<_, String>(0)
-        });
-        match result {
-            Ok(json) => Ok(Some(json)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        let data = self.data.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        Ok(data.content_cache.get(message_id).map(|c| c.content_json.clone()))
     }
 
-    /// Get attention statistics for a chat: total events, avg read time, depth distribution.
+    /// Get attention statistics for a chat.
     pub fn get_chat_stats(&self, chat_id: i64) -> Result<ChatAttentionStats> {
-        let db = self.db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
+        let data = self.data.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let chat_events: Vec<&AttentionEvent> = data.events.iter()
+            .filter(|e| e.chat_id == chat_id)
+            .collect();
 
-        let total_events: i64 = db.query_row(
-            "SELECT COUNT(*) FROM attention_events WHERE chat_id = ?1",
-            rusqlite::params![chat_id],
-            |row| row.get(0),
-        )?;
-
-        let avg_read_time: f64 = db.query_row(
-            "SELECT COALESCE(AVG(total_read_time_ms), 0) FROM attention_events WHERE chat_id = ?1",
-            rusqlite::params![chat_id],
-            |row| row.get(0),
-        )?;
-
-        let avg_depth: f64 = db.query_row(
-            "SELECT COALESCE(AVG(max_depth_reached), 0) FROM attention_events WHERE chat_id = ?1",
-            rusqlite::params![chat_id],
-            |row| row.get(0),
-        )?;
-
-        let deep_dive_count: i64 = db.query_row(
-            "SELECT COUNT(*) FROM attention_events WHERE chat_id = ?1 AND interaction = 'deep_dive'",
-            rusqlite::params![chat_id],
-            |row| row.get(0),
-        )?;
+        let total = chat_events.len() as u64;
+        let avg_read = if total > 0 {
+            chat_events.iter().map(|e| e.total_read_time_ms).sum::<u64>() / total
+        } else { 0 };
+        let avg_depth = if total > 0 {
+            chat_events.iter().map(|e| e.max_depth_reached as f32).sum::<f32>() / total as f32
+        } else { 0.0 };
+        let deep_dives = chat_events.iter()
+            .filter(|e| matches!(e.interaction, InteractionType::DeepDive))
+            .count() as u64;
 
         Ok(ChatAttentionStats {
             chat_id,
-            total_events: total_events as u64,
-            avg_read_time_ms: avg_read_time as u64,
-            avg_depth: avg_depth as f32,
-            deep_dive_count: deep_dive_count as u64,
+            total_events: total,
+            avg_read_time_ms: avg_read,
+            avg_depth,
+            deep_dive_count: deep_dives,
         })
     }
 
     /// Evict cached content older than the given TTL (in seconds).
     pub fn evict_stale_cache(&self, ttl_seconds: u64) -> Result<u64> {
-        let db = self.db.lock().map_err(|e| anyhow::anyhow!("DB lock poisoned: {}", e))?;
+        let mut data = self.data.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let cutoff = Utc::now() - chrono::Duration::seconds(ttl_seconds as i64);
-        let deleted = db.execute(
-            "DELETE FROM content_cache WHERE created_at < ?1",
-            rusqlite::params![cutoff.to_rfc3339()],
-        )?;
+        let cutoff_str = cutoff.to_rfc3339();
+        let before = data.content_cache.len();
+        data.content_cache.retain(|_, v| v.created_at >= cutoff_str);
+        let deleted = before - data.content_cache.len();
+        if deleted > 0 {
+            self.save(&data)?;
+        }
         Ok(deleted as u64)
     }
 }
@@ -155,13 +129,4 @@ pub struct ChatAttentionStats {
     pub avg_read_time_ms: u64,
     pub avg_depth: f32,
     pub deep_dive_count: u64,
-}
-
-fn interaction_to_str(interaction: InteractionType) -> &'static str {
-    match interaction {
-        InteractionType::Skim => "skim",
-        InteractionType::Read => "read",
-        InteractionType::DeepDive => "deep_dive",
-        InteractionType::Share => "share",
-    }
 }

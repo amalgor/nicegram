@@ -80,6 +80,23 @@ abstract class CargoKitBuildTask extends DefaultTask {
             environment "CARGOKIT_MIN_SDK_VERSION", minSdkVersion
             environment "CARGOKIT_TARGET_PLATFORMS", targetPlatforms.join(",")
             environment "CARGOKIT_JAVA_HOME", System.properties['java.home']
+
+            // NDK toolchain for Rust cc-rs and llama-cpp-sys-2 cross-compilation
+            def ndkPath = "${sdkDirectory}/ndk/${ndkVersion}"
+            environment "ANDROID_NDK", ndkPath
+            def ndkToolchainBin = "${ndkPath}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+            environment "PATH", "${ndkToolchainBin}:${System.getenv('PATH')}"
+            environment "CC_aarch64_linux_android", "${ndkToolchainBin}/aarch64-linux-android21-clang"
+            environment "CXX_aarch64_linux_android", "${ndkToolchainBin}/aarch64-linux-android21-clang++"
+            environment "AR_aarch64_linux_android", "${ndkToolchainBin}/llvm-ar"
+            environment "CFLAGS_aarch64_linux_android", ""
+            environment "CC_armv7_linux_androideabi", "${ndkToolchainBin}/armv7a-linux-androideabi21-clang"
+            environment "CXX_armv7_linux_androideabi", "${ndkToolchainBin}/armv7a-linux-androideabi21-clang++"
+            environment "AR_armv7_linux_androideabi", "${ndkToolchainBin}/llvm-ar"
+            environment "CC_i686_linux_android", "${ndkToolchainBin}/i686-linux-android21-clang"
+            environment "AR_i686_linux_android", "${ndkToolchainBin}/llvm-ar"
+            environment "CC_x86_64_linux_android", "${ndkToolchainBin}/x86_64-linux-android21-clang"
+            environment "AR_x86_64_linux_android", "${ndkToolchainBin}/llvm-ar"
         }
     }
 }
@@ -132,13 +149,8 @@ class CargoKitPlugin implements Plugin<Project> {
             def jniLibs = project.android.sourceSets.maybeCreate(buildType).jniLibs;
             jniLibs.srcDir(new File(cargoOutputDir))
 
-            def platforms = com.flutter.gradle.FlutterPluginUtils.getTargetPlatforms(project).collect()
-
-            // Same thing addFlutterDependencies does in flutter.gradle
-            if (buildType == "debug") {
-                platforms.add("android-x86")
-                platforms.add("android-x64")
-            }
+            // Only arm64 — llama-cpp-sys-2 cmake build requires specific NDK setup per arch
+            def platforms = ["android-arm64"]
 
             // The task name depends on plugin properties, which are not available
             // at this point

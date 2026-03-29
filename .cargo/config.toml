@@ -1,0 +1,17 @@
+# Android NDK cross-compilation
+# NDK 28.2, API level 21 (Android 5.0+)
+
+[env]
+ANDROID_NDK_HOME = "/home/user/Android/Sdk/ndk/28.2.13676358"
+
+[target.aarch64-linux-android]
+linker = "/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+
+[target.armv7-linux-androideabi]
+linker = "/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang"
+
+[target.i686-linux-android]
+linker = "/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android21-clang"
+
+[target.x86_64-linux-android]
+linker = "/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang"

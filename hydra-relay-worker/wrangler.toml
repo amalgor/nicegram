@@ -1,0 +1,20 @@
+name = "hydra-relay"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Custom domain — Cloudflare creates DNS + SSL automatically
+[[routes]]
+pattern = "relay.hydra-net.work"
+custom_domain = true
+
+# KV namespace for quota tracking
+[[kv_namespaces]]
+binding = "HYDRA_QUOTAS"
+id = "82ed22205d834b94b87f42502823a59e"
+preview_id = "cd0d9e4e110241c3bcabcc831551c84f"
+
+[vars]
+# Default daily quota in bytes (50 MB)
+DEFAULT_DAILY_QUOTA = "52428800"

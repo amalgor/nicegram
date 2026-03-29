@@ -96,10 +96,10 @@ async fn main() -> Result<()> {
 
     let ai = Arc::new(AiNegotiator::new(&config.ai));
 
-    // Try loading LLM model for real summarization
-    if config.ai.model_path.exists() && config.ai.tokenizer_path.exists() {
+    // Try loading LLM model for real summarization (llama.cpp — tokenizer embedded in GGUF)
+    if config.ai.model_path.exists() {
         println!("[...] Loading AI model for summarization: {}", config.ai.model_path.display());
-        match ai.load_model(config.ai.model_path.clone(), config.ai.tokenizer_path.clone()).await {
+        match ai.load_model(config.ai.model_path.clone()).await {
             Ok(_) => println!("[OK] AI model loaded. Summarization will use LLM."),
             Err(e) => println!("[WARN] Failed to load model: {}. Using heuristic fallback.", e),
         }

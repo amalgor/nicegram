@@ -6,6 +6,7 @@ use diagnostics::{DiagnosticRequest, DiagnosticResponse};
 use libp2p::{
     PeerId, StreamProtocol, Swarm,
     futures::{StreamExt, stream::BoxStream},
+    gossipsub::{self, IdentTopic, MessageAuthenticity},
     kad::{self, store::MemoryStore},
     mdns, noise, ping,
     request_response::{self, ProtocolSupport},
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const TUNNEL_PROTOCOL: StreamProtocol = StreamProtocol::new("/hydra/tunnel/1.0.0");
+pub const RELAY_ENDPOINTS_TOPIC: &str = "hydra/relay-endpoints/1.0";
 use telemetry::{PeerMetrics, TelemetryStore};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info};
@@ -26,6 +28,7 @@ use tracing::{debug, error, info};
 #[behaviour(out_event = "HydraEvent")]
 pub struct HydraBehaviour {
     pub kademlia: kad::Behaviour<MemoryStore>,
+    pub gossipsub: gossipsub::Behaviour,
     pub mdns: libp2p::swarm::behaviour::toggle::Toggle<mdns::tokio::Behaviour>,
     pub stream: p2p_stream::Behaviour,
     pub ping: ping::Behaviour,
@@ -35,6 +38,7 @@ pub struct HydraBehaviour {
 #[derive(Debug)]
 pub enum HydraEvent {
     Kademlia(kad::Event),
+    Gossipsub(gossipsub::Event),
     Mdns(mdns::Event),
     Stream(()),
     Ping(ping::Event),
@@ -44,6 +48,12 @@ pub enum HydraEvent {
 impl From<kad::Event> for HydraEvent {
     fn from(event: kad::Event) -> Self {
         HydraEvent::Kademlia(event)
+    }
+}
+
+impl From<gossipsub::Event> for HydraEvent {
+    fn from(event: gossipsub::Event) -> Self {
+        HydraEvent::Gossipsub(event)
     }
 }
 
@@ -86,6 +96,10 @@ pub enum P2PCommand {
         peer_id: PeerId,
         request: DiagnosticRequest,
         resp: oneshot::Sender<Result<DiagnosticResponse>>,
+    },
+    PublishRelayEndpoint {
+        data: Vec<u8>,
+        resp: oneshot::Sender<Result<()>>,
     },
 }
 
@@ -155,6 +169,18 @@ impl P2PHandle {
         rx.await
             .map_err(|e| anyhow!("Failed to receive DiagnosticRequest response: {}", e))?
     }
+
+    /// Publish a relay endpoint announcement to the gossipsub network.
+    /// data should be JSON: {"url": "wss://...", "latency_ms": N, "alive": true, "timestamp": epoch}
+    pub async fn publish_relay_endpoint(&self, data: Vec<u8>) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(P2PCommand::PublishRelayEndpoint { data, resp: tx })
+            .await
+            .map_err(|e| anyhow!("Failed to send PublishRelayEndpoint command: {}", e))?;
+        rx.await
+            .map_err(|e| anyhow!("Failed to receive PublishRelayEndpoint response: {}", e))?
+    }
 }
 
 impl P2PNode {
@@ -174,7 +200,22 @@ impl P2PNode {
                 
 let kademlia = kad::Behaviour::new(peer_id, store);
 
-                let mdns_enabled = listen_port == 0; // Disable on bootstrap node to avoid error 126 spam
+                let gossipsub_config = gossipsub::ConfigBuilder::default()
+                    .heartbeat_interval(Duration::from_secs(10))
+                    .validation_mode(gossipsub::ValidationMode::Permissive)
+                    .build()
+                    .map_err(|e| std::io::Error::other(format!("gossipsub config: {}", e)))?;
+                let mut gossipsub = gossipsub::Behaviour::new(
+                    MessageAuthenticity::Signed(key.clone()),
+                    gossipsub_config,
+                )
+                .map_err(|e| std::io::Error::other(format!("gossipsub: {}", e)))?;
+
+                let relay_topic = IdentTopic::new(RELAY_ENDPOINTS_TOPIC);
+                gossipsub.subscribe(&relay_topic)
+                    .map_err(|e| std::io::Error::other(format!("gossipsub subscribe: {}", e)))?;
+
+                let mdns_enabled = listen_port == 0;
                 let mdns = if mdns_enabled {
                     Some(mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?)
                 } else {
@@ -197,6 +238,7 @@ let kademlia = kad::Behaviour::new(peer_id, store);
                 );
                 Ok(HydraBehaviour {
                     kademlia,
+                    gossipsub,
                     mdns,
                     stream,
                     ping,
@@ -319,6 +361,20 @@ let kademlia = kad::Behaviour::new(peer_id, store);
                                 let _ = resp_sender.send(Err(anyhow!("Diagnostic request failed: {}", error)));
                             }
                         }
+                        SwarmEvent::Behaviour(HydraEvent::Gossipsub(gossipsub::Event::Message {
+                            propagation_source,
+                            message,
+                            ..
+                        })) => {
+                            if message.topic == IdentTopic::new(RELAY_ENDPOINTS_TOPIC).hash() {
+                                if let Ok(text) = String::from_utf8(message.data.clone()) {
+                                    info!("Received relay endpoint from {}: {}", propagation_source, text);
+                                }
+                            }
+                        }
+                        SwarmEvent::Behaviour(HydraEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
+                            debug!("Peer {} subscribed to {}", peer_id, topic);
+                        }
                         _ => {}
                     }
                 }
@@ -355,6 +411,14 @@ let kademlia = kad::Behaviour::new(peer_id, store);
                             P2PCommand::DiagnosticRequest { peer_id, request, resp } => {
                                 let request_id = self.swarm.behaviour_mut().diagnostics.send_request(&peer_id, request);
                                 pending_diag_requests.insert(request_id, resp);
+                            }
+                            P2PCommand::PublishRelayEndpoint { data, resp } => {
+                                let topic = IdentTopic::new(RELAY_ENDPOINTS_TOPIC);
+                                let result = self.swarm.behaviour_mut().gossipsub
+                                    .publish(topic, data)
+                                    .map(|_| ())
+                                    .map_err(|e| anyhow!("Gossipsub publish failed: {}", e));
+                                let _ = resp.send(result);
                             }
                         }
                     }

@@ -94,10 +94,17 @@ impl MessageHandler {
 
         while let Some(dialog) = dialogs.next().await? {
             let peer = dialog.peer();
+            let chat_id = peer_to_chat_id(&peer);
+            let title = peer.name().unwrap_or("").trim().to_string();
+            let title = if title.is_empty() {
+                format!("Chat {}", chat_id)
+            } else {
+                title
+            };
 
             chats.push(TrackedChat {
-                chat_id: peer_to_chat_id(&peer),
-                title: peer.name().unwrap_or("").to_string(),
+                chat_id,
+                title,
                 is_private: peer_is_private(&peer),
                 processing_enabled: true,
             });

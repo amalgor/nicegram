@@ -34,6 +34,20 @@ db_path = "content.db"
 summarization_max_tokens = 512
 cache_ttl_seconds = 3600  # how long processed summaries are cached
 
+# Cloudflare Worker relay for censorship bypass
+[relay]
+endpoints = ["wss://relay.hydra-net.work", "wss://hydra-relay.hydra-net.workers.dev"]  # WSS relay URLs (custom domain first, workers.dev fallback)
+mode = "auto"               # auto | always | never
+device_id = ""              # auto-generated if empty
+
+# Crypto settlement (Circle USDC developer-controlled wallets)
+[crypto]
+enabled = false
+circle_api_key = ""         # Circle API key (PREFIX:ID:SECRET)
+settlement_chain = "ARB-SEPOLIA"  # testnet first
+wallet_set_id = ""          # created via Circle API
+entity_secret = ""          # 32-byte hex entity secret
+
 # Bootstrap node (only used with --bootstrap flag)
 [bootstrap]
 listen_port = 33097

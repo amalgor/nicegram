@@ -22,7 +22,7 @@ lazy_static = "1.5.0"
 serde_json = { workspace = true }
 chrono = "0.4"
 tun2proxy = "0.7.19"
-reqwest = { version = "0.13.2", default-features = false, features = ["stream", "rustls", "charset", "http2"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["stream", "rustls", "charset", "http2", "json"] }
 libp2p = "0.56"
 
 [lints.rust]

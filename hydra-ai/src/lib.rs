@@ -61,9 +61,9 @@ impl AiNegotiator {
         &self.infer
     }
 
-    pub async fn load_model(&self, model_path: PathBuf, tokenizer_path: PathBuf) -> Result<()> {
+    pub async fn load_model(&self, model_path: PathBuf) -> Result<()> {
         info!("Loading AI model from {:?}", model_path);
-        let infer = Qwen2Infer::load(&model_path, Some(&tokenizer_path))?;
+        let infer = Qwen2Infer::load(&model_path, None)?;
         *self.infer.lock().await = Some(infer);
         info!("AI model loaded successfully");
         Ok(())
@@ -179,5 +179,169 @@ impl AiNegotiator {
 
         self.cache.insert(request, decision.clone()).await;
         Ok(decision)
+    }
+}
+
+/// Parse a JSON string into a RoutingInstruction, extracting JSON from surrounding text.
+pub fn parse_routing_json(response: &str) -> Result<RoutingInstruction> {
+    let json_str = if let Some(start) = response.find('{') {
+        if let Some(end) = response.rfind('}') {
+            &response[start..=end]
+        } else {
+            &response[start..]
+        }
+    } else {
+        response
+    };
+    serde_json::from_str::<RoutingInstruction>(json_str)
+        .map_err(|e| anyhow::anyhow!("Failed to parse routing JSON: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> AiConfig {
+        AiConfig {
+            model_path: std::path::PathBuf::from("nonexistent.gguf"),
+            max_generation_tokens: 128,
+            cache_ttl_seconds: 60,
+            cache_max_items: 100,
+        }
+    }
+
+    fn make_peer(id: &str, trust: u32, debt: i64) -> PeerInfo {
+        PeerInfo {
+            peer_id: id.to_string(),
+            trust_score: trust,
+            current_debt: debt,
+            rtt_ms: Some(50),
+            bandwidth_bps: Some(1_000_000),
+        }
+    }
+
+    #[test]
+    fn test_parse_routing_json_clean() {
+        let json = r#"{"path": ["peer1"], "transport": "vless", "max_price": 0.001}"#;
+        let inst = parse_routing_json(json).unwrap();
+        assert_eq!(inst.path, vec!["peer1"]);
+        assert_eq!(inst.transport, "vless");
+        assert!((inst.max_price - 0.001).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_parse_routing_json_with_surrounding_text() {
+        let response = "Here is the routing: {\"path\": [], \"transport\": \"raw\", \"max_price\": 0.0} done.";
+        let inst = parse_routing_json(response).unwrap();
+        assert!(inst.path.is_empty());
+        assert_eq!(inst.transport, "raw");
+    }
+
+    #[test]
+    fn test_parse_routing_json_empty_path() {
+        let json = r#"{"path": [], "transport": "raw", "max_price": 0.0}"#;
+        let inst = parse_routing_json(json).unwrap();
+        assert!(inst.path.is_empty());
+    }
+
+    #[test]
+    fn test_parse_routing_json_invalid() {
+        assert!(parse_routing_json("not json at all").is_err());
+        assert!(parse_routing_json("{broken").is_err());
+        assert!(parse_routing_json(r#"{"path": "wrong_type"}"#).is_err());
+    }
+
+    #[test]
+    fn test_parse_routing_json_multi_hop() {
+        let json = r#"{"path": ["peer1", "peer2", "peer3"], "transport": "vless", "max_price": 0.01}"#;
+        let inst = parse_routing_json(json).unwrap();
+        assert_eq!(inst.path.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_fallback_no_model_no_peers() {
+        let ai = AiNegotiator::new(&test_config());
+        let req = RouteRequest {
+            target: "example.com:443".to_string(),
+            protocol: "tcp".to_string(),
+            peers: vec![],
+            diagnostic_context: None,
+        };
+        let result = ai.decide_route(req).await.unwrap();
+        assert!(result.path.is_empty());
+        assert_eq!(result.transport, "raw");
+    }
+
+    #[tokio::test]
+    async fn test_fallback_no_model_with_trusted_peer() {
+        let ai = AiNegotiator::new(&test_config());
+        let req = RouteRequest {
+            target: "example.com:443".to_string(),
+            protocol: "tcp".to_string(),
+            peers: vec![make_peer("peer-A", 80, 1000)],
+            diagnostic_context: None,
+        };
+        let result = ai.decide_route(req).await.unwrap();
+        assert_eq!(result.path, vec!["peer-A"]);
+        assert_eq!(result.transport, "vless");
+    }
+
+    #[tokio::test]
+    async fn test_fallback_no_model_low_trust_peer() {
+        let ai = AiNegotiator::new(&test_config());
+        let req = RouteRequest {
+            target: "example.com:443".to_string(),
+            protocol: "tcp".to_string(),
+            peers: vec![make_peer("peer-B", 30, 0)],
+            diagnostic_context: None,
+        };
+        let result = ai.decide_route(req).await.unwrap();
+        assert!(result.path.is_empty(), "Low trust peer should result in direct route");
+    }
+
+    #[tokio::test]
+    async fn test_fallback_sorts_by_trust_then_debt() {
+        let ai = AiNegotiator::new(&test_config());
+        let req = RouteRequest {
+            target: "example.com:443".to_string(),
+            protocol: "tcp".to_string(),
+            peers: vec![
+                make_peer("low-trust", 60, 100),
+                make_peer("high-trust", 90, 500),
+                make_peer("high-trust-low-debt", 90, 50),
+            ],
+            diagnostic_context: None,
+        };
+        let result = ai.decide_route(req).await.unwrap();
+        assert_eq!(result.path, vec!["high-trust-low-debt"]);
+    }
+
+    #[tokio::test]
+    async fn test_localhost_fast_path() {
+        let ai = AiNegotiator::new(&test_config());
+        let req = RouteRequest {
+            target: "localhost:8080".to_string(),
+            protocol: "tcp".to_string(),
+            peers: vec![make_peer("peer-X", 100, 0)],
+            diagnostic_context: None,
+        };
+        let result = ai.decide_route(req).await.unwrap();
+        assert!(result.path.is_empty(), "localhost should always be direct");
+    }
+
+    #[tokio::test]
+    async fn test_cache_hit() {
+        let ai = AiNegotiator::new(&test_config());
+        let req = RouteRequest {
+            target: "cached.example.com:443".to_string(),
+            protocol: "tcp".to_string(),
+            peers: vec![],
+            diagnostic_context: None,
+        };
+
+        let r1 = ai.decide_route(req.clone()).await.unwrap();
+        let r2 = ai.decide_route(req).await.unwrap();
+        assert_eq!(r1.path, r2.path);
+        assert_eq!(r1.transport, r2.transport);
     }
 }
