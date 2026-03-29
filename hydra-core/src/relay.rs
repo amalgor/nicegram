@@ -55,9 +55,13 @@ impl RelayConnection {
             .body(())
             .context("Failed to build WSS request")?;
 
-        let (ws_stream, _response) = connect_async(request)
-            .await
-            .context("WebSocket handshake failed")?;
+        let (ws_stream, _response) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            connect_async(request),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("WebSocket handshake timed out (10s)"))?
+        .context("WebSocket handshake failed")?;
 
         info!("WSS relay connected to {} via {}", target, endpoint);
 

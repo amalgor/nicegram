@@ -37,7 +37,7 @@ cache_ttl_seconds = 3600  # how long processed summaries are cached
 # Cloudflare Worker relay for censorship bypass
 [relay]
 endpoints = ["wss://relay.hydra-net.work", "wss://hydra-relay.hydra-net.workers.dev"]  # WSS relay URLs (custom domain first, workers.dev fallback)
-mode = "auto"               # auto | always | never
+mode = "telegram"           # off | telegram | full
 device_id = ""              # auto-generated if empty
 
 # Crypto settlement (Circle USDC developer-controlled wallets)

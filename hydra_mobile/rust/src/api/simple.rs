@@ -25,9 +25,17 @@ use std::net::SocketAddr;
 lazy_static::lazy_static! {
     static ref SHARED_REGISTRY: tokio::sync::Mutex<Option<Arc<ConnectionRegistry>>> =
         tokio::sync::Mutex::new(None);
+    static ref SHARED_RELAY_MODE: tokio::sync::Mutex<Option<Arc<std::sync::RwLock<String>>>> =
+        tokio::sync::Mutex::new(None);
+    static ref NODE_STARTED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
 }
 
 pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
+    if NODE_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        tracing::warn!("start_hydra_node called again — node already running, skipping.");
+        return Ok(());
+    }
     tracing::info!("Starting real Hydra mobile node...");
 
     let base_path = PathBuf::from(&base_dir);
@@ -68,21 +76,38 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
     }
 
     tracing::info!("Initializing P2P Node & mDNS discovery...");
-    let (p2p_node, p2p_handle) = P2PNode::new(None, config.network.p2p_listen_port, &config.network).await?;
-    tokio::spawn(async move {
-        if let Err(e) = p2p_node.run().await {
-            tracing::error!("P2P node error: {}", e);
+    let p2p_handle = match P2PNode::new(None, config.network.p2p_listen_port, &config.network).await {
+        Ok((p2p_node, handle)) => {
+            tokio::spawn(async move {
+                if let Err(e) = p2p_node.run().await {
+                    tracing::error!("P2P node error: {}", e);
+                }
+            });
+            tracing::info!("P2P node started");
+            handle
         }
-    });
+        Err(e) => {
+            tracing::warn!(
+                "P2P node init failed (expected on Android — no /etc/resolv.conf): {}. \
+                 Continuing without peer discovery; relay-only mode.",
+                e
+            );
+            P2PNode::dummy_handle()
+        }
+    };
 
     let addr = SocketAddr::from(([127, 0, 0, 1], config.network.socks5_port));
     tracing::info!("Starting SOCKS5 Server on {}", addr);
     let server = Socks5Server::new(addr, ai, p2p_handle, econ, &config.relay);
 
-    // Store registry for FRB API access
+    // Store registry and relay_mode handle for FRB API access
     {
         let mut shared = SHARED_REGISTRY.lock().await;
         *shared = Some(server.registry());
+    }
+    {
+        let mut shared = SHARED_RELAY_MODE.lock().await;
+        *shared = Some(server.relay_mode_handle());
     }
 
     tokio::spawn(async move {
@@ -140,5 +165,17 @@ pub async fn set_connection_proxy(conn_id: u64, proxied: bool) -> anyhow::Result
     let guard = SHARED_REGISTRY.lock().await;
     let registry = guard.as_ref().ok_or_else(|| anyhow::anyhow!("Node not started"))?;
     registry.set_force_proxy(conn_id, proxied);
+    Ok(())
+}
+
+/// Set proxy mode at runtime. Values: "off", "telegram", "full".
+/// Called from Flutter Settings when user changes proxy mode.
+pub async fn set_proxy_mode(mode: String) -> anyhow::Result<()> {
+    let guard = SHARED_RELAY_MODE.lock().await;
+    let relay_mode = guard.as_ref().ok_or_else(|| anyhow::anyhow!("Node not started"))?;
+    if let Ok(mut m) = relay_mode.write() {
+        tracing::info!("Proxy mode changed to: {}", mode);
+        *m = mode;
+    }
     Ok(())
 }

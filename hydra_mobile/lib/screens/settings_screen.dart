@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:hydra_mobile/src/rust/api/simple.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -36,6 +37,11 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('proxy_mode', mode);
     setState(() { _proxyMode = mode; });
+    try {
+      await setProxyMode(mode: mode);
+    } catch (e) {
+      debugPrint("Failed to set proxy mode in Rust: $e");
+    }
   }
 
   Future<void> _toggleCrypto(bool value) async {
@@ -52,9 +58,17 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
       children: [
         Text('Proxy Mode', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 8),
-        _buildProxyModeRadio('off', 'Off', 'No proxying, direct connections only'),
-        _buildProxyModeRadio('telegram', 'Telegram Only', 'Route only Telegram traffic through relay (default)'),
-        _buildProxyModeRadio('full', 'Full VPN', 'Route all traffic through Hydra network'),
+        RadioGroup<String>(
+          groupValue: _proxyMode,
+          onChanged: (v) { if (v != null) _saveProxyMode(v); },
+          child: Column(
+            children: [
+              _buildProxyModeRadio('off', 'Off', 'No proxying, direct connections only'),
+              _buildProxyModeRadio('telegram', 'Telegram Only', 'Route only Telegram traffic through relay (default)'),
+              _buildProxyModeRadio('full', 'Full VPN', 'Route all traffic through Hydra network'),
+            ],
+          ),
+        ),
 
         const Divider(height: 32),
         Text('Relay Endpoints', style: Theme.of(context).textTheme.titleLarge),
@@ -132,12 +146,11 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
   }
 
   Widget _buildProxyModeRadio(String value, String title, String subtitle) {
-    return RadioListTile<String>(
-      value: value,
-      groupValue: _proxyMode,
-      onChanged: (v) { if (v != null) _saveProxyMode(v); },
+    return ListTile(
+      leading: Radio<String>(value: value),
       title: Text(title),
       subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+      onTap: () => _saveProxyMode(value),
     );
   }
 }

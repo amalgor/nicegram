@@ -118,7 +118,7 @@ export default {
     try {
       tcpSocket = connect(
         { hostname, port },
-        { secureTransport: port === 443 ? "on" : "off", allowHalfOpen: false },
+        { secureTransport: "off", allowHalfOpen: false },
       );
     } catch (e) {
       server.close(1011, `Failed to connect to ${target}: ${e}`);

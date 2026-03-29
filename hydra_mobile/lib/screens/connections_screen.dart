@@ -33,6 +33,18 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
     super.dispose();
   }
 
+  Future<void> _toggleProxy(int connId, bool proxied) async {
+    try {
+      await setConnectionProxy(connId: connId, proxied: proxied);
+      await _refresh();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    }
+  }
+
   Future<void> _refresh() async {
     try {
       final connsJson = await getActiveConnections();
@@ -120,21 +132,7 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
                       return ConnectionTile(
                         conn: conn,
                         onProxyToggle: conn.status == 'active'
-                            ? (proxied) async {
-                                try {
-                                  await setConnectionProxy(
-                                    connId: conn.id,
-                                    proxied: proxied,
-                                  );
-                                  await _refresh();
-                                } catch (e) {
-                                  if (mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(content: Text('Error: $e')),
-                                    );
-                                  }
-                                }
-                              }
+                            ? (proxied) => _toggleProxy(conn.id, proxied)
                             : null,
                       );
                     },

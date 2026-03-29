@@ -119,7 +119,8 @@ class ConnectionTile extends StatelessWidget {
             ? Switch(
                 value: conn.isProxied,
                 onChanged: onProxyToggle,
-                activeColor: Colors.green,
+                activeTrackColor: Colors.green.withValues(alpha: 0.5),
+                activeThumbColor: Colors.green,
               )
             : Icon(
                 isActive ? Icons.circle : Icons.circle_outlined,

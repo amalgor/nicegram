@@ -34,3 +34,8 @@ Future<String> getConnectionStats() async {
 Future<void> setConnectionProxy({required int connId, required bool proxied}) async {
   // TODO: replace with RustLib.instance.api.crateApiSimpleSetConnectionProxy(...)
 }
+
+/// Set proxy mode at runtime. Values: "off", "telegram", "full".
+Future<void> setProxyMode({required String mode}) async {
+  // TODO: replace with RustLib.instance.api.crateApiSimpleSetProxyMode(mode: mode)
+}

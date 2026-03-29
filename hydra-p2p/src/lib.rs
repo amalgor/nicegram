@@ -184,6 +184,17 @@ impl P2PHandle {
 }
 
 impl P2PNode {
+    /// Create a no-op P2PHandle for environments where P2P cannot initialize
+    /// (e.g. Android without /etc/resolv.conf). All commands sent to this handle
+    /// will fail with "P2P unavailable" errors.
+    pub fn dummy_handle() -> P2PHandle {
+        let (tx, _rx) = mpsc::channel(1);
+        P2PHandle {
+            cmd_tx: tx,
+            telemetry: Arc::new(TelemetryStore::new()),
+        }
+    }
+
     pub async fn new(keypair: Option<libp2p::identity::Keypair>, listen_port: u16, network_config: &NetworkConfig) -> Result<(Self, P2PHandle)> {
         let local_key = keypair.unwrap_or_else(libp2p::identity::Keypair::generate_ed25519);
         let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
@@ -193,7 +204,10 @@ impl P2PNode {
                 noise::Config::new,
                 yamux::Config::default,
             )?
-            .with_dns()?
+            .with_dns_config(
+                libp2p_dns::ResolverConfig::cloudflare(),
+                libp2p_dns::ResolverOpts::default(),
+            )
             .with_behaviour(|key| {
                 let peer_id = PeerId::from(key.public());
                 let store = MemoryStore::new(peer_id);

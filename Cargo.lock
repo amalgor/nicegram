@@ -1964,6 +1964,7 @@ dependencies = [
  "hydra-econ",
  "hydra-p2p",
  "libp2p",
+ "libp2p-dns",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -1997,6 +1998,7 @@ dependencies = [
  "futures",
  "hydra-config",
  "libp2p",
+ "libp2p-dns",
  "libp2p-stream",
  "serde",
  "serde_json",
@@ -4979,11 +4981,11 @@ dependencies = [
  "futures-util",
  "log",
  "rustls",
- "rustls-native-certs",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
  "tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

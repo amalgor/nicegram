@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:hydra_mobile/src/rust/api/telemetry.dart';
 import 'package:hydra_mobile/src/rust/api/model_manager.dart';
 import 'package:hydra_mobile/src/rust/api/simple.dart';
@@ -12,9 +13,18 @@ import 'package:hydra_mobile/screens/connections_screen.dart';
 import 'package:hydra_mobile/screens/models_screen.dart';
 import 'package:hydra_mobile/screens/content_screen.dart';
 import 'package:hydra_mobile/screens/settings_screen.dart';
+import 'package:hydra_mobile/screens/logs_screen.dart';
 
 final List<String> gNetworkLogs = [];
 final StreamController<List<String>> gLogStreamController = StreamController<List<String>>.broadcast();
+
+String _ts() {
+  final n = DateTime.now();
+  return '${n.hour.toString().padLeft(2, '0')}:'
+      '${n.minute.toString().padLeft(2, '0')}:'
+      '${n.second.toString().padLeft(2, '0')}.'
+      '${n.millisecond.toString().padLeft(3, '0')}';
+}
 
 void _initGlobalLogStream() async {
   debugPrint("Starting global log stream initialization...");
@@ -23,9 +33,9 @@ void _initGlobalLogStream() async {
     debugPrint("Stream created successfully. Awaiting events...");
     await for (final log in stream) {
       debugPrint("Received log from rust: $log");
-      gNetworkLogs.insert(0, log);
-      if (gNetworkLogs.length > 500) {
-        gNetworkLogs.removeLast();
+      gNetworkLogs.add('${_ts()} $log');
+      if (gNetworkLogs.length > 10000) {
+        gNetworkLogs.removeAt(0);
       }
       gLogStreamController.add(gNetworkLogs);
     }
@@ -58,6 +68,22 @@ Future<void> main() async {
       await modelFile.writeAsBytes(byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
       debugPrint("Model extracted successfully.");
     }
+
+    // Start Hydra node early so SOCKS5 proxy is ready before VPN toggle
+    startHydraNode(baseDir: dir.path).then((_) async {
+      debugPrint("Hydra node started successfully.");
+      // Apply saved proxy mode from SharedPreferences
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final mode = prefs.getString('proxy_mode') ?? 'telegram';
+        await setProxyMode(mode: mode);
+        debugPrint("Applied saved proxy mode: $mode");
+      } catch (e) {
+        debugPrint("Failed to apply saved proxy mode: $e");
+      }
+    }).catchError((e) {
+      debugPrint("Hydra node start error: $e");
+    });
   } catch (e) {
     debugPrint("Init error: $e");
   }
@@ -98,6 +124,7 @@ class _MainScreenState extends State<MainScreen> {
     const ConnectionsScreen(),
     const ModelsScreen(),
     const ContentScreen(),
+    const LogsScreen(),
     const SettingsScreen(),
   ];
 
@@ -119,9 +146,10 @@ class _MainScreenState extends State<MainScreen> {
         },
         destinations: const [
           NavigationDestination(icon: Icon(Icons.power_settings_new), label: 'Connect'),
-          NavigationDestination(icon: Icon(Icons.swap_vert), label: 'Connections'),
-          NavigationDestination(icon: Icon(Icons.smart_toy), label: 'AI Models'),
+          NavigationDestination(icon: Icon(Icons.swap_vert), label: 'Network'),
+          NavigationDestination(icon: Icon(Icons.smart_toy), label: 'AI'),
           NavigationDestination(icon: Icon(Icons.article), label: 'Content'),
+          NavigationDestination(icon: Icon(Icons.terminal), label: 'Logs'),
           NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
         ],
       ),

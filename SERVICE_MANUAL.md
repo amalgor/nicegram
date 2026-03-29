@@ -153,6 +153,30 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Connect screen**: Connection summary (active/proxied/direct counts).
 - **Config `#[serde(default)]`**: Все config structs теперь поддерживают partial TOML (missing sections → defaults).
 
+### Android Build & Runtime Fixes (29 марта 2026) — ВЫПОЛНЕНО
+- **Logs screen** (`lib/screens/logs_screen.dart`): Добавлен экран логов с фильтрацией, auto-scroll, copy-all, цветовой маркировкой по уровню (ERROR/WARN/INFO/DEBUG/TRACE). 6 вкладок в навигации.
+- **Double-start protection**: `start_hydra_node()` защищён `AtomicBool` — повторные вызовы игнорируются (idempotent).
+- **P2P graceful fallback**: На Android libp2p не может инициализироваться (нет `/etc/resolv.conf`). `P2PNode::dummy_handle()` создаёт no-op handle, SOCKS5 сервер продолжает работу без peer discovery (relay-only mode).
+- **Direct-first routing strategy**: Telegram-трафик сначала пробует прямое подключение (5s timeout), и только при неудаче переключается на WSS relay. Это решает проблему routing loop (relay через VPN) и обеспечивает минимальную задержку когда Telegram не заблокирован.
+- **Relay TLS fix**: `tokio-tungstenite` переключён с `rustls-tls-native-roots` на `rustls-tls-webpki-roots` (встроенные Mozilla CA). Android не имеет стандартного trust store для rustls.
+- **Relay Worker fix**: `secureTransport: "off"` — Worker теперь прозрачный TCP-прокси, TLS делает клиент (без двойного TLS).
+- **Relay timeout**: WebSocket handshake ограничен 10 секундами.
+- **UDP ASSOCIATE silenced**: SOCKS5 CMD 0x03 (UDP от tun2proxy DNS) теперь DEBUG вместо ERROR.
+- **Default relay endpoint**: `wss://relay.hydra-net.work` в `RelayConfig::default()`.
+- **VPN callback fix**: `HydraVpnService` теперь вызывает `onVpnStarted?.invoke(fd)` вместо broadcast.
+- **Node auto-start**: `startHydraNode()` вызывается при запуске приложения (`main.dart`), не только при нажатии Connect.
+- **Flutter deprecation fixes**: `RadioGroup` вместо deprecated `Radio.groupValue/onChanged`, `activeThumbColor` вместо `activeColor`.
+- **Проверено на устройстве**: Xiaomi M2101K7BNY, APK 522.9MB (включает bundled qwen2.5-0.5b.gguf 462MB). VPN перехватывает трафик, Telegram подключается напрямую, остальной трафик (Google, Xiaomi, CapCut и др.) проходит direct.
+
+### UX & Routing Improvements (29 марта 2026) — ВЫПОЛНЕНО
+- **Logs UX overhaul**: Лимит логов поднят до 10000 строк. Добавлены временные метки (HH:MM:SS.mmm) в начале каждой строки. Фильтр по LOG_LEVEL (ALL/ERROR/WARN/INFO/DEBUG/TRACE) через FilterChip. Постоянно видимые скроллбары (`thumbVisibility: true`). Auto-scroll вниз только когда пользователь в самом низу списка (не прыгает при просмотре старых логов). Кнопка "Scroll to bottom" для возврата.
+- **Cloudflare DNS (DoH)**: `libp2p` SwarmBuilder переключён с `.with_dns()` (читает `/etc/resolv.conf`, падает на Android) на `.with_dns_config(ResolverConfig::cloudflare(), ...)` — использует Cloudflare 1.1.1.1/1.0.0.1 напрямую. P2P node теперь должен инициализироваться на Android без `dummy_handle()`.
+- **Relay-first routing**: Telegram-трафик теперь идёт через relay в первую очередь (а не direct-first). Логика: если пользователь включил проксирование, значит прямое соединение неудобно (замедление). Direct используется только как fallback при недоступности relay.
+- **Proxy mode runtime control**: Настройка proxy_mode из Settings (off/telegram/full) теперь передаётся в Rust SOCKS5 сервер через `Arc<RwLock<String>>`. При изменении в UI — мгновенно применяется к новым соединениям. При старте приложения — восстанавливается из SharedPreferences.
+- **Simplified routing logic**: Удалён мёртвый P2P routing code из `handle_connection` (P2P ещё не работает на мобильном). Код сократился с ~500 строк до ~250. Извлечён `do_direct()` helper. AI/P2P/Econ параметры убраны из `handle_connection` (остались в `Socks5Server` struct для будущего использования).
+- **Telegram domain detection**: Добавлен `telegram-cdn.org` в список доменов для автоматического проксирования.
+- **Config mode rename**: `relay.mode` переименован с "auto" на "telegram" (более понятно). Обновлены hydra.toml, hydra.toml.example, все тесты.
+
 ### Этап 2: Attention + персонализация
 - **AttentionTracker** — полнота клиентского трекинга и политика событий.
 - **Локальное хранение** — SQLite для статистики чтения.

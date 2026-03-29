@@ -97,7 +97,7 @@ pub fn is_telegram_target(target: &str) -> bool {
     } else {
         host.contains("telegram.org")
             || host.contains("t.me")
-            || host.contains("core.telegram.org")
+            || host.contains("telegram-cdn.org")
     }
 }
 

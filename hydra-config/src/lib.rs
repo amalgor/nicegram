@@ -119,7 +119,7 @@ impl Default for ContentConfig {
 pub struct RelayConfig {
     /// WSS relay endpoint URLs (Cloudflare Workers or compatible)
     pub endpoints: Vec<String>,
-    /// Relay mode: "auto" (use when direct fails), "always" (force relay), "never" (disable)
+    /// Relay mode: "off" (direct only), "telegram" (proxy Telegram), "full" (proxy all)
     pub mode: String,
     /// Device ID for quota tracking (auto-generated if empty)
     pub device_id: String,
@@ -128,8 +128,8 @@ pub struct RelayConfig {
 impl Default for RelayConfig {
     fn default() -> Self {
         Self {
-            endpoints: Vec::new(),
-            mode: "auto".to_string(),
+            endpoints: vec!["wss://relay.hydra-net.work".to_string()],
+            mode: "telegram".to_string(),
             device_id: String::new(),
         }
     }
@@ -258,8 +258,8 @@ mod tests {
         assert_eq!(config.ai.cache_ttl_seconds, 300);
         assert_eq!(config.ai.cache_max_items, 1000);
         assert_eq!(config.econ.settlement_threshold_bytes, 10_000_000);
-        assert_eq!(config.relay.mode, "auto");
-        assert!(config.relay.endpoints.is_empty());
+        assert_eq!(config.relay.mode, "telegram");
+        assert_eq!(config.relay.endpoints, vec!["wss://relay.hydra-net.work"]);
         assert!(!config.crypto.enabled);
         assert_eq!(config.crypto.settlement_chain, "ARB-SEPOLIA");
         assert_eq!(config.bootstrap.listen_port, 33097);
@@ -269,7 +269,7 @@ mod tests {
     fn test_load_missing_file_returns_defaults() {
         let config = HydraConfig::load(Path::new("/nonexistent/hydra.toml")).unwrap();
         assert_eq!(config.network.socks5_port, 1080);
-        assert_eq!(config.relay.mode, "auto");
+        assert_eq!(config.relay.mode, "telegram");
     }
 
     #[test]
@@ -381,7 +381,7 @@ listen_port = 44444
 
         let reloaded = HydraConfig::load(&path).unwrap();
         assert_eq!(reloaded.network.socks5_port, 1080);
-        assert_eq!(reloaded.relay.mode, "auto");
+        assert_eq!(reloaded.relay.mode, "telegram");
     }
 
     #[test]

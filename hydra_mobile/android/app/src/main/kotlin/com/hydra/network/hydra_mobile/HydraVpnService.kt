@@ -46,13 +46,7 @@ class HydraVpnService : VpnService() {
             val fd = vpnInterface?.fd ?: return
             currentFd = fd
             Log.i("HydraVpnService", "VPN established with FD: $fd")
-            
-            // Send FD to Flutter/Rust using a broadcast or static variable, 
-            // or we could bind a native function here via JNI.
-            // For now we will notify MainActivity.
-            val intent = Intent("VPN_STARTED")
-            intent.putExtra("fd", fd)
-            sendBroadcast(intent)
+            onVpnStarted?.invoke(fd)
             
         } catch (e: Exception) {
             Log.e("HydraVpnService", "Failed to start VPN", e)

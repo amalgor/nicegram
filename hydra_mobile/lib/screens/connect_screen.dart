@@ -66,6 +66,7 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
         stopVpnTunnel();
         setState(() { gIsVpnActive = false; _stats = null; });
       } else {
+        // Node is started at app init (main.dart). Calling again is safe (idempotent).
         final dir = await getApplicationDocumentsDirectory();
         await startHydraNode(baseDir: dir.path);
         final bool? result = await platform.invokeMethod('startVpn');
