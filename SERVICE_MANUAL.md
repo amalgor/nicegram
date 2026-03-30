@@ -177,6 +177,57 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Telegram domain detection**: Добавлен `telegram-cdn.org` в список доменов для автоматического проксирования.
 - **Config mode rename**: `relay.mode` переименован с "auto" на "telegram" (более понятно). Обновлены hydra.toml, hydra.toml.example, все тесты.
 
+### Network & Connect UI + LLM Analysis (30 марта 2026) — ВЫПОЛНЕНО
+- **Network screen полностью переписан**: Соединения группируются по домену приложения (google.com, telegram.org и т.д.). Каждая группа показывает: иконку, домен, badge RELAY/DIRECT/TG, количество соединений, объём трафика, route summary, количество активных. Разворачивается в список индивидуальных соединений с компактным отображением (host:port, route badge, bytes, duration).
+- **Async LLM security comments**: При развороте группы асинхронно запрашивается анализ безопасности от встроенной Qwen 2.5 модели (`analyze_host()`). Результат кешируется и отображается с цветовой маркировкой [OK]/[WARN]/[ALERT].
+- **Connect screen переделан**: Кнопка Connect стала компактнее (160px). Добавлен таймер uptime. Stats grid с 4 карточками (Active/Relayed/Direct/Total) с иконками. Traffic bar (Up/Down) с цветовой индикацией. LLM Security Analysis card — каждые 30 секунд автоматически запрашивает `analyze_connections()` с обзором всех активных соединений. Кнопка ручного re-analyze.
+- **Rust API**: Добавлены `analyze_connections(json)` и `analyze_host(host, port, is_proxied, bytes)` — промпты для Qwen 2.5 с [OK]/[WARN]/[ALERT] тегами. Используют `SHARED_AI` lock для доступа к модели.
+- **FRB codegen (30 марта 2026)**: Запущен `flutter_rust_bridge_codegen generate`, все FRB API (`getActiveConnections`, `getConnectionStats`, `setConnectionProxy`, `setProxyMode`, `analyzeConnections`, `analyzeHost`) сгенерированы как real bindings вместо стабов. Content hash: `-2077367203`. Исправлен missing `CachedContent` struct в `hydra-content/src/attention/tracker.rs`.
+
+#### Bootstrap-нода (boot.ze1.org) — обновлена 30 марта 2026
+- Код синхронизирован через rsync в `~/src/marx/` (без hydra_mobile, .git, target, .gguf).
+- Установлены `libclang-dev`, `cmake` для сборки llama-cpp-sys.
+- Собран `hydra-core --bootstrap` в release mode.
+- Binary заменён в `/opt/hydra/target/release/hydra-core`, systemd service перезапущен.
+- PeerID: `12D3KooWBJvpWZ7Mr2xymmx1ZVXBbRFSagUCMJoEUFyoN1JcW46t`, listen: `/ip4/159.69.213.174/tcp/33097`.
+- systemd unit: `/etc/systemd/system/hydra-core.service`, `Restart=always`, `WorkingDirectory=/opt/hydra/hydra-core`.
+
+#### OOM crash fix (30 марта 2026)
+- **Причина**: Android OOM killer убивал приложение через ~60 секунд после запуска. llama-cpp загружал AI модель (Qwen 2.5 0.5B, 468 MB) при старте ноды, что вместе с VPN + P2P + 250+ соединений превышало лимит памяти на устройстве с 5.6 GB RAM.
+- **Исправление**:
+  1. Загрузка AI модели сделана **ленивой** (lazy) — не грузится при старте, только по явному запросу пользователя через Settings > AI Models.
+  2. Параметры llama.cpp: `mmap=true, mlock=false` для снижения RSS.
+  3. Контекст уменьшен с 2048 до 512 токенов (достаточно для коротких security-промптов).
+  4. `analyze_connections()` и `analyze_host()` возвращают fallback-сообщение "[OK] AI not loaded" вместо ошибки, если модель не загружена.
+- **Результат**: приложение стабильно работает 5+ минут, RSS ~240 MB.
+
+#### Relay Worker fix (30 марта 2026)
+- **Проблема**: данные не проходили через `relay.hydra-net.work`. Три причины:
+  1. **Worker: Stream cancelled** — TCP->WS pump запускался как IIFE, но CF Workers runtime отменял readable stream после возврата Response. Исправлено: используется `pipeTo()` + `ctx.waitUntil()`.
+  2. **Worker: isAllowedTarget** — фильтр пропускал только Telegram IP, блокируя остальные targets с 403. Удалён, т.к. квотирование обеспечивает защиту от злоупотреблений.
+  3. **Worker: множественный getWriter()** — каждое WS сообщение создавало новый writer и вызывало race condition. Исправлено: один writer на соединение.
+- **Routing fix на клиенте (Rust)**: в режиме "full" VPN все 200+ соединений отправлялись в relay одновременно, перегружая tokio runtime (timeout не срабатывал). Исправлено:
+  - Relay (WSS через Cloudflare) используется **только для Telegram** (anti-censorship).
+  - В "full" VPN: весь трафик идёт через VPN tunnel -> SOCKS5, но только Telegram через WSS relay. Остальной — direct из SOCKS5.
+  - Добавлен `is_relay_infrastructure()` — connections к `relay.hydra-net.work`, `boot.ze1.org` всегда direct (защита от routing loop).
+- **Tracing filter**: добавлен `EnvFilter` — libp2p, noise, rustls на уровне WARN, hydra-core/relay на DEBUG. Убрана лавина TRACE логов.
+- **Relay semaphore**: `MAX_CONCURRENT_RELAY = 4` — ограничение одновременных WSS handshake, чтобы blocking DNS (getaddrinfo) не съедал все tokio worker threads.
+- **VPN autostart**: ConnectScreen запускает VPN автоматически через 3 сек после старта (если VPN consent уже получен).
+- **singleTask**: `android:launchMode="singleTask"` в AndroidManifest — предотвращает создание дублирующих экземпляров приложения.
+- **Файлы**: `hydra-relay-worker/src/index.ts`, `hydra-core/src/lib.rs`, `hydra-core/src/socks.rs`, `hydra-core/src/relay.rs`, `hydra_mobile/rust/src/api/simple.rs`, `hydra_mobile/lib/screens/connect_screen.dart`, `hydra_mobile/android/app/src/main/AndroidManifest.xml`.
+
+#### Relay TLS handshake fix (30 марта 2026)
+- **Проблема**: WSS relay-соединения зависали на этапе TLS handshake. `connect_async` (tokio-tungstenite) внутри использовал `tokio::net::TcpStream::connect`, который вызывает blocking `getaddrinfo` через `spawn_blocking`. При >=4 одновременных relay tasks все worker threads оказывались заняты, и tokio timer futures не могли выполниться (timeout 10s не срабатывал).
+- **Корневая причина (2-я)**: rustls v0.23 требует явной инициализации `CryptoProvider`. Ранее `connect_async` от tokio-tungstenite делал это внутренне, но ручной TLS через `tokio-rustls` падал с паникой "Could not automatically determine the process-level CryptoProvider".
+- **Исправление**:
+  1. **Ручной TCP -> TLS -> WS pipeline** вместо `connect_async`: каждый этап (TCP connect, TLS handshake, WS upgrade) имеет собственный 5-секундный timeout.
+  2. **`build_tls_connector()`**: создаёт `tokio_rustls::TlsConnector` с явным `rustls::crypto::ring::default_provider()` и `webpki_roots` CA store.
+  3. **`tokio::spawn`** для relay task: гарантирует что timeout futures получают отдельный poll cycle, не блокируясь вызывающим task.
+  4. **Новые зависимости** в `hydra-core/Cargo.toml`: `tokio-rustls = "0.26"`, `rustls = { version = "0.23", features = ["ring"] }`, `webpki-roots = "0.26"`.
+  5. `connect_to_target` изменён на `self: &Arc<Self>` для совместимости с `tokio::spawn`.
+- **Результат**: WSS relay подключается за ~200ms (TCP ~50ms + TLS ~100ms + WS upgrade ~50ms). Все Telegram DC адреса (149.154.x.x, 91.108.x.x) проксируются через `relay.hydra-net.work`. Worker подтверждает передачу данных (1-6 KB per connection).
+- **Файлы**: `hydra-core/src/relay.rs`, `hydra-core/Cargo.toml`.
+
 ### Этап 2: Attention + персонализация
 - **AttentionTracker** — полнота клиентского трекинга и политика событий.
 - **Локальное хранение** — SQLite для статистики чтения.

@@ -5,23 +5,6 @@ interface Env {
   DEFAULT_DAILY_QUOTA: string;
 }
 
-// Telegram DC IP ranges for validation
-const TELEGRAM_SUBNETS = [
-  "149.154.",
-  "91.108.",
-  // Telegram Web WS endpoints
-  "pluto.web.telegram.org",
-  "venus.web.telegram.org",
-  "aurora.web.telegram.org",
-  "vesta.web.telegram.org",
-  "flora.web.telegram.org",
-];
-
-function isAllowedTarget(target: string): boolean {
-  const host = target.split(":")[0];
-  return TELEGRAM_SUBNETS.some((prefix) => host.startsWith(prefix) || host.endsWith(prefix));
-}
-
 function todayKey(deviceId: string): string {
   const d = new Date();
   const date = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
@@ -63,15 +46,13 @@ async function checkAndUpdateQuota(
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Health check
     if (url.pathname === "/health") {
       return new Response("ok", { status: 200 });
     }
 
-    // Quota check endpoint (GET)
     if (url.pathname === "/quota") {
       const deviceId = url.searchParams.get("device_id") || "anonymous";
       const defaultLimit = parseInt(env.DEFAULT_DAILY_QUOTA) || 52428800;
@@ -79,7 +60,6 @@ export default {
       return Response.json({ remaining, limit: defaultLimit });
     }
 
-    // WebSocket upgrade for relay
     const upgradeHeader = request.headers.get("Upgrade");
     if (!upgradeHeader || upgradeHeader !== "websocket") {
       return new Response("Hydra Relay. Send WebSocket upgrade to connect.", {
@@ -93,18 +73,15 @@ export default {
       return new Response("Missing X-Hydra-Target header (format: host:port)", { status: 400 });
     }
 
-    if (!isAllowedTarget(target)) {
-      return new Response("Target not in allowed list", { status: 403 });
-    }
-
     const deviceId = request.headers.get("X-Hydra-Device") || "anonymous";
     const defaultLimit = parseInt(env.DEFAULT_DAILY_QUOTA) || 52428800;
-    const { allowed, remaining } = await checkAndUpdateQuota(env.HYDRA_QUOTAS, deviceId, 0, defaultLimit);
+    const { allowed } = await checkAndUpdateQuota(env.HYDRA_QUOTAS, deviceId, 0, defaultLimit);
     if (!allowed) {
       return new Response("Daily quota exceeded", { status: 429 });
     }
 
-    // Parse target
+    console.log(`[relay] new connection: device=${deviceId}, target=${target}`);
+
     const parts = target.split(":");
     const hostname = parts[0];
     const port = parseInt(parts[1] || "443");
@@ -113,7 +90,6 @@ export default {
     const [client, server] = Object.values(webSocketPair);
     server.accept();
 
-    // Open TCP connection to target
     let tcpSocket: Socket;
     try {
       tcpSocket = connect(
@@ -121,58 +97,65 @@ export default {
         { secureTransport: "off", allowHalfOpen: false },
       );
     } catch (e) {
-      server.close(1011, `Failed to connect to ${target}: ${e}`);
+      server.close(1011, `TCP connect failed: ${e}`);
       return new Response(null, { status: 101, webSocket: client });
     }
 
     let totalBytes = 0;
+    const writer = tcpSocket.writable.getWriter();
 
-    // WS -> TCP: client sends data, we forward to TCP target
+    // WS -> TCP: set up listener BEFORE returning response
     server.addEventListener("message", (event: MessageEvent) => {
       const data = event.data;
-      const writer = tcpSocket.writable.getWriter();
+      let bytes: Uint8Array;
       if (data instanceof ArrayBuffer) {
-        totalBytes += data.byteLength;
-        writer.write(new Uint8Array(data));
+        bytes = new Uint8Array(data);
       } else if (typeof data === "string") {
-        const encoded = new TextEncoder().encode(data);
-        totalBytes += encoded.byteLength;
-        writer.write(encoded);
+        bytes = new TextEncoder().encode(data);
+      } else {
+        return;
       }
-      writer.releaseLock();
+      totalBytes += bytes.byteLength;
+      writer.write(bytes).catch(() => {
+        try { server.close(1011, "TCP write failed"); } catch { /* noop */ }
+      });
     });
 
-    // TCP -> WS: target sends data, we forward to WS client
-    (async () => {
-      try {
-        const reader = tcpSocket.readable.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) {
-            totalBytes += value.byteLength;
-            server.send(value);
-          }
-        }
-      } catch {
-        // connection closed
-      } finally {
-        server.close(1000, "TCP connection closed");
-        // Update quota with total bytes transferred
-        if (totalBytes > 0) {
-          await checkAndUpdateQuota(env.HYDRA_QUOTAS, deviceId, totalBytes, defaultLimit);
-        }
-      }
-    })();
-
-    // WS close -> TCP close
     server.addEventListener("close", () => {
-      try {
-        tcpSocket.close();
-      } catch {
-        // already closed
+      writer.close().catch(() => {});
+    });
+
+    server.addEventListener("error", () => {
+      writer.close().catch(() => {});
+    });
+
+    // TCP -> WS: pipe the readable through a WritableStream that sends to WS.
+    // Use pipeTo which is natively supported and doesn't get cancelled.
+    const tcpToWsTask = tcpSocket.readable.pipeTo(
+      new WritableStream({
+        write(chunk: Uint8Array) {
+          totalBytes += chunk.byteLength;
+          server.send(chunk);
+        },
+        close() {
+          try { server.close(1000, "TCP closed"); } catch { /* noop */ }
+        },
+        abort() {
+          try { server.close(1011, "TCP aborted"); } catch { /* noop */ }
+        },
+      })
+    ).then(() => {
+      console.log(`[relay] pipe done for ${target}, ${totalBytes} bytes`);
+    }).catch((e) => {
+      console.error(`[relay] pipe error for ${target}: ${e}`);
+      try { server.close(1011, "pipe error"); } catch { /* noop */ }
+    }).finally(async () => {
+      if (totalBytes > 0) {
+        await checkAndUpdateQuota(env.HYDRA_QUOTAS, deviceId, totalBytes, defaultLimit);
       }
     });
+
+    ctx.waitUntil(tcpToWsTask);
 
     return new Response(null, { status: 101, webSocket: client });
   },

@@ -18,8 +18,10 @@ impl Qwen2Infer {
         let backend = LlamaBackend::init()?;
         llama_cpp_2::send_logs_to_tracing(llama_cpp_2::LogOptions::default());
 
-        let model_params = LlamaModelParams::default();
-        tracing::info!("Loading GGUF model via llama.cpp: {}", model_path.display());
+        let model_params = LlamaModelParams::default()
+            .with_use_mmap(true)
+            .with_use_mlock(false);
+        tracing::info!("Loading GGUF model via llama.cpp (mmap=true, mlock=false): {}", model_path.display());
 
         let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
             .map_err(|e| anyhow::anyhow!("Failed to load GGUF model: {:?}", e))?;
@@ -30,8 +32,9 @@ impl Qwen2Infer {
     }
 
     pub fn generate(&mut self, prompt: &str, max_tokens: usize) -> Result<String> {
+        let n_ctx = 512;
         let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(std::num::NonZeroU32::new(2048));
+            .with_n_ctx(std::num::NonZeroU32::new(n_ctx));
 
         let mut ctx = self.model.new_context(&self.backend, ctx_params)
             .map_err(|e| anyhow::anyhow!("Failed to create context: {:?}", e))?;
@@ -39,7 +42,14 @@ impl Qwen2Infer {
         let tokens = self.model.str_to_token(prompt, llama_cpp_2::model::AddBos::Always)
             .map_err(|e| anyhow::anyhow!("Tokenization failed: {:?}", e))?;
 
-        let mut batch = LlamaBatch::new(2048, 1);
+        if tokens.len() > (n_ctx as usize).saturating_sub(max_tokens) {
+            return Err(anyhow::anyhow!(
+                "Prompt too long ({} tokens) for context size {} with {} max output tokens",
+                tokens.len(), n_ctx, max_tokens
+            ));
+        }
+
+        let mut batch = LlamaBatch::new(n_ctx as usize, 1);
         let last_idx = (tokens.len() - 1) as i32;
         for (i, token) in tokens.iter().enumerate() {
             batch.add(*token, i as i32, &[0], i as i32 == last_idx)

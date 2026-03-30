@@ -86,6 +86,21 @@ pub fn failure_reply() -> [u8; 10] {
     [SOCKS_VERSION, REPLY_GENERAL_FAILURE, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0]
 }
 
+/// Hydra relay infrastructure domains — connections to these must always be direct
+/// to prevent routing loops when VPN is in "full" mode.
+const RELAY_DOMAINS: &[&str] = &[
+    "relay.hydra-net.work",
+    "hydra-relay.hydra-net.workers.dev",
+    "boot.ze1.org",
+];
+
+/// Check if a target address points to Hydra relay infrastructure.
+/// These must never be proxied to avoid routing loops.
+pub fn is_relay_infrastructure(target: &str) -> bool {
+    let host = target.split(':').next().unwrap_or("");
+    RELAY_DOMAINS.iter().any(|d| host == *d || host.ends_with(*d))
+}
+
 /// Check if a target address (as "ip:port" string) points to a Telegram DC.
 pub fn is_telegram_target(target: &str) -> bool {
     let host = target.split(':').next().unwrap_or("");
@@ -271,5 +286,14 @@ mod tests {
     fn test_split_target_invalid() {
         assert_eq!(split_target("no_port"), None);
         assert_eq!(split_target("host:notaport"), None);
+    }
+
+    #[test]
+    fn test_is_relay_infrastructure() {
+        assert!(is_relay_infrastructure("relay.hydra-net.work:443"));
+        assert!(is_relay_infrastructure("hydra-relay.hydra-net.workers.dev:443"));
+        assert!(is_relay_infrastructure("boot.ze1.org:22"));
+        assert!(!is_relay_infrastructure("google.com:443"));
+        assert!(!is_relay_infrastructure("149.154.167.50:443"));
     }
 }

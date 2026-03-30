@@ -61,14 +61,27 @@ Future<void> recordAttention({
 Future<String> getChatAttentionStats({required PlatformInt64 chatId}) =>
     RustLib.instance.api.crateApiContentGetChatAttentionStats(chatId: chatId);
 
+/// Fetch messages from a specific chat and process them with summarization.
+/// Returns JSON array of ProcessedMessage with fold levels.
+Future<String> fetchChannelMessages({
+  required PlatformInt64 chatId,
+  required int limit,
+}) => RustLib.instance.api.crateApiContentFetchChannelMessages(
+  chatId: chatId,
+  limit: limit,
+);
+
+/// Get a specific fold level content for a message.
+/// level: 0=headline, 1=summary, 2=key_points, 3=full_text
+/// Returns the content string for that level from the content tree.
+Future<String> getMessageFoldContent({
+  required String contentTreeJson,
+  required int level,
+}) => RustLib.instance.api.crateApiContentGetMessageFoldContent(
+  contentTreeJson: contentTreeJson,
+  level: level,
+);
+
 /// Disconnect from Telegram.
 Future<void> telegramDisconnect() =>
     RustLib.instance.api.crateApiContentTelegramDisconnect();
-
-/// Fetch messages from a specific chat with summarization.
-/// Returns JSON array of ProcessedMessage with fold levels.
-/// Stub pending FRB codegen.
-Future<String> fetchChannelMessages({required int chatId, required int limit}) async {
-  // TODO: replace with RustLib.instance.api.crateApiContentFetchChannelMessages(...)
-  return '[]';
-}

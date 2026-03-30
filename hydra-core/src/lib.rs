@@ -189,24 +189,31 @@ async fn handle_connection(
 
     // Register connection in the tracking registry
     let is_telegram = socks::is_telegram_target(&target_addr);
-    // relay_mode: "off" = never proxy, "telegram" = proxy Telegram, "full"/"always" = proxy all
-    let should_proxy = match relay_mode.as_str() {
-        "off" | "never" => false,
-        "telegram" | "auto" => is_telegram,
-        "full" | "always" => true,
-        _ => is_telegram,
-    };
-    let conn_id = registry.register(&target_addr, should_proxy);
-    info!("Connection #{}: target={}, telegram={}, proxy={}, mode={}", conn_id, target_addr, is_telegram, should_proxy, relay_mode);
+    let is_relay_infra = socks::is_relay_infrastructure(&target_addr);
 
-    // Direct passthrough for connections that don't need proxying
-    if !should_proxy {
-        registry.update_route(conn_id, RouteType::Direct, Some("Direct: not proxied by policy".to_string()));
+    // Relay (WSS via Cloudflare) is only for anti-censorship: Telegram traffic.
+    // In "full" VPN mode, all traffic flows through the VPN tunnel -> SOCKS5,
+    // but only Telegram uses the WSS relay; everything else connects directly
+    // from the SOCKS5 proxy (still within VPN for DNS/routing protection).
+    let use_relay = if is_relay_infra {
+        false
+    } else {
+        match relay_mode.as_str() {
+            "off" | "never" => false,
+            _ => is_telegram,
+        }
+    };
+    let is_vpn_routed = matches!(relay_mode.as_str(), "full" | "always");
+    let conn_id = registry.register(&target_addr, use_relay || is_vpn_routed);
+    info!("Connection #{}: target={}, telegram={}, relay={}, vpn={}, mode={}", conn_id, target_addr, is_telegram, use_relay, is_vpn_routed, relay_mode);
+
+    if !use_relay {
+        let route_desc = if is_vpn_routed { "Direct (VPN routed)" } else { "Direct" };
+        registry.update_route(conn_id, RouteType::Direct, Some(route_desc.to_string()));
         return do_direct(stream, &target_addr, conn_id, &registry).await;
     }
 
-    // Proxied connections: relay-first, direct-fallback
-    // Try WSS relay first (handles throttling/blocking)
+    // Telegram traffic: relay-first with direct fallback
     if let Some(ref relay_conn) = relay {
         info!("Connection #{}: relay-first to {}", conn_id, target_addr);
         registry.update_route(conn_id, RouteType::Relay, Some("Via Cloudflare relay".to_string()));

@@ -5,7 +5,12 @@ pub fn greet(name: String) -> String {
 
 pub fn init_app() {
     use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::new(
+        "info,hydra_core::relay=debug,libp2p=warn,libp2p_noise=warn,libp2p_kad=warn,libp2p_gossipsub=warn,libp2p_swarm=warn,libp2p_dns=warn,libp2p_identify=warn,libp2p_mdns=warn,hickory=warn,rustls=warn,tungstenite=debug"
+    );
     let subscriber = tracing_subscriber::registry()
+        .with(filter)
         .with(crate::api::telemetry::FlutterLogLayer);
     let _ = tracing::subscriber::set_global_default(subscriber);
     
@@ -63,14 +68,13 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
     }
 
     if config.ai.model_path.exists() {
-        if let Err(e) = ai.load_model(config.ai.model_path.clone()).await {
-            tracing::error!("Failed to load AI model: {}", e);
-        } else {
-            tracing::info!("AI Model loaded successfully!");
-        }
+        tracing::info!(
+            "AI model available at {} — will load on first use (lazy) to conserve memory.",
+            config.ai.model_path.display()
+        );
     } else {
-        tracing::warn!(
-            "AI model not found: {}. Using heuristic routing.",
+        tracing::info!(
+            "AI model not found: {}. LLM features disabled until model is downloaded.",
             config.ai.model_path.display()
         );
     }
@@ -178,4 +182,65 @@ pub async fn set_proxy_mode(mode: String) -> anyhow::Result<()> {
         *m = mode;
     }
     Ok(())
+}
+
+/// Async LLM analysis of connection security/quality.
+/// Accepts a JSON description of connections, returns LLM text recommendation.
+/// Returns a fallback message if AI model is not loaded (instead of erroring).
+pub async fn analyze_connections(connections_json: String) -> anyhow::Result<String> {
+    let ai_guard = crate::api::model_manager::SHARED_AI.lock().await;
+    let ai = match ai_guard.as_ref() {
+        Some(a) => a,
+        None => return Ok("[OK] AI model not loaded. Download a model in Settings > AI Models for security analysis.".to_string()),
+    };
+    let mut infer_guard = ai.infer().lock().await;
+    let infer = match infer_guard.as_mut() {
+        Some(i) => i,
+        None => return Ok("[OK] AI model not loaded. Download a model in Settings > AI Models for security analysis.".to_string()),
+    };
+
+    let prompt = format!(
+        "<|im_start|>system\nYou are a network security analyst for a VPN/proxy app. \
+        Analyze the active connections and provide a brief security assessment. \
+        Focus on: suspicious destinations, unencrypted traffic (port 80), \
+        high-volume transfers, Telegram routing status. \
+        Be concise (2-4 sentences). Use [OK], [WARN], [ALERT] tags.\n<|im_end|>\n\
+        <|im_start|>user\nActive connections:\n{}\n<|im_end|>\n<|im_start|>assistant\n",
+        connections_json
+    );
+
+    match infer.generate(&prompt, 200) {
+        Ok(response) => Ok(response.trim().to_string()),
+        Err(e) => Err(anyhow::anyhow!("LLM analysis failed: {}", e)),
+    }
+}
+
+/// Async LLM analysis for a single host — security recommendation.
+/// Returns a fallback message if AI model is not loaded (instead of erroring).
+pub async fn analyze_host(host: String, port: u16, is_proxied: bool, bytes_total: u64) -> anyhow::Result<String> {
+    let ai_guard = crate::api::model_manager::SHARED_AI.lock().await;
+    let ai = match ai_guard.as_ref() {
+        Some(a) => a,
+        None => return Ok("[OK] AI not loaded".to_string()),
+    };
+    let mut infer_guard = ai.infer().lock().await;
+    let infer = match infer_guard.as_mut() {
+        Some(i) => i,
+        None => return Ok("[OK] AI not loaded".to_string()),
+    };
+
+    let proxy_status = if is_proxied { "proxied via relay" } else { "direct connection" };
+    let prompt = format!(
+        "<|im_start|>system\nYou are a network security advisor. \
+        Give a 1-sentence security note about this connection. \
+        Use [OK], [WARN] or [ALERT] prefix.\n<|im_end|>\n\
+        <|im_start|>user\nHost: {}:{}, Status: {}, Transferred: {} bytes\n<|im_end|>\n\
+        <|im_start|>assistant\n",
+        host, port, proxy_status, bytes_total
+    );
+
+    match infer.generate(&prompt, 100) {
+        Ok(response) => Ok(response.trim().to_string()),
+        Err(e) => Err(anyhow::anyhow!("LLM host analysis failed: {}", e)),
+    }
 }

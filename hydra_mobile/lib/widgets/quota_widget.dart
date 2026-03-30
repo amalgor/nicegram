@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:hydra_mobile/src/rust/api/quota.dart';
 
@@ -11,7 +12,8 @@ class QuotaWidget extends StatefulWidget {
 
 class _QuotaWidgetState extends State<QuotaWidget> {
   Timer? _refreshTimer;
-  QuotaInfo? _quota;
+  int _used = 0;
+  int _limit = 0;
 
   @override
   void initState() {
@@ -26,11 +28,15 @@ class _QuotaWidgetState extends State<QuotaWidget> {
     super.dispose();
   }
 
-  void _refreshQuota() {
+  void _refreshQuota() async {
     try {
-      final q = getQuotaStatus();
+      final json = await getQuotaStatus();
+      final data = jsonDecode(json) as Map<String, dynamic>;
       if (mounted) {
-        setState(() { _quota = q; });
+        setState(() {
+          _used = (data['used'] as num?)?.toInt() ?? 0;
+          _limit = (data['limit'] as num?)?.toInt() ?? 0;
+        });
       }
     } catch (e) {
       debugPrint("Quota refresh error: $e");
@@ -39,11 +45,9 @@ class _QuotaWidgetState extends State<QuotaWidget> {
 
   @override
   Widget build(BuildContext context) {
-    if (_quota == null) return const SizedBox.shrink();
+    if (_limit == 0) return const SizedBox.shrink();
 
-    final used = _quota!.used;
-    final limit = _quota!.limit;
-    final fraction = limit > 0 ? (used / limit).clamp(0.0, 1.0) : 0.0;
+    final fraction = (_used / _limit).clamp(0.0, 1.0);
 
     Color progressColor;
     if (fraction < 0.6) {
@@ -54,8 +58,8 @@ class _QuotaWidgetState extends State<QuotaWidget> {
       progressColor = Colors.red;
     }
 
-    final usedMb = (used / (1024 * 1024)).toStringAsFixed(1);
-    final limitMb = (limit / (1024 * 1024)).toStringAsFixed(0);
+    final usedMb = (_used / (1024 * 1024)).toStringAsFixed(1);
+    final limitMb = (_limit / (1024 * 1024)).toStringAsFixed(0);
 
     return Column(
       children: [
