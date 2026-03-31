@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:hydra_mobile/src/rust/api/simple.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -9,7 +9,8 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAliveClientMixin {
+class _SettingsScreenState extends State<SettingsScreen>
+    with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
 
@@ -36,9 +37,11 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
   Future<void> _saveProxyMode(String mode) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('proxy_mode', mode);
-    setState(() { _proxyMode = mode; });
+    setState(() {
+      _proxyMode = mode;
+    });
     try {
-      await setProxyMode(mode: mode);
+      await HydraPlatformGateway.instance.setProxyMode(mode: mode);
     } catch (e) {
       debugPrint("Failed to set proxy mode in Rust: $e");
     }
@@ -47,7 +50,9 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
   Future<void> _toggleCrypto(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('crypto_enabled', value);
-    setState(() { _cryptoEnabled = value; });
+    setState(() {
+      _cryptoEnabled = value;
+    });
   }
 
   @override
@@ -60,12 +65,26 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
         const SizedBox(height: 8),
         RadioGroup<String>(
           groupValue: _proxyMode,
-          onChanged: (v) { if (v != null) _saveProxyMode(v); },
+          onChanged: (v) {
+            if (v != null) _saveProxyMode(v);
+          },
           child: Column(
             children: [
-              _buildProxyModeRadio('off', 'Off', 'No proxying, direct connections only'),
-              _buildProxyModeRadio('telegram', 'Telegram Only', 'Route only Telegram traffic through relay (default)'),
-              _buildProxyModeRadio('full', 'Full VPN', 'Route all traffic through Hydra network'),
+              _buildProxyModeRadio(
+                'off',
+                'Off',
+                'No proxying, direct connections only',
+              ),
+              _buildProxyModeRadio(
+                'telegram',
+                'Telegram Only',
+                'Route only Telegram traffic through relay (default)',
+              ),
+              _buildProxyModeRadio(
+                'full',
+                'Full VPN',
+                'Route all traffic through Hydra network',
+              ),
             ],
           ),
         ),
@@ -84,16 +103,28 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
             ),
           )
         else
-          ...(_relayEndpoints.map((ep) => Card(
-            child: ListTile(
-              leading: const Icon(Icons.cloud_outlined),
-              title: Text(ep, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
-              trailing: const Icon(Icons.check_circle, color: Colors.green, size: 16),
+          ...(_relayEndpoints.map(
+            (ep) => Card(
+              child: ListTile(
+                leading: const Icon(Icons.cloud_outlined),
+                title: Text(
+                  ep,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                ),
+                trailing: const Icon(
+                  Icons.check_circle,
+                  color: Colors.green,
+                  size: 16,
+                ),
+              ),
             ),
-          ))),
+          )),
 
         const Divider(height: 32),
-        Text('Crypto Settlement', style: Theme.of(context).textTheme.titleLarge),
+        Text(
+          'Crypto Settlement',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
         const SizedBox(height: 8),
         SwitchListTile(
           title: const Text('Enable USDC Settlement'),
@@ -108,7 +139,10 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Wallet Status', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text(
+                    'Wallet Status',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
                   SizedBox(height: 8),
                   Text('Chain: Arbitrum Sepolia'),
                   Text('Balance: -- USDC (testnet)'),
@@ -132,11 +166,17 @@ class _SettingsScreenState extends State<SettingsScreen> with AutomaticKeepAlive
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Hydra Network', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(
+                  'Hydra Network',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
                 SizedBox(height: 4),
                 Text('Personal AI Agent with resilient connectivity'),
                 SizedBox(height: 8),
-                Text('Version: 0.2.0-mvp', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                Text(
+                  'Version: 0.2.0-mvp',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
               ],
             ),
           ),

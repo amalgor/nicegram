@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:hydra_mobile/src/rust/api/quota.dart';
+import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
 
 class QuotaWidget extends StatefulWidget {
   const QuotaWidget({super.key});
@@ -19,7 +19,10 @@ class _QuotaWidgetState extends State<QuotaWidget> {
   void initState() {
     super.initState();
     _refreshQuota();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _refreshQuota());
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _refreshQuota(),
+    );
   }
 
   @override
@@ -30,7 +33,7 @@ class _QuotaWidgetState extends State<QuotaWidget> {
 
   void _refreshQuota() async {
     try {
-      final json = await getQuotaStatus();
+      final json = await HydraPlatformGateway.instance.getQuotaStatus();
       final data = jsonDecode(json) as Map<String, dynamic>;
       if (mounted) {
         setState(() {

@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use lazy_static::lazy_static;
-use hydra_content::ContentEngine;
 use hydra_content::models::{AttentionEvent, InteractionType};
 use hydra_content::telegram::client::AuthState;
+use hydra_content::ContentEngine;
+use lazy_static::lazy_static;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 lazy_static! {
     static ref CONTENT_ENGINE: Arc<Mutex<Option<ContentEngine>>> = Arc::new(Mutex::new(None));
@@ -18,7 +18,9 @@ pub async fn init_content_engine(base_dir: String) -> anyhow::Result<()> {
     let ai = {
         let guard = crate::api::model_manager::SHARED_AI.lock().await;
         guard.as_ref().cloned().ok_or_else(|| {
-            anyhow::anyhow!("Hydra node not started yet. Start the node before initializing content engine.")
+            anyhow::anyhow!(
+                "Hydra node not started yet. Start the node before initializing content engine."
+            )
         })?
     };
 
@@ -44,9 +46,9 @@ pub async fn telegram_connect() -> anyhow::Result<String> {
 /// Send phone number for Telegram login. Returns auth state.
 pub async fn telegram_send_phone(phone: String) -> anyhow::Result<String> {
     let mut guard = CONTENT_ENGINE.lock().await;
-    let engine = guard.as_mut().ok_or_else(|| {
-        anyhow::anyhow!("Content engine not initialized.")
-    })?;
+    let engine = guard
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("Content engine not initialized."))?;
 
     engine.tg_client.send_phone(&phone).await?;
     Ok(auth_state_to_string(engine.tg_client.state()))
@@ -55,9 +57,9 @@ pub async fn telegram_send_phone(phone: String) -> anyhow::Result<String> {
 /// Send login code for Telegram auth. Returns auth state.
 pub async fn telegram_send_code(code: String) -> anyhow::Result<String> {
     let mut guard = CONTENT_ENGINE.lock().await;
-    let engine = guard.as_mut().ok_or_else(|| {
-        anyhow::anyhow!("Content engine not initialized.")
-    })?;
+    let engine = guard
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("Content engine not initialized."))?;
 
     engine.tg_client.send_code(&code).await?;
     Ok(auth_state_to_string(engine.tg_client.state()))
@@ -66,9 +68,9 @@ pub async fn telegram_send_code(code: String) -> anyhow::Result<String> {
 /// Send 2FA password. Returns auth state.
 pub async fn telegram_send_password(password: String) -> anyhow::Result<String> {
     let mut guard = CONTENT_ENGINE.lock().await;
-    let engine = guard.as_mut().ok_or_else(|| {
-        anyhow::anyhow!("Content engine not initialized.")
-    })?;
+    let engine = guard
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("Content engine not initialized."))?;
 
     engine.tg_client.send_password(&password).await?;
     Ok(auth_state_to_string(engine.tg_client.state()))
@@ -77,9 +79,9 @@ pub async fn telegram_send_password(password: String) -> anyhow::Result<String> 
 /// Get Telegram auth state as a string.
 pub async fn telegram_auth_state() -> anyhow::Result<String> {
     let guard = CONTENT_ENGINE.lock().await;
-    let engine = guard.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("Content engine not initialized.")
-    })?;
+    let engine = guard
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Content engine not initialized."))?;
     Ok(auth_state_to_string(engine.tg_client.state()))
 }
 
@@ -87,13 +89,14 @@ pub async fn telegram_auth_state() -> anyhow::Result<String> {
 /// Returns JSON array of TrackedChat objects.
 pub async fn telegram_get_dialogs() -> anyhow::Result<String> {
     let guard = CONTENT_ENGINE.lock().await;
-    let engine = guard.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("Content engine not initialized.")
-    })?;
+    let engine = guard
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Content engine not initialized."))?;
 
-    let client = engine.tg_client.client().ok_or_else(|| {
-        anyhow::anyhow!("Telegram not connected.")
-    })?;
+    let client = engine
+        .tg_client
+        .client()
+        .ok_or_else(|| anyhow::anyhow!("Telegram not connected."))?;
 
     let dialogs = engine.handler.get_dialogs(client).await?;
     Ok(serde_json::to_string(&dialogs)?)
@@ -109,9 +112,9 @@ pub async fn record_attention(
     interaction: String,
 ) -> anyhow::Result<()> {
     let guard = CONTENT_ENGINE.lock().await;
-    let engine = guard.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("Content engine not initialized.")
-    })?;
+    let engine = guard
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Content engine not initialized."))?;
 
     let interaction_type = match interaction.as_str() {
         "skim" => InteractionType::Skim,
@@ -136,9 +139,9 @@ pub async fn record_attention(
 /// Get attention statistics for a chat. Returns JSON.
 pub async fn get_chat_attention_stats(chat_id: i64) -> anyhow::Result<String> {
     let guard = CONTENT_ENGINE.lock().await;
-    let engine = guard.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("Content engine not initialized.")
-    })?;
+    let engine = guard
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Content engine not initialized."))?;
 
     let stats = engine.tracker.get_chat_stats(chat_id)?;
     Ok(serde_json::to_string(&stats)?)
@@ -148,13 +151,14 @@ pub async fn get_chat_attention_stats(chat_id: i64) -> anyhow::Result<String> {
 /// Returns JSON array of ProcessedMessage with fold levels.
 pub async fn fetch_channel_messages(chat_id: i64, limit: i32) -> anyhow::Result<String> {
     let guard = CONTENT_ENGINE.lock().await;
-    let engine = guard.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("Content engine not initialized.")
-    })?;
+    let engine = guard
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Content engine not initialized."))?;
 
-    let client = engine.tg_client.client().ok_or_else(|| {
-        anyhow::anyhow!("Telegram not connected.")
-    })?;
+    let client = engine
+        .tg_client
+        .client()
+        .ok_or_else(|| anyhow::anyhow!("Telegram not connected."))?;
 
     // Resolve chat_id to a PeerRef by iterating dialogs
     let mut dialogs = client.iter_dialogs();
@@ -175,16 +179,13 @@ pub async fn fetch_channel_messages(chat_id: i64, limit: i32) -> anyhow::Result<
         }
     }
 
-    let peer_ref = target_peer.ok_or_else(|| {
-        anyhow::anyhow!("Chat with id {} not found in dialogs", chat_id)
-    })?;
+    let peer_ref = target_peer
+        .ok_or_else(|| anyhow::anyhow!("Chat with id {} not found in dialogs", chat_id))?;
 
-    let messages = engine.handler.fetch_and_process(
-        client,
-        peer_ref,
-        &target_title,
-        limit.max(1) as usize,
-    ).await?;
+    let messages = engine
+        .handler
+        .fetch_and_process(client, peer_ref, &target_title, limit.max(1) as usize)
+        .await?;
 
     Ok(serde_json::to_string(&messages)?)
 }
@@ -217,9 +218,9 @@ pub fn get_message_fold_content(content_tree_json: String, level: u8) -> anyhow:
 /// Disconnect from Telegram.
 pub async fn telegram_disconnect() -> anyhow::Result<()> {
     let mut guard = CONTENT_ENGINE.lock().await;
-    let engine = guard.as_mut().ok_or_else(|| {
-        anyhow::anyhow!("Content engine not initialized.")
-    })?;
+    let engine = guard
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("Content engine not initialized."))?;
 
     engine.tg_client.disconnect();
     Ok(())

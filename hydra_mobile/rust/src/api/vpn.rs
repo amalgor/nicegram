@@ -1,8 +1,8 @@
 use flutter_rust_bridge::frb;
-use tun2proxy::{Args, ArgProxy, ArgDns, ArgVerbosity, CancellationToken, general_run_async};
 use lazy_static::lazy_static;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::{Arc, Mutex};
+use tun2proxy::{general_run_async, ArgDns, ArgProxy, ArgVerbosity, Args, CancellationToken};
 
 /// Stores the actual SOCKS5 port loaded from config at node startup.
 /// Set by start_hydra_node(), read by start_vpn_tunnel().
@@ -16,7 +16,7 @@ lazy_static! {
 pub fn start_vpn_tunnel(fd: i32) -> anyhow::Result<()> {
     tracing::info!("Received VPN interface FD: {}", fd);
     tracing::info!("Initializing tun2proxy with SOCKS5 bridge...");
-    
+
     let port = SOCKS5_PORT.load(Ordering::Relaxed);
     let proxy_addr = format!("socks5://127.0.0.1:{}", port);
     tracing::info!("tun2proxy will connect to SOCKS5 at 127.0.0.1:{}", port);
@@ -32,7 +32,9 @@ pub fn start_vpn_tunnel(fd: i32) -> anyhow::Result<()> {
     let token_clone = shutdown_token.clone();
 
     {
-        let mut guard = VPN_CANCEL_TOKEN.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let mut guard = VPN_CANCEL_TOKEN
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         *guard = Some(token_clone);
     }
 
@@ -54,8 +56,10 @@ pub fn start_vpn_tunnel(fd: i32) -> anyhow::Result<()> {
 #[frb(sync)]
 pub fn stop_vpn_tunnel() -> anyhow::Result<()> {
     tracing::info!("Stopping VPN tunnel...");
-    
-    let mut guard = VPN_CANCEL_TOKEN.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+
+    let mut guard = VPN_CANCEL_TOKEN
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
     if let Some(token) = guard.take() {
         token.cancel();
         tracing::info!("Sent cancellation signal to tun2proxy.");

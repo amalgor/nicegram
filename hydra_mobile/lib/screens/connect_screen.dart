@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
 import 'package:hydra_mobile/src/rust/api/simple.dart';
 import 'package:hydra_mobile/src/rust/api/vpn.dart';
 import 'package:hydra_mobile/widgets/quota_widget.dart';
@@ -15,11 +16,11 @@ class ConnectScreen extends StatefulWidget {
   State<ConnectScreen> createState() => _ConnectScreenState();
 }
 
-class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveClientMixin {
+class _ConnectScreenState extends State<ConnectScreen>
+    with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
 
-  static const platform = MethodChannel('com.hydra.network/vpn');
   Map<String, dynamic>? _stats;
   Timer? _statsTimer;
   Duration _uptime = Duration.zero;
@@ -32,16 +33,13 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
   @override
   void initState() {
     super.initState();
-    platform.setMethodCallHandler((call) async {
-      if (call.method == 'onVpnStarted') {
-        final fd = call.arguments as int;
-        if (fd != -1) {
-          try {
-            startVpnTunnel(fd: fd);
-            debugPrint("Rust VPN tunnel started on FD: $fd");
-          } catch (e) {
-            debugPrint("Failed to start Rust VPN tunnel: $e");
-          }
+    HydraPlatformGateway.instance.bindVpnFdHandler((fd) async {
+      if (Platform.isAndroid && fd != -1) {
+        try {
+          startVpnTunnel(fd: fd);
+          debugPrint("Rust VPN tunnel started on FD: $fd");
+        } catch (e) {
+          debugPrint("Failed to start Rust VPN tunnel: $e");
         }
       }
     });
@@ -49,7 +47,28 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
       _refreshStats();
       _updateUptime();
     });
+    _syncVpnStatus();
     _autoStartVpn();
+  }
+
+  Future<void> _syncVpnStatus() async {
+    try {
+      final active = await HydraPlatformGateway.instance.getVpnActive();
+      if (!mounted) return;
+      setState(() {
+        gIsVpnActive = active;
+        if (active && _connectedAt == null) {
+          _connectedAt = DateTime.now();
+        }
+      });
+      if (active) {
+        _llmTimer ??= Timer.periodic(
+          const Duration(seconds: 30),
+          (_) => _requestLlmAnalysis(),
+        );
+        _refreshStats();
+      }
+    } catch (_) {}
   }
 
   Future<void> _autoStartVpn() async {
@@ -58,17 +77,18 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
     if (gIsVpnActive) return;
     debugPrint("Auto-starting VPN...");
     try {
-      final bool? result = await platform.invokeMethod('startVpn');
-      if (result == true && mounted) {
+      final result = await HydraPlatformGateway.instance.startVpn();
+      if (result && mounted) {
         setState(() {
           gIsVpnActive = true;
           _connectedAt = DateTime.now();
         });
-        _llmTimer = Timer.periodic(const Duration(seconds: 30), (_) => _requestLlmAnalysis());
+        _llmTimer = Timer.periodic(
+          const Duration(seconds: 30),
+          (_) => _requestLlmAnalysis(),
+        );
         Future.delayed(const Duration(seconds: 5), _requestLlmAnalysis);
       }
-    } on PlatformException catch (e) {
-      debugPrint("VPN auto-start failed (may need user consent): ${e.message}");
     } catch (e) {
       debugPrint("VPN auto-start error: $e");
     }
@@ -83,25 +103,39 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
 
   void _updateUptime() {
     if (_connectedAt != null && gIsVpnActive && mounted) {
-      setState(() { _uptime = DateTime.now().difference(_connectedAt!); });
+      setState(() {
+        _uptime = DateTime.now().difference(_connectedAt!);
+      });
     }
   }
 
   Future<void> _refreshStats() async {
     if (!gIsVpnActive) return;
     try {
-      final json = await getConnectionStats();
-      if (mounted) setState(() { _stats = jsonDecode(json) as Map<String, dynamic>; });
+      final json = await HydraPlatformGateway.instance.getConnectionStats();
+      if (mounted) {
+        setState(() {
+          _stats = jsonDecode(json) as Map<String, dynamic>;
+        });
+      }
     } catch (_) {}
   }
 
   Future<void> _requestLlmAnalysis() async {
     if (_llmLoading) return;
-    setState(() { _llmLoading = true; });
+    setState(() {
+      _llmLoading = true;
+    });
     try {
-      final connsJson = await getActiveConnections();
+      final connsJson = await HydraPlatformGateway.instance
+          .getActiveConnections();
       final result = await analyzeConnections(connectionsJson: connsJson);
-      if (mounted) setState(() { _llmAnalysis = result; _llmLoading = false; });
+      if (mounted) {
+        setState(() {
+          _llmAnalysis = result;
+          _llmLoading = false;
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -115,9 +149,12 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
   void _toggleVpn() async {
     try {
       if (gIsVpnActive) {
-        await platform.invokeMethod('stopVpn');
-        stopVpnTunnel();
+        await HydraPlatformGateway.instance.stopVpn();
+        if (Platform.isAndroid) {
+          stopVpnTunnel();
+        }
         _llmTimer?.cancel();
+        _llmTimer = null;
         setState(() {
           gIsVpnActive = false;
           _stats = null;
@@ -126,23 +163,24 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
           _llmAnalysis = null;
         });
       } else {
-        final bool? result = await platform.invokeMethod('startVpn');
-        if (result == true) {
+        final result = await HydraPlatformGateway.instance.startVpn();
+        if (result) {
           setState(() {
             gIsVpnActive = true;
             _connectedAt = DateTime.now();
           });
-          _llmTimer = Timer.periodic(const Duration(seconds: 30), (_) => _requestLlmAnalysis());
+          _llmTimer = Timer.periodic(
+            const Duration(seconds: 30),
+            (_) => _requestLlmAnalysis(),
+          );
           Future.delayed(const Duration(seconds: 5), _requestLlmAnalysis);
         }
       }
-    } on PlatformException catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('VPN Error: ${e.message}')));
-      }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: $e')));
       }
     }
   }
@@ -167,14 +205,19 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
               ),
               if (gIsVpnActive && _uptime.inSeconds > 0) ...[
                 const SizedBox(height: 4),
-                Text(_fmtDuration(_uptime),
-                     style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                Text(
+                  _fmtDuration(_uptime),
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
               ],
               if (!gIsVpnActive)
                 const Padding(
                   padding: EdgeInsets.only(top: 8),
-                  child: Text('Tap to start Hydra network.', textAlign: TextAlign.center,
-                       style: TextStyle(color: Colors.grey)),
+                  child: Text(
+                    'Tap to start Hydra network.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.grey),
+                  ),
                 ),
               if (gIsVpnActive) ...[
                 const SizedBox(height: 20),
@@ -206,14 +249,20 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
               ? Colors.green.withValues(alpha: 0.15)
               : Theme.of(context).colorScheme.primaryContainer,
           border: Border.all(
-            color: gIsVpnActive ? Colors.green.withValues(alpha: 0.4) : Colors.transparent,
+            color: gIsVpnActive
+                ? Colors.green.withValues(alpha: 0.4)
+                : Colors.transparent,
             width: 3,
           ),
         ),
         child: Icon(
-          gIsVpnActive ? Icons.power_settings_new : Icons.power_settings_new_outlined,
+          gIsVpnActive
+              ? Icons.power_settings_new
+              : Icons.power_settings_new_outlined,
           size: 80,
-          color: gIsVpnActive ? Colors.green : Theme.of(context).colorScheme.onPrimaryContainer,
+          color: gIsVpnActive
+              ? Colors.green
+              : Theme.of(context).colorScheme.onPrimaryContainer,
         ),
       ),
     );
@@ -236,7 +285,12 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
     );
   }
 
-  Widget _buildStatCard(String value, String label, Color color, IconData icon) {
+  Widget _buildStatCard(
+    String value,
+    String label,
+    Color color,
+    IconData icon,
+  ) {
     return Column(
       children: [
         Container(
@@ -251,9 +305,14 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
             children: [
               Icon(icon, size: 14, color: color),
               const SizedBox(height: 2),
-              Text(value, style: TextStyle(
-                fontSize: 16, fontWeight: FontWeight.bold, color: color,
-              )),
+              Text(
+                value,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+              ),
             ],
           ),
         ),
@@ -280,13 +339,22 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
             children: [
               const Icon(Icons.arrow_upward, size: 14, color: Colors.teal),
               const SizedBox(width: 4),
-              Text(_fmtBytes(up as int), style: const TextStyle(fontSize: 13, color: Colors.teal)),
+              Text(
+                _fmtBytes(up as int),
+                style: const TextStyle(fontSize: 13, color: Colors.teal),
+              ),
             ],
           ),
-          const Text('Traffic', style: TextStyle(fontSize: 11, color: Colors.grey)),
+          const Text(
+            'Traffic',
+            style: TextStyle(fontSize: 11, color: Colors.grey),
+          ),
           Row(
             children: [
-              Text(_fmtBytes(down as int), style: const TextStyle(fontSize: 13, color: Colors.purple)),
+              Text(
+                _fmtBytes(down as int),
+                style: const TextStyle(fontSize: 13, color: Colors.purple),
+              ),
               const SizedBox(width: 4),
               const Icon(Icons.arrow_downward, size: 14, color: Colors.purple),
             ],
@@ -306,15 +374,26 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
             Row(
               children: [
                 Icon(
-                  _llmAnalysis != null ? _llmIcon(_llmAnalysis!) : Icons.smart_toy,
+                  _llmAnalysis != null
+                      ? _llmIcon(_llmAnalysis!)
+                      : Icons.smart_toy,
                   size: 16,
-                  color: _llmAnalysis != null ? _llmColor(_llmAnalysis!) : Colors.grey,
+                  color: _llmAnalysis != null
+                      ? _llmColor(_llmAnalysis!)
+                      : Colors.grey,
                 ),
                 const SizedBox(width: 6),
-                const Text('Security Analysis', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                const Text(
+                  'Security Analysis',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                ),
                 const Spacer(),
                 if (_llmLoading)
-                  const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5))
+                  const SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  )
                 else
                   IconButton(
                     icon: const Icon(Icons.refresh, size: 16),
@@ -331,9 +410,15 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
                 style: TextStyle(fontSize: 12, color: _llmColor(_llmAnalysis!)),
               )
             else if (_llmLoading)
-              const Text('Analyzing connections...', style: TextStyle(fontSize: 12, color: Colors.grey))
+              const Text(
+                'Analyzing connections...',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              )
             else
-              const Text('Tap refresh for AI security analysis.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const Text(
+                'Tap refresh for AI security analysis.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
           ],
         ),
       ),
@@ -355,7 +440,9 @@ class _ConnectScreenState extends State<ConnectScreen> with AutomaticKeepAliveCl
   String _fmtBytes(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 

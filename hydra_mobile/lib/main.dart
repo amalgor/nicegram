@@ -2,11 +2,10 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:hydra_mobile/src/rust/api/telemetry.dart';
-import 'package:hydra_mobile/src/rust/api/model_manager.dart';
 import 'package:hydra_mobile/src/rust/api/simple.dart';
+import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
+import 'package:hydra_mobile/src/rust/api/model_manager.dart';
 import 'package:hydra_mobile/src/rust/frb_generated.dart';
 import 'package:hydra_mobile/screens/connect_screen.dart';
 import 'package:hydra_mobile/screens/connections_screen.dart';
@@ -16,7 +15,8 @@ import 'package:hydra_mobile/screens/settings_screen.dart';
 import 'package:hydra_mobile/screens/logs_screen.dart';
 
 final List<String> gNetworkLogs = [];
-final StreamController<List<String>> gLogStreamController = StreamController<List<String>>.broadcast();
+final StreamController<List<String>> gLogStreamController =
+    StreamController<List<String>>.broadcast();
 
 String _ts() {
   final n = DateTime.now();
@@ -29,16 +29,14 @@ String _ts() {
 void _initGlobalLogStream() async {
   debugPrint("Starting global log stream initialization...");
   try {
-    final stream = createLogStream();
-    debugPrint("Stream created successfully. Awaiting events...");
-    await for (final log in stream) {
+    await HydraPlatformGateway.instance.bindLogs((log) {
       debugPrint("Received log from rust: $log");
       gNetworkLogs.add('${_ts()} $log');
       if (gNetworkLogs.length > 10000) {
         gNetworkLogs.removeAt(0);
       }
       gLogStreamController.add(gNetworkLogs);
-    }
+    });
   } catch (e) {
     debugPrint("Log stream init error: $e");
   }
@@ -48,14 +46,16 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await RustLib.init();
   await initApp();
+  await HydraPlatformGateway.instance.initialize();
 
   _initGlobalLogStream();
 
   try {
-    final dir = await getApplicationDocumentsDirectory();
-    initModelManager(baseDir: dir.path);
+    final baseDir = await HydraPlatformGateway.instance.resolveBaseDir();
+    await prepareLocalRuntime(baseDir: baseDir);
+    initModelManager(baseDir: baseDir);
 
-    final modelsDir = Directory('${dir.path}/models');
+    final modelsDir = Directory('$baseDir/models');
     if (!await modelsDir.exists()) {
       await modelsDir.create(recursive: true);
     }
@@ -65,25 +65,31 @@ Future<void> main() async {
     if (!await modelFile.exists() || await modelFile.length() < 1024) {
       debugPrint("Extracting bundled Qwen 2.5 0.5B model from assets...");
       final byteData = await rootBundle.load('assets/models/qwen2.5-0.5b.gguf');
-      await modelFile.writeAsBytes(byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes));
+      await modelFile.writeAsBytes(
+        byteData.buffer.asUint8List(
+          byteData.offsetInBytes,
+          byteData.lengthInBytes,
+        ),
+      );
       debugPrint("Model extracted successfully.");
     }
 
-    // Start Hydra node early so SOCKS5 proxy is ready before VPN toggle
-    startHydraNode(baseDir: dir.path).then((_) async {
-      debugPrint("Hydra node started successfully.");
-      // Apply saved proxy mode from SharedPreferences
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        final mode = prefs.getString('proxy_mode') ?? 'telegram';
-        await setProxyMode(mode: mode);
-        debugPrint("Applied saved proxy mode: $mode");
-      } catch (e) {
-        debugPrint("Failed to apply saved proxy mode: $e");
-      }
-    }).catchError((e) {
-      debugPrint("Hydra node start error: $e");
-    });
+    HydraPlatformGateway.instance
+        .startNetworkRuntime(baseDir: baseDir)
+        .then((_) async {
+          debugPrint("Hydra network runtime prepared successfully.");
+          try {
+            final prefs = await SharedPreferences.getInstance();
+            final mode = prefs.getString('proxy_mode') ?? 'telegram';
+            await HydraPlatformGateway.instance.setProxyMode(mode: mode);
+            debugPrint("Applied saved proxy mode: $mode");
+          } catch (e) {
+            debugPrint("Failed to apply saved proxy mode: $e");
+          }
+        })
+        .catchError((e) {
+          debugPrint("Hydra network runtime error: $e");
+        });
   } catch (e) {
     debugPrint("Init error: $e");
   }
@@ -92,7 +98,9 @@ Future<void> main() async {
 }
 
 class HydraApp extends StatelessWidget {
-  const HydraApp({super.key});
+  const HydraApp({super.key, this.home});
+
+  final Widget? home;
 
   @override
   Widget build(BuildContext context) {
@@ -104,7 +112,7 @@ class HydraApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
       ),
-      home: const MainScreen(),
+      home: home ?? const MainScreen(),
     );
   }
 }
@@ -131,21 +139,20 @@ class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Hydra P2P Node'),
-        centerTitle: true,
-      ),
-      body: IndexedStack(
-        index: _currentIndex,
-        children: _screens,
-      ),
+      appBar: AppBar(title: const Text('Hydra P2P Node'), centerTitle: true),
+      body: IndexedStack(index: _currentIndex, children: _screens),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) {
-          setState(() { _currentIndex = index; });
+          setState(() {
+            _currentIndex = index;
+          });
         },
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.power_settings_new), label: 'Connect'),
+          NavigationDestination(
+            icon: Icon(Icons.power_settings_new),
+            label: 'Connect',
+          ),
           NavigationDestination(icon: Icon(Icons.swap_vert), label: 'Network'),
           NavigationDestination(icon: Icon(Icons.smart_toy), label: 'AI'),
           NavigationDestination(icon: Icon(Icons.article), label: 'Content'),

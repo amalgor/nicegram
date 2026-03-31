@@ -1,10 +1,10 @@
-use std::path::PathBuf;
-use reqwest::Client;
-use tokio::io::AsyncWriteExt;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use flutter_rust_bridge::frb;
 use hydra_ai::AiNegotiator;
+use reqwest::Client;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 
 #[derive(Clone, Debug)]
 pub struct ModelInfo {
@@ -29,14 +29,15 @@ lazy_static::lazy_static! {
 
 #[frb(sync)]
 pub fn init_model_manager(base_dir: String) -> anyhow::Result<()> {
+    crate::api::shared_state::init_shared_base_dir(&base_dir)?;
     let models_dir = PathBuf::from(&base_dir).join("models");
     std::fs::create_dir_all(&models_dir)?;
-    
+
     let manager = ModelManager {
         client: Client::new(),
         models_dir,
     };
-    
+
     let mut m = MANAGER.blocking_lock();
     *m = Some(manager);
     Ok(())
@@ -45,7 +46,7 @@ pub fn init_model_manager(base_dir: String) -> anyhow::Result<()> {
 pub async fn get_available_models() -> anyhow::Result<Vec<ModelInfo>> {
     let m = MANAGER.lock().await;
     let manager = m.as_ref().expect("ModelManager not initialized");
-    
+
     let mut models = vec![
         ModelInfo {
             id: "qwen2.5-0.5b".to_string(),
@@ -93,30 +94,38 @@ pub async fn download_model(id: String, progress: StreamSink<f64>) -> anyhow::Re
     };
 
     let models = get_available_models().await?;
-    let model = models.into_iter().find(|m| m.id == id).ok_or_else(|| anyhow::anyhow!("Model not found"))?;
-    
+    let model = models
+        .into_iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| anyhow::anyhow!("Model not found"))?;
+
     let path = models_dir.join(format!("{}.gguf", model.id));
     let mut file = tokio::fs::File::create(&path).await?;
-    
+
     let mut res = client.get(&model.download_url).send().await?;
-    let total_size = res.content_length().unwrap_or(model.size_mb as u64 * 1024 * 1024);
-    
+    let total_size = res
+        .content_length()
+        .unwrap_or(model.size_mb as u64 * 1024 * 1024);
+
     let mut downloaded: u64 = 0;
     while let Some(chunk) = res.chunk().await? {
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
         let _ = progress.add((downloaded as f64 / total_size as f64) * 100.0);
     }
-    
+
     Ok(())
 }
 
 pub async fn set_active_model(id: String) -> anyhow::Result<()> {
     let models_dir = {
         let m = MANAGER.lock().await;
-        m.as_ref().expect("ModelManager not initialized. Call init_model_manager first.").models_dir.clone()
+        m.as_ref()
+            .expect("ModelManager not initialized. Call init_model_manager first.")
+            .models_dir
+            .clone()
     };
-    
+
     let model_path = models_dir.join(format!("{}.gguf", id));
     if !model_path.exists() {
         return Err(anyhow::anyhow!(

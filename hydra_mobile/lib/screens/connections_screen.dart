@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
 import 'package:hydra_mobile/src/rust/api/simple.dart';
 import 'package:hydra_mobile/widgets/connection_tile.dart';
 
@@ -14,7 +15,11 @@ class _AppGroup {
   String? llmComment;
   bool llmLoading = false;
 
-  _AppGroup({required this.appDomain, required this.connections, required this.isProxied}) {
+  _AppGroup({
+    required this.appDomain,
+    required this.connections,
+    required this.isProxied,
+  }) {
     for (final c in connections) {
       totalBytesUp += c.bytesUp;
       totalBytesDown += c.bytesDown;
@@ -40,7 +45,8 @@ class ConnectionsScreen extends StatefulWidget {
   State<ConnectionsScreen> createState() => _ConnectionsScreenState();
 }
 
-class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKeepAliveClientMixin {
+class _ConnectionsScreenState extends State<ConnectionsScreen>
+    with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
 
@@ -55,7 +61,10 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
   void initState() {
     super.initState();
     _refresh();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 2), (_) => _refresh());
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => _refresh(),
+    );
   }
 
   @override
@@ -66,19 +75,32 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
 
   Future<void> _refresh() async {
     try {
-      final connsJson = await getActiveConnections();
-      final statsJson = await getConnectionStats();
+      final connsJson = await HydraPlatformGateway.instance
+          .getActiveConnections();
+      final statsJson = await HydraPlatformGateway.instance
+          .getConnectionStats();
       final conns = (jsonDecode(connsJson) as List<dynamic>)
           .map((e) => ConnectionData.fromJson(e as Map<String, dynamic>))
           .toList();
       final stats = jsonDecode(statsJson) as Map<String, dynamic>;
-      if (mounted) setState(() { _connections = conns; _stats = stats; });
+      if (mounted) {
+        setState(() {
+          _connections = conns;
+          _stats = stats;
+        });
+      }
     } catch (_) {}
   }
 
-  Future<void> _requestLlmComment(String domain, bool isProxied, int totalBytes) async {
+  Future<void> _requestLlmComment(
+    String domain,
+    bool isProxied,
+    int totalBytes,
+  ) async {
     if (_llmLoading.contains(domain) || _llmCache.containsKey(domain)) return;
-    setState(() { _llmLoading.add(domain); });
+    setState(() {
+      _llmLoading.add(domain);
+    });
     try {
       final result = await analyzeHost(
         host: domain,
@@ -93,7 +115,11 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
         });
       }
     } catch (_) {
-      if (mounted) setState(() { _llmLoading.remove(domain); });
+      if (mounted) {
+        setState(() {
+          _llmLoading.remove(domain);
+        });
+      }
     }
   }
 
@@ -118,7 +144,11 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
 
     final groups = grouped.entries.map((e) {
       final isProxied = e.value.any((c) => c.isProxied);
-      return _AppGroup(appDomain: e.key, connections: e.value, isProxied: isProxied);
+      return _AppGroup(
+        appDomain: e.key,
+        connections: e.value,
+        isProxied: isProxied,
+      );
     }).toList();
 
     groups.sort((a, b) {
@@ -141,12 +171,17 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
           child: Row(
             children: [
-              Text('${groups.length} apps', style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                '${groups.length} apps',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
               const Spacer(),
               Text('Closed', style: Theme.of(context).textTheme.bodySmall),
               Switch(
                 value: _showClosed,
-                onChanged: (v) => setState(() { _showClosed = v; }),
+                onChanged: (v) => setState(() {
+                  _showClosed = v;
+                }),
               ),
             ],
           ),
@@ -214,8 +249,10 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
               ),
             ),
             const SizedBox(width: 4),
-            _badge(group.isProxied ? 'RELAY' : 'DIRECT',
-                   group.isProxied ? Colors.blue : Colors.grey),
+            _badge(
+              group.isProxied ? 'RELAY' : 'DIRECT',
+              group.isProxied ? Colors.blue : Colors.grey,
+            ),
             if (group.connections.any((c) => c.isTelegram)) ...[
               const SizedBox(width: 4),
               _badge('TG', Colors.lightBlue),
@@ -224,14 +261,20 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
         ),
         subtitle: Row(
           children: [
-            Text('${group.connections.length} conn',
-                 style: const TextStyle(fontSize: 10, color: Colors.grey)),
+            Text(
+              '${group.connections.length} conn',
+              style: const TextStyle(fontSize: 10, color: Colors.grey),
+            ),
             const SizedBox(width: 8),
-            Text(_fmt(group.totalBytes),
-                 style: const TextStyle(fontSize: 10, color: Colors.grey)),
+            Text(
+              _fmt(group.totalBytes),
+              style: const TextStyle(fontSize: 10, color: Colors.grey),
+            ),
             const SizedBox(width: 8),
-            Text(group.routeSummary,
-                 style: const TextStyle(fontSize: 10, color: Colors.grey)),
+            Text(
+              group.routeSummary,
+              style: const TextStyle(fontSize: 10, color: Colors.grey),
+            ),
           ],
         ),
         trailing: SizedBox(
@@ -239,18 +282,28 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text('${group.activeCount}', style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-                color: group.activeCount > 0 ? Colors.green : Colors.grey,
-              )),
-              const Text('live', style: TextStyle(fontSize: 9, color: Colors.grey)),
+              Text(
+                '${group.activeCount}',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: group.activeCount > 0 ? Colors.green : Colors.grey,
+                ),
+              ),
+              const Text(
+                'live',
+                style: TextStyle(fontSize: 9, color: Colors.grey),
+              ),
             ],
           ),
         ),
         onExpansionChanged: (expanded) {
           if (expanded && !_llmCache.containsKey(group.appDomain)) {
-            _requestLlmComment(group.appDomain, group.isProxied, group.totalBytes);
+            _requestLlmComment(
+              group.appDomain,
+              group.isProxied,
+              group.totalBytes,
+            );
           }
         },
         children: [
@@ -259,9 +312,16 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
               padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Row(
                 children: [
-                  SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5)),
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 1.5),
+                  ),
                   SizedBox(width: 8),
-                  Text('Analyzing...', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                  Text(
+                    'Analyzing...',
+                    style: TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
                 ],
               ),
             ),
@@ -276,11 +336,20 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(_llmIcon(llmComment), size: 14, color: _llmColor(llmComment)),
+                  Icon(
+                    _llmIcon(llmComment),
+                    size: 14,
+                    color: _llmColor(llmComment),
+                  ),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text(llmComment,
-                        style: TextStyle(fontSize: 11, color: _llmColor(llmComment))),
+                    child: Text(
+                      llmComment,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: _llmColor(llmComment),
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -315,15 +384,21 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          _badge(conn.routeType.toUpperCase(),
-                 conn.routeType == 'relay' ? Colors.blue : Colors.grey,
-                 small: true),
+          _badge(
+            conn.routeType.toUpperCase(),
+            conn.routeType == 'relay' ? Colors.blue : Colors.grey,
+            small: true,
+          ),
           const SizedBox(width: 6),
-          Text(conn.totalBytesFormatted,
-               style: const TextStyle(fontSize: 9, color: Colors.grey)),
+          Text(
+            conn.totalBytesFormatted,
+            style: const TextStyle(fontSize: 9, color: Colors.grey),
+          ),
           const SizedBox(width: 6),
-          Text(conn.durationFormatted,
-               style: const TextStyle(fontSize: 9, color: Colors.grey)),
+          Text(
+            conn.durationFormatted,
+            style: const TextStyle(fontSize: 9, color: Colors.grey),
+          ),
         ],
       ),
     );
@@ -346,9 +421,15 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
         children: [
           Icon(Icons.wifi_off, size: 48, color: Colors.grey.shade600),
           const SizedBox(height: 16),
-          const Text('No active connections', style: TextStyle(color: Colors.grey)),
+          const Text(
+            'No active connections',
+            style: TextStyle(color: Colors.grey),
+          ),
           const SizedBox(height: 8),
-          const Text('Start VPN to see traffic', style: TextStyle(color: Colors.grey, fontSize: 12)),
+          const Text(
+            'Start VPN to see traffic',
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
         ],
       ),
     );
@@ -361,18 +442,28 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
         color: color.withValues(alpha: 0.2),
         borderRadius: BorderRadius.circular(3),
       ),
-      child: Text(label, style: TextStyle(
-        fontSize: small ? 8 : 9,
-        color: color,
-        fontWeight: FontWeight.bold,
-      )),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: small ? 8 : 9,
+          color: color,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
     );
   }
 
   Widget _statChip(String value, String label, Color color) {
     return Column(
       children: [
-        Text(value, style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: 14)),
+        Text(
+          value,
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: color,
+            fontSize: 14,
+          ),
+        ),
         Text(label, style: const TextStyle(fontSize: 9, color: Colors.grey)),
       ],
     );
@@ -399,7 +490,9 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> with AutomaticKee
   String _fmt(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 }

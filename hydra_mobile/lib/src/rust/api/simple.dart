@@ -6,6 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+// These functions are ignored because they are not marked as `pub`: `ensure_snapshot_writer`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NODE_STARTED`, `SHARED_REGISTRY`, `SHARED_RELAY_MODE`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `deref`, `deref`, `deref`, `initialize`, `initialize`, `initialize`
 
@@ -13,6 +14,12 @@ String greet({required String name}) =>
     RustLib.instance.api.crateApiSimpleGreet(name: name);
 
 Future<void> initApp() => RustLib.instance.api.crateApiSimpleInitApp();
+
+Future<void> initExtensionRuntime({required String baseDir}) =>
+    RustLib.instance.api.crateApiSimpleInitExtensionRuntime(baseDir: baseDir);
+
+Future<void> prepareLocalRuntime({required String baseDir}) =>
+    RustLib.instance.api.crateApiSimplePrepareLocalRuntime(baseDir: baseDir);
 
 Future<void> startHydraNode({required String baseDir}) =>
     RustLib.instance.api.crateApiSimpleStartHydraNode(baseDir: baseDir);
@@ -41,12 +48,14 @@ Future<void> setProxyMode({required String mode}) =>
 
 /// Async LLM analysis of connection security/quality.
 /// Accepts a JSON description of connections, returns LLM text recommendation.
+/// Returns a fallback message if AI model is not loaded (instead of erroring).
 Future<String> analyzeConnections({required String connectionsJson}) => RustLib
     .instance
     .api
     .crateApiSimpleAnalyzeConnections(connectionsJson: connectionsJson);
 
 /// Async LLM analysis for a single host — security recommendation.
+/// Returns a fallback message if AI model is not loaded (instead of erroring).
 Future<String> analyzeHost({
   required String host,
   required int port,

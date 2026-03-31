@@ -1,4 +1,3 @@
-
 use crate::frb_generated::StreamSink;
 use std::sync::Mutex;
 
@@ -24,7 +23,8 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FlutterLogLayer {
         event.record(&mut visitor);
         let meta = event.metadata();
         let log_msg = format!("[{}] {}: {}", meta.level(), meta.target(), visitor.message);
-        
+        crate::api::shared_state::append_log_line(log_msg.clone());
+
         if let Ok(stream) = LOG_STREAM.lock() {
             if let Some(sink) = stream.as_ref() {
                 let _ = sink.add(log_msg);
@@ -39,7 +39,9 @@ struct StringVisitor {
 
 impl StringVisitor {
     fn new() -> Self {
-        Self { message: String::new() }
+        Self {
+            message: String::new(),
+        }
     }
 }
 

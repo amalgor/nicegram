@@ -10,11 +10,13 @@ static DEVICE_ID: OnceLock<String> = OnceLock::new();
 pub fn init_quota(relay_url: String, device_id: String) {
     let _ = RELAY_URL.set(relay_url);
     let _ = DEVICE_ID.set(device_id);
+    let _ = crate::api::shared_state::persist_quota_status(&get_quota_status());
 }
 
 /// Record bytes consumed locally (called from relay/proxy layer).
 pub fn record_bytes(bytes: u64) {
     LOCAL_BYTES_USED.fetch_add(bytes, Ordering::Relaxed);
+    let _ = crate::api::shared_state::persist_quota_status(&get_quota_status());
 }
 
 /// Get current quota status as JSON string.
@@ -31,19 +33,24 @@ pub fn get_quota_status() -> String {
         .unwrap();
     let resets_at = tomorrow.format("%Y-%m-%dT00:00:00Z").to_string();
 
-    serde_json::json!({
+    let json = serde_json::json!({
         "used": used,
         "limit": limit,
         "remaining": remaining,
         "resets_at": resets_at,
     })
-    .to_string()
+    .to_string();
+    let _ = crate::api::shared_state::persist_quota_status(&json);
+    json
 }
 
 /// Sync local quota with the server. Returns updated quota JSON.
 pub async fn sync_quota_with_server() -> anyhow::Result<String> {
     let relay_url = RELAY_URL.get().cloned().unwrap_or_default();
-    let device_id = DEVICE_ID.get().cloned().unwrap_or_else(|| "anonymous".to_string());
+    let device_id = DEVICE_ID
+        .get()
+        .cloned()
+        .unwrap_or_else(|| "anonymous".to_string());
 
     if relay_url.is_empty() {
         return Ok(get_quota_status());
@@ -69,12 +76,15 @@ pub async fn sync_quota_with_server() -> anyhow::Result<String> {
     LOCAL_BYTES_USED.store(effective_used, Ordering::Relaxed);
     QUOTA_LIMIT.store(server_limit, Ordering::Relaxed);
 
-    Ok(get_quota_status())
+    let json = get_quota_status();
+    let _ = crate::api::shared_state::persist_quota_status(&json);
+    Ok(json)
 }
 
 /// Reset daily quota counter.
 pub fn reset_daily_quota() {
     LOCAL_BYTES_USED.store(0, Ordering::Relaxed);
+    let _ = crate::api::shared_state::persist_quota_status(&get_quota_status());
 }
 
 /// Get raw quota values for testing/UI.
@@ -95,6 +105,7 @@ mod tests {
 
     #[test]
     fn test_record_bytes_accumulates() {
+        let _guard = crate::test_support::GLOBAL_TEST_GUARD.lock().unwrap();
         reset_state();
         record_bytes(1000);
         record_bytes(2000);
@@ -104,6 +115,7 @@ mod tests {
 
     #[test]
     fn test_reset_daily_quota() {
+        let _guard = crate::test_support::GLOBAL_TEST_GUARD.lock().unwrap();
         reset_state();
         record_bytes(5_000_000);
         assert_eq!(get_quota_raw().0, 5_000_000);
@@ -113,6 +125,7 @@ mod tests {
 
     #[test]
     fn test_get_quota_status_json() {
+        let _guard = crate::test_support::GLOBAL_TEST_GUARD.lock().unwrap();
         reset_state();
         record_bytes(10_000_000);
         let json_str = get_quota_status();
@@ -125,6 +138,7 @@ mod tests {
 
     #[test]
     fn test_quota_saturating_sub() {
+        let _guard = crate::test_support::GLOBAL_TEST_GUARD.lock().unwrap();
         reset_state();
         QUOTA_LIMIT.store(100, Ordering::Relaxed);
         record_bytes(200);
@@ -138,7 +152,11 @@ mod tests {
 
     #[test]
     fn test_init_quota() {
-        init_quota("wss://relay.example.com".to_string(), "device-123".to_string());
+        let _guard = crate::test_support::GLOBAL_TEST_GUARD.lock().unwrap();
+        init_quota(
+            "wss://relay.example.com".to_string(),
+            "device-123".to_string(),
+        );
         assert_eq!(RELAY_URL.get().unwrap(), "wss://relay.example.com");
         assert_eq!(DEVICE_ID.get().unwrap(), "device-123");
     }
