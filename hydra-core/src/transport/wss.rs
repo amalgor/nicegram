@@ -1,10 +1,12 @@
+use super::{Transport, TransportStream};
 use anyhow::{Context, Result};
+use async_trait::async_trait;
+use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio_tungstenite::tungstenite;
-use futures_util::{SinkExt, StreamExt};
 use tracing::{debug, info, warn};
 
 fn build_tls_connector() -> Result<tokio_rustls::TlsConnector> {
@@ -20,33 +22,26 @@ fn build_tls_connector() -> Result<tokio_rustls::TlsConnector> {
 }
 
 /// Max concurrent WSS relay handshakes to prevent tokio thread starvation.
-/// DNS resolution via getaddrinfo is blocking and can exhaust the thread pool.
 const MAX_CONCURRENT_RELAY: usize = 4;
 
 /// A relay connection through a Cloudflare Worker WSS endpoint.
-/// The Worker accepts WebSocket, reads X-Hydra-Target header, and bridges to TCP.
-pub struct RelayConnection {
+pub struct WssTransport {
     endpoints: Vec<String>,
     device_id: String,
-    semaphore: Semaphore,
+    semaphore: Arc<Semaphore>,
 }
 
-impl RelayConnection {
+impl WssTransport {
     pub fn new(endpoints: Vec<String>, device_id: String) -> Self {
         Self {
             endpoints,
             device_id,
-            semaphore: Semaphore::new(MAX_CONCURRENT_RELAY),
+            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_RELAY)),
         }
     }
 
     /// Connect to target through the first available relay endpoint.
-    /// Uses a semaphore to limit concurrent handshakes.
-    /// Runs in a spawned task to ensure timeouts fire even under load.
-    pub async fn connect_to_target(
-        self: &Arc<Self>,
-        target: &str,
-    ) -> Result<TcpStream> {
+    async fn connect_to_target(&self, target: &str) -> Result<TransportStream> {
         let _permit = tokio::time::timeout(
             std::time::Duration::from_secs(15),
             self.semaphore.acquire(),
@@ -55,13 +50,18 @@ impl RelayConnection {
         .map_err(|_| anyhow::anyhow!("Relay queue full, timed out waiting for slot"))?
         .map_err(|_| anyhow::anyhow!("Relay semaphore closed"))?;
 
-        let this = Arc::clone(self);
+        let endpoints = self.endpoints.clone();
+        let device_id = self.device_id.clone();
         let target_owned = target.to_string();
 
-        // Spawn in a separate task so tokio timers can fire independently
         let handle = tokio::spawn(async move {
-            for endpoint in &this.endpoints {
-                match this.try_endpoint(endpoint, &target_owned).await {
+            let transport = WssTransport {
+                endpoints,
+                device_id,
+                semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_RELAY)),
+            };
+            for endpoint in &transport.endpoints {
+                match transport.try_endpoint(endpoint, &target_owned).await {
                     Ok(stream) => return Ok(stream),
                     Err(e) => {
                         warn!("Relay endpoint {} failed: {}", endpoint, e);
@@ -75,16 +75,16 @@ impl RelayConnection {
             ))
         });
 
-        handle.await.map_err(|e| anyhow::anyhow!("Relay task panicked: {}", e))?
+        handle
+            .await
+            .map_err(|e| anyhow::anyhow!("Relay task panicked: {}", e))?
     }
 
     /// Connect through a specific relay endpoint using WebSocket.
-    /// Does manual DNS -> TCP -> TLS -> WS handshake for full timeout control on Android.
-    async fn try_endpoint(&self, endpoint: &str, target: &str) -> Result<TcpStream> {
+    async fn try_endpoint(&self, endpoint: &str, target: &str) -> Result<TransportStream> {
         let host = extract_host(endpoint);
         info!("Relay: [{}] connecting to {} ...", target, host);
 
-        // Step 1: TCP connect with explicit timeout
         let tcp_addr = format!("{}:443", host);
         let tcp_stream = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -99,7 +99,6 @@ impl RelayConnection {
 
         debug!("Relay: [{}] TCP connected to {}", target, tcp_addr);
 
-        // Step 2: TLS handshake
         let tls_connector = build_tls_connector()?;
         let server_name = rustls::pki_types::ServerName::try_from(host.as_str())
             .map_err(|e| anyhow::anyhow!("Invalid server name '{}': {}", host, e))?
@@ -118,13 +117,15 @@ impl RelayConnection {
 
         debug!("Relay: [{}] TLS established", target);
 
-        // Step 3: WebSocket upgrade over TLS stream
         let request = tungstenite::http::Request::builder()
             .uri(endpoint)
             .header("Upgrade", "websocket")
             .header("Connection", "Upgrade")
             .header("Sec-WebSocket-Version", "13")
-            .header("Sec-WebSocket-Key", tungstenite::handshake::client::generate_key())
+            .header(
+                "Sec-WebSocket-Key",
+                tungstenite::handshake::client::generate_key(),
+            )
             .header("Host", &host)
             .header("X-Hydra-Target", target)
             .header("X-Hydra-Device", &self.device_id)
@@ -146,11 +147,8 @@ impl RelayConnection {
 
         info!("WSS relay connected to {} via {}", target, endpoint);
 
-        // Create a local TCP pair to bridge: one end for the SOCKS5 handler,
-        // the other end pumps data through the WebSocket.
         let (local_stream, bridge_stream) = create_tcp_pair().await?;
 
-        // Spawn bidirectional pump: bridge_stream <-> ws_stream
         tokio::spawn(async move {
             let (mut ws_sink, mut ws_source) = ws_stream.split();
             let (mut bridge_read, mut bridge_write) = bridge_stream.into_split();
@@ -194,7 +192,22 @@ impl RelayConnection {
             }
         });
 
-        Ok(local_stream)
+        Ok(Box::new(local_stream))
+    }
+}
+
+#[async_trait]
+impl Transport for WssTransport {
+    async fn connect(&self, target: &str) -> Result<TransportStream> {
+        self.connect_to_target(target).await
+    }
+
+    fn name(&self) -> &str {
+        "wss"
+    }
+
+    fn supports_udp(&self) -> bool {
+        false
     }
 }
 
@@ -207,6 +220,15 @@ pub fn extract_host(url: &str) -> String {
         .to_string()
 }
 
+async fn create_tcp_pair() -> Result<(TcpStream, TcpStream)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let connect_fut = TcpStream::connect(addr);
+    let accept_fut = listener.accept();
+    let (client, (server, _)) = tokio::try_join!(connect_fut, accept_fut)?;
+    Ok((client, server))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,8 +236,14 @@ mod tests {
     #[test]
     fn test_extract_host_wss() {
         assert_eq!(extract_host("wss://relay.hydra-net.work"), "relay.hydra-net.work");
-        assert_eq!(extract_host("wss://relay.hydra-net.work/"), "relay.hydra-net.work");
-        assert_eq!(extract_host("wss://relay.hydra-net.work/path"), "relay.hydra-net.work");
+        assert_eq!(
+            extract_host("wss://relay.hydra-net.work/"),
+            "relay.hydra-net.work"
+        );
+        assert_eq!(
+            extract_host("wss://relay.hydra-net.work/path"),
+            "relay.hydra-net.work"
+        );
     }
 
     #[test]
@@ -236,8 +264,8 @@ mod tests {
     }
 
     #[test]
-    fn test_relay_connection_new() {
-        let relay = RelayConnection::new(
+    fn test_wss_transport_new() {
+        let relay = WssTransport::new(
             vec!["wss://a.example.com".to_string(), "wss://b.example.com".to_string()],
             "test-device".to_string(),
         );
@@ -246,8 +274,8 @@ mod tests {
     }
 
     #[test]
-    fn test_relay_connection_empty_endpoints() {
-        let relay = RelayConnection::new(vec![], "dev".to_string());
+    fn test_wss_transport_empty_endpoints() {
+        let relay = WssTransport::new(vec![], "dev".to_string());
         assert!(relay.endpoints.is_empty());
     }
 
@@ -268,21 +296,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_relay_all_endpoints_exhausted() {
-        let relay = Arc::new(RelayConnection::new(
+        let relay = Arc::new(WssTransport::new(
             vec!["wss://nonexistent.invalid:9999".to_string()],
             "test".to_string(),
         ));
         let result = relay.connect_to_target("127.0.0.1:80").await;
         assert!(result.is_err());
     }
-}
-
-/// Create a connected TCP pair using a loopback listener.
-async fn create_tcp_pair() -> Result<(TcpStream, TcpStream)> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    let connect_fut = TcpStream::connect(addr);
-    let accept_fut = listener.accept();
-    let (client, (server, _)) = tokio::try_join!(connect_fut, accept_fut)?;
-    Ok((client, server))
 }

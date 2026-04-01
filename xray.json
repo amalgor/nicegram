@@ -1,0 +1,246 @@
+[01.04.2026 20:41] Александр Ольховой: {
+  "remarks" : "🇰🇿Казахстан",
+  "policy" : {
+    "system" : {
+      "statsInboundUplink" : true,
+      "statsOutboundUplink" : true,
+      "statsInboundDownlink" : true,
+      "statsOutboundDownlink" : true
+    }
+  },
+  "outbounds" : [
+    {
+      "tag" : "proxy",
+      "settings" : {
+        "flow" : "xtls-rprx-vision",
+        "address" : "kz-mg-01.org",
+        "encryption" : "none",
+        "port" : 8443,
+        "id" : "b3985e56-9dd3-4bae-b330-9805d8611fea"
+      },
+      "streamSettings" : {
+        "realitySettings" : {
+          "spiderX" : "",
+          "fingerprint" : "random",
+          "serverName" : "rbc.ru",
+          "publicKey" : "unyuuAPGgKOlZDNcwmKK6re8DwGMp0Npy675AOhQTD8",
+          "shortId" : "7765629371647733"
+        },
+        "tcpSettings" : {
+          "header" : {
+            "type" : "none"
+          }
+        },
+        "network" : "tcp",
+        "security" : "reality"
+      },
+      "protocol" : "vless"
+    },
+    {
+      "tag" : "block",
+      "settings" : {
+        "response" : {
+          "type" : "none"
+        }
+      },
+      "protocol" : "blackhole"
+    },
+    {
+      "tag" : "direct",
+      "settings" : {
+
+      },
+      "protocol" : "freedom"
+    }
+  ],
+  "stats" : {
+
+  },
+  "log" : {
+    "loglevel" : "info"
+  },
+  "inbounds" : [
+    {
+      "tag" : "socks",
+      "port" : 1080,
+      "listen" : "[::1]",
+      "settings" : {
+        "udp" : true
+      },
+      "sniffing" : {
+        "destOverride" : [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "enabled" : true,
+        "routeOnly" : false
+      },
+      "protocol" : "socks"
+    }
+  ],
+  "id" : "0DCB6AAF-5819-460C-A82E-407FF1675E29"
+}
+[01.04.2026 20:43] Александр Ольховой: {
+  "log" : {
+    "loglevel" : "info"
+  },
+  "remarks" : "🇫🇮 Финляндия",
+  "outbounds" : [
+    {
+      "protocol" : "vless",
+      "streamSettings" : {
+        "grpcSettings" : {
+          "serviceName" : "festiveecclesia",
+          "multiMode" : false
+        },
+        "network" : "grpc",
+        "security" : "reality",
+        "realitySettings" : {
+          "fingerprint" : "chrome",
+          "publicKey" : "sZ05YkXN0R1zve7XcBtR20xfSt7OrAhyEjOqJ6TpXEw",
+          "shortId" : "0072ded4af",
+          "serverName" : "cloudflare.com",
+          "spiderX" : ""
+        }
+      },
+      "settings" : {
+        "address" : "213.176.92.19",
+        "port" : 36931,
+        "id" : "f5241b24-a5e2-3577-94f3-4fbc23ea6d32",
+        "encryption" : "none"
+      },
+      "tag" : "proxy"
+    },
+    {
+      "protocol" : "blackhole",
+      "settings" : {
+        "response" : {
+          "type" : "none"
+        }
+      },
+      "tag" : "block"
+    },
+    {
+      "protocol" : "freedom",
+      "settings" : {
+
+      },
+      "tag" : "direct"
+    }
+  ],
+  "stats" : {
+
+  },
+  "policy" : {
+    "system" : {
+      "statsInboundUplink" : true,
+      "statsInboundDownlink" : true,
+      "statsOutboundUplink" : true,
+      "statsOutboundDownlink" : true
+    }
+  },
+  "inbounds" : [
+    {
+      "protocol" : "socks",
+      "listen" : "[::1]",
+      "sniffing" : {
+        "enabled" : true,
+        "routeOnly" : false,
+        "destOverride" : [
+          "http",
+          "tls",
+          "quic"
+        ]
+      },
+      "settings" : {
+        "udp" : true
+      },
+      "tag" : "socks",
+      "port" : 1080
+    }
+  ],
+  "id" : "9CF2A4D9-E165-47E9-A845-39049354666C"
+}
+[01.04.2026 21:12] Александр Ольховой: {
+  "policy" : {
+    "system" : {
+      "statsOutboundUplink" : true,
+      "statsInboundUplink" : true,
+      "statsInboundDownlink" : true,
+      "statsOutboundDownlink" : true
+    }
+  },
+  "id" : "E5E020B6-A9E0-443E-87C1-92500FE34BD0",
+  "outbounds" : [
+    {
+      "protocol" : "vless",
+      "settings" : {
+        "encryption" : "none",
+        "address" : "132.243.172.102",
+        "port" : 443,
+        "id" : "118c2bd4-4d09-44c1-8b72-c879922d4a45"
+      },
+      "streamSettings" : {
+        "security" : "reality",
+        "tcpSettings" : {
+          "header" : {
+            "type" : "none"
+          }
+        },
+        "network" : "tcp",
+        "realitySettings" : {
+          "fingerprint" : "chrome",
+          "serverName" : "github.com",
+          "publicKey" : "K5mJc5Yb-7EtatgE4lK3smUel4r0VYYr7AVQRnJdGHM",
+          "shortId" : "267d9234db73217e",
+          "spiderX" : ""
+        }
+      },
+      "tag" : "proxy"
+    },
+    {
+      "protocol" : "blackhole",
+      "settings" : {
+        "response" : {
+          "type" : "none"
+        }
+      },
+      "tag" : "block"
+    },
+    {
+      "protocol" : "freedom",
+      "settings" : {
+
+      },
+      "tag" : "direct"
+    }
+  ],
+  "stats" : {
+
+  },
+  "inbounds" : [
+    {
+      "port" : 1080,
+      "protocol" : "socks",
+      "settings" : {
+        "udp" : true
+      },
+      "tag" : "socks",
+      "sniffing" : {
+        "routeOnly" : false,
+        "destOverride" : [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "enabled" : true
+      },
+      "listen" : "[::1]"
+    }
+  ],
+  "log" : {
+    "loglevel" : "info"
+  },
+  "remarks" : "Marz (active-agent) [VLESS - tcp]"
+}

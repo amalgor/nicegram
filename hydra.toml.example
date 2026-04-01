@@ -7,11 +7,11 @@
 socks5_port = 1080
 p2p_listen_port = 0  # 0 = random ephemeral port
 bootstrap_nodes = ["/dns4/boot.ze1.org/tcp/33097"]
+proxy_mode = "telegram"  # off | telegram | full
 
 # AI model inference
 [ai]
 model_path = "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
-tokenizer_path = "models/tokenizer.json"
 max_generation_tokens = 128
 cache_ttl_seconds = 300   # route decision cache TTL
 cache_max_items = 1000    # route decision cache capacity
@@ -34,11 +34,18 @@ db_path = "content.db"
 summarization_max_tokens = 512
 cache_ttl_seconds = 3600  # how long processed summaries are cached
 
-# Cloudflare Worker relay for censorship bypass
-[relay]
-endpoints = ["wss://relay.hydra-net.work", "wss://hydra-relay.hydra-net.workers.dev"]  # WSS relay URLs (custom domain first, workers.dev fallback)
-mode = "telegram"           # off | telegram | full
+# Transport definitions. Order matters for failover and routing preference.
+[[transports]]
+type = "wss"
+endpoints = ["wss://relay.hydra-net.work", "wss://hydra-relay.hydra-net.workers.dev"]
+mode = "telegram"           # telegram | all
 device_id = ""              # auto-generated if empty
+
+# Example VLESS transport. Keep commented out until you have a real URL.
+# [[transports]]
+# type = "vless"
+# url = "vless://uuid@example.com:443?security=reality&type=tcp&sni=example.com&fp=chrome&pbk=PUBLIC_KEY&sid=SHORT_ID"
+# mode = "all"              # telegram | all
 
 # Crypto settlement (Circle USDC developer-controlled wallets)
 [crypto]

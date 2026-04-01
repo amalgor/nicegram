@@ -13,6 +13,8 @@ pub struct NetworkConfig {
     pub p2p_listen_port: u16,
     /// Bootstrap node addresses in libp2p multiaddr format
     pub bootstrap_nodes: Vec<String>,
+    /// Runtime proxy mode: "off", "telegram", "full"
+    pub proxy_mode: String,
 }
 
 impl Default for NetworkConfig {
@@ -21,6 +23,7 @@ impl Default for NetworkConfig {
             socks5_port: 1080,
             p2p_listen_port: 0,
             bootstrap_nodes: vec!["/dns4/boot.ze1.org/tcp/33097".to_string()],
+            proxy_mode: "telegram".to_string(),
         }
     }
 }
@@ -113,26 +116,75 @@ impl Default for ContentConfig {
     }
 }
 
-/// Cloudflare Worker relay configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct RelayConfig {
-    /// WSS relay endpoint URLs (Cloudflare Workers or compatible)
-    pub endpoints: Vec<String>,
-    /// Relay mode: "off" (direct only), "telegram" (proxy Telegram), "full" (proxy all)
-    pub mode: String,
-    /// Device ID for quota tracking (auto-generated if empty)
-    pub device_id: String,
+/// Transport routing scope.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TransportMode {
+    Telegram,
+    All,
 }
 
-impl Default for RelayConfig {
+impl Default for TransportMode {
     fn default() -> Self {
-        Self {
-            endpoints: vec!["wss://relay.hydra-net.work".to_string()],
-            mode: "telegram".to_string(),
-            device_id: String::new(),
+        Self::Telegram
+    }
+}
+
+impl TransportMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Telegram => "telegram",
+            Self::All => "all",
         }
     }
+}
+
+/// Transport configuration entries.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum TransportConfig {
+    /// Cloudflare Worker / WebSocket-based relay.
+    Wss {
+        endpoints: Vec<String>,
+        mode: TransportMode,
+        #[serde(default)]
+        device_id: String,
+    },
+    /// VLESS transport encoded as a raw vless:// URL.
+    Vless {
+        url: String,
+        mode: TransportMode,
+    },
+}
+
+impl TransportConfig {
+    pub fn mode(&self) -> TransportMode {
+        match self {
+            Self::Wss { mode, .. } | Self::Vless { mode, .. } => *mode,
+        }
+    }
+
+    pub fn wss_endpoint(&self) -> Option<&str> {
+        match self {
+            Self::Wss { endpoints, .. } => endpoints.first().map(String::as_str),
+            Self::Vless { .. } => None,
+        }
+    }
+
+    pub fn wss_device_id(&self) -> Option<&str> {
+        match self {
+            Self::Wss { device_id, .. } => Some(device_id.as_str()),
+            Self::Vless { .. } => None,
+        }
+    }
+}
+
+fn default_transports() -> Vec<TransportConfig> {
+    vec![TransportConfig::Wss {
+        endpoints: vec!["wss://relay.hydra-net.work".to_string()],
+        mode: TransportMode::Telegram,
+        device_id: String::new(),
+    }]
 }
 
 /// Crypto settlement configuration (Circle USDC)
@@ -173,14 +225,12 @@ pub struct BootstrapConfig {
 
 impl Default for BootstrapConfig {
     fn default() -> Self {
-        Self {
-            listen_port: 33097,
-        }
+        Self { listen_port: 33097 }
     }
 }
 
 /// Root configuration for the entire Hydra node
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HydraConfig {
     pub network: NetworkConfig,
@@ -188,9 +238,25 @@ pub struct HydraConfig {
     pub econ: EconConfig,
     pub telegram: TelegramConfig,
     pub content: ContentConfig,
-    pub relay: RelayConfig,
+    #[serde(default = "default_transports")]
+    pub transports: Vec<TransportConfig>,
     pub crypto: CryptoConfig,
     pub bootstrap: BootstrapConfig,
+}
+
+impl Default for HydraConfig {
+    fn default() -> Self {
+        Self {
+            network: NetworkConfig::default(),
+            ai: AiConfig::default(),
+            econ: EconConfig::default(),
+            telegram: TelegramConfig::default(),
+            content: ContentConfig::default(),
+            transports: default_transports(),
+            crypto: CryptoConfig::default(),
+            bootstrap: BootstrapConfig::default(),
+        }
+    }
 }
 
 impl HydraConfig {
@@ -234,6 +300,25 @@ impl HydraConfig {
         }
     }
 
+    /// Returns the first WSS endpoint and device ID for quota synchronization.
+    pub fn primary_quota_transport(&self) -> Option<(String, String)> {
+        self.transports.iter().find_map(|transport| match transport {
+            TransportConfig::Wss {
+                endpoints,
+                device_id,
+                ..
+            } => endpoints.first().cloned().map(|endpoint| {
+                let device_id = if device_id.trim().is_empty() {
+                    "hydra-mobile".to_string()
+                } else {
+                    device_id.clone()
+                };
+                (endpoint, device_id)
+            }),
+            TransportConfig::Vless { .. } => None,
+        })
+    }
+
     /// Write default configuration to a file for the user to customize.
     pub fn write_defaults(path: &Path) -> Result<()> {
         let config = Self::default();
@@ -254,12 +339,20 @@ mod tests {
         let config = HydraConfig::default();
         assert_eq!(config.network.socks5_port, 1080);
         assert_eq!(config.network.p2p_listen_port, 0);
+        assert_eq!(config.network.proxy_mode, "telegram");
         assert_eq!(config.ai.max_generation_tokens, 128);
         assert_eq!(config.ai.cache_ttl_seconds, 300);
         assert_eq!(config.ai.cache_max_items, 1000);
         assert_eq!(config.econ.settlement_threshold_bytes, 10_000_000);
-        assert_eq!(config.relay.mode, "telegram");
-        assert_eq!(config.relay.endpoints, vec!["wss://relay.hydra-net.work"]);
+        assert_eq!(config.transports.len(), 1);
+        assert_eq!(
+            config.transports[0],
+            TransportConfig::Wss {
+                endpoints: vec!["wss://relay.hydra-net.work".to_string()],
+                mode: TransportMode::Telegram,
+                device_id: String::new(),
+            }
+        );
         assert!(!config.crypto.enabled);
         assert_eq!(config.crypto.settlement_chain, "ARB-SEPOLIA");
         assert_eq!(config.bootstrap.listen_port, 33097);
@@ -269,7 +362,8 @@ mod tests {
     fn test_load_missing_file_returns_defaults() {
         let config = HydraConfig::load(Path::new("/nonexistent/hydra.toml")).unwrap();
         assert_eq!(config.network.socks5_port, 1080);
-        assert_eq!(config.relay.mode, "telegram");
+        assert_eq!(config.network.proxy_mode, "telegram");
+        assert_eq!(config.transports.len(), 1);
     }
 
     #[test]
@@ -281,7 +375,8 @@ mod tests {
 
         let config = HydraConfig::load(&path).unwrap();
         assert_eq!(config.network.socks5_port, 9090);
-        // Other sections get defaults
+        assert_eq!(config.network.proxy_mode, "telegram");
+        assert_eq!(config.transports.len(), 1);
         assert_eq!(config.ai.max_generation_tokens, 128);
     }
 
@@ -297,6 +392,7 @@ mod tests {
 socks5_port = 2080
 p2p_listen_port = 5000
 bootstrap_nodes = ["/ip4/1.2.3.4/tcp/1234"]
+proxy_mode = "full"
 
 [ai]
 model_path = "my_model.gguf"
@@ -318,10 +414,16 @@ db_path = "my_content.db"
 summarization_max_tokens = 1024
 cache_ttl_seconds = 7200
 
-[relay]
+[[transports]]
+type = "wss"
 endpoints = ["wss://relay.example.com"]
-mode = "always"
+mode = "telegram"
 device_id = "dev-001"
+
+[[transports]]
+type = "vless"
+url = "vless://uuid@example.com:443?security=reality&type=tcp&sni=github.com&fp=chrome&pbk=pubkey&sid=0123"
+mode = "all"
 
 [crypto]
 enabled = true
@@ -339,9 +441,21 @@ listen_port = 44444
         let config = HydraConfig::load(&path).unwrap();
         assert_eq!(config.network.socks5_port, 2080);
         assert_eq!(config.network.p2p_listen_port, 5000);
+        assert_eq!(config.network.proxy_mode, "full");
         assert_eq!(config.ai.max_generation_tokens, 256);
-        assert_eq!(config.relay.mode, "always");
-        assert_eq!(config.relay.endpoints, vec!["wss://relay.example.com"]);
+        assert_eq!(config.transports.len(), 2);
+        assert_eq!(
+            config.transports[0],
+            TransportConfig::Wss {
+                endpoints: vec!["wss://relay.example.com".to_string()],
+                mode: TransportMode::Telegram,
+                device_id: "dev-001".to_string(),
+            }
+        );
+        assert!(matches!(
+            &config.transports[1],
+            TransportConfig::Vless { mode, .. } if *mode == TransportMode::All
+        ));
         assert!(config.crypto.enabled);
         assert_eq!(config.bootstrap.listen_port, 44444);
     }
@@ -352,9 +466,15 @@ listen_port = 44444
         let base = Path::new("/data/hydra");
         config.resolve_paths(base);
 
-        assert_eq!(config.ai.model_path, PathBuf::from("/data/hydra/models/qwen2.5-0.5b.gguf"));
+        assert_eq!(
+            config.ai.model_path,
+            PathBuf::from("/data/hydra/models/qwen2.5-0.5b.gguf")
+        );
         assert_eq!(config.econ.db_path, PathBuf::from("/data/hydra/hydra_db"));
-        assert_eq!(config.telegram.session_path, PathBuf::from("/data/hydra/telegram.session"));
+        assert_eq!(
+            config.telegram.session_path,
+            PathBuf::from("/data/hydra/telegram.session")
+        );
         assert_eq!(config.content.db_path, PathBuf::from("/data/hydra/content.db"));
     }
 
@@ -381,7 +501,8 @@ listen_port = 44444
 
         let reloaded = HydraConfig::load(&path).unwrap();
         assert_eq!(reloaded.network.socks5_port, 1080);
-        assert_eq!(reloaded.relay.mode, "telegram");
+        assert_eq!(reloaded.network.proxy_mode, "telegram");
+        assert_eq!(reloaded.transports.len(), 1);
     }
 
     #[test]
@@ -403,6 +524,32 @@ listen_port = 44444
         let base = Path::new("/app/data");
         let config = HydraConfig::load_with_base_dir(&path, base).unwrap();
         assert_eq!(config.network.socks5_port, 3000);
-        assert_eq!(config.ai.model_path, PathBuf::from("/app/data/models/qwen2.5-0.5b.gguf"));
+        assert_eq!(
+            config.ai.model_path,
+            PathBuf::from("/app/data/models/qwen2.5-0.5b.gguf")
+        );
+    }
+
+    #[test]
+    fn test_primary_quota_transport_prefers_first_wss() {
+        let config = HydraConfig {
+            transports: vec![
+                TransportConfig::Vless {
+                    url: "vless://uuid@example.com:443?security=reality&type=tcp&sni=github.com&fp=chrome&pbk=pubkey&sid=0123".to_string(),
+                    mode: TransportMode::All,
+                },
+                TransportConfig::Wss {
+                    endpoints: vec!["wss://relay.example.com".to_string()],
+                    mode: TransportMode::Telegram,
+                    device_id: "device-1".to_string(),
+                },
+            ],
+            ..HydraConfig::default()
+        };
+
+        assert_eq!(
+            config.primary_quota_transport(),
+            Some(("wss://relay.example.com".to_string(), "device-1".to_string()))
+        );
     }
 }

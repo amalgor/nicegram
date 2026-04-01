@@ -1,7 +1,7 @@
 use anyhow::Result;
 use hydra_ai::AiNegotiator;
 use hydra_config::HydraConfig;
-use hydra_core::Socks5Server;
+use hydra_core::{transport, Socks5Server};
 use hydra_econ::EconLedger;
 use hydra_p2p::P2PNode;
 use libp2p::identity::Keypair;
@@ -73,9 +73,16 @@ async fn main() -> Result<()> {
         tracing::info!("Running as Bootstrap Node. SOCKS5 disabled.");
         std::future::pending::<()>().await;
     } else {
-        // Start Socks5 Server
+        let transports = transport::build_transports(&config.transports)?;
         let addr = SocketAddr::from(([127, 0, 0, 1], config.network.socks5_port));
-        let server = Socks5Server::new(addr, ai, p2p_handle, econ, &config.relay);
+        let server = Socks5Server::new(
+            addr,
+            ai,
+            p2p_handle,
+            econ,
+            transports,
+            config.network.proxy_mode.clone(),
+        );
         server.run().await?;
     }
 

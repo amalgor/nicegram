@@ -3,6 +3,10 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+fn empty_transports() -> Vec<hydra_core::transport::ConfiguredTransport> {
+    Vec::new()
+}
+
 /// Test SOCKS5 handshake and direct connection to a local echo server.
 /// Validates the full path: client -> SOCKS5 -> target.
 #[tokio::test]
@@ -19,7 +23,9 @@ async fn test_socks5_direct_connection() {
                 loop {
                     match stream.read(&mut buf).await {
                         Ok(0) => break,
-                        Ok(n) => { stream.write_all(&buf[..n]).await.ok(); }
+                        Ok(n) => {
+                            stream.write_all(&buf[..n]).await.ok();
+                        }
                         Err(_) => break,
                     }
                 }
@@ -35,28 +41,31 @@ async fn test_socks5_direct_connection() {
         socks5_port: 0,
         p2p_listen_port: 0,
         bootstrap_nodes: vec![],
+        ..Default::default()
     };
-    let (p2p_node, p2p_handle) =
-        hydra_p2p::P2PNode::new(None, 0, &p2p_config).await.unwrap();
-    tokio::spawn(async move { p2p_node.run().await.ok(); });
+    let (p2p_node, p2p_handle) = hydra_p2p::P2PNode::new(None, 0, &p2p_config).await.unwrap();
+    tokio::spawn(async move {
+        p2p_node.run().await.ok();
+    });
 
     let _econ_dir = tempfile::tempdir().unwrap();
-    let econ = Arc::new(
-        hydra_econ::EconLedger::new(_econ_dir.path().to_str().unwrap()).unwrap(),
-    );
-
-    let relay_config = hydra_config::RelayConfig {
-        endpoints: vec![],
-        mode: "never".to_string(),
-        device_id: "test".to_string(),
-    };
+    let econ = Arc::new(hydra_econ::EconLedger::new(_econ_dir.path().to_str().unwrap()).unwrap());
 
     let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let socks_addr = socks_listener.local_addr().unwrap();
     drop(socks_listener);
 
-    let server = hydra_core::Socks5Server::new(socks_addr, ai, p2p_handle, econ, &relay_config);
-    tokio::spawn(async move { server.run().await.ok(); });
+    let server = hydra_core::Socks5Server::new(
+        socks_addr,
+        ai,
+        p2p_handle,
+        econ,
+        empty_transports(),
+        "off".to_string(),
+    );
+    tokio::spawn(async move {
+        server.run().await.ok();
+    });
 
     // Give server time to bind
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -105,23 +114,33 @@ async fn test_socks5_rejects_unsupported_auth() {
         socks5_port: 0,
         p2p_listen_port: 0,
         bootstrap_nodes: vec![],
+        ..Default::default()
     };
-    let (p2p_node, p2p_handle) =
-        hydra_p2p::P2PNode::new(None, 0, &p2p_config).await.unwrap();
-    tokio::spawn(async move { p2p_node.run().await.ok(); });
+    let (p2p_node, p2p_handle) = hydra_p2p::P2PNode::new(None, 0, &p2p_config).await.unwrap();
+    tokio::spawn(async move {
+        p2p_node.run().await.ok();
+    });
 
     let econ = Arc::new({
         let dir = tempfile::tempdir().unwrap();
         hydra_econ::EconLedger::new(dir.path().to_str().unwrap()).unwrap()
     });
 
-    let relay_config = hydra_config::RelayConfig::default();
     let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let socks_addr = socks_listener.local_addr().unwrap();
     drop(socks_listener);
 
-    let server = hydra_core::Socks5Server::new(socks_addr, ai, p2p_handle, econ, &relay_config);
-    tokio::spawn(async move { server.run().await.ok(); });
+    let server = hydra_core::Socks5Server::new(
+        socks_addr,
+        ai,
+        p2p_handle,
+        econ,
+        empty_transports(),
+        "off".to_string(),
+    );
+    tokio::spawn(async move {
+        server.run().await.ok();
+    });
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -156,28 +175,33 @@ async fn test_socks5_domain_connect() {
         socks5_port: 0,
         p2p_listen_port: 0,
         bootstrap_nodes: vec![],
+        ..Default::default()
     };
-    let (p2p_node, p2p_handle) =
-        hydra_p2p::P2PNode::new(None, 0, &p2p_config).await.unwrap();
-    tokio::spawn(async move { p2p_node.run().await.ok(); });
+    let (p2p_node, p2p_handle) = hydra_p2p::P2PNode::new(None, 0, &p2p_config).await.unwrap();
+    tokio::spawn(async move {
+        p2p_node.run().await.ok();
+    });
 
     let econ = Arc::new({
         let dir = tempfile::tempdir().unwrap();
         hydra_econ::EconLedger::new(dir.path().to_str().unwrap()).unwrap()
     });
 
-    let relay_config = hydra_config::RelayConfig {
-        endpoints: vec![],
-        mode: "never".to_string(),
-        device_id: "test".to_string(),
-    };
-
     let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let socks_addr = socks_listener.local_addr().unwrap();
     drop(socks_listener);
 
-    let server = hydra_core::Socks5Server::new(socks_addr, ai, p2p_handle, econ, &relay_config);
-    tokio::spawn(async move { server.run().await.ok(); });
+    let server = hydra_core::Socks5Server::new(
+        socks_addr,
+        ai,
+        p2p_handle,
+        econ,
+        empty_transports(),
+        "off".to_string(),
+    );
+    tokio::spawn(async move {
+        server.run().await.ok();
+    });
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -231,29 +255,34 @@ async fn test_connection_registry_tracking() {
         socks5_port: 0,
         p2p_listen_port: 0,
         bootstrap_nodes: vec![],
+        ..Default::default()
     };
-    let (p2p_node, p2p_handle) =
-        hydra_p2p::P2PNode::new(None, 0, &p2p_config).await.unwrap();
-    tokio::spawn(async move { p2p_node.run().await.ok(); });
+    let (p2p_node, p2p_handle) = hydra_p2p::P2PNode::new(None, 0, &p2p_config).await.unwrap();
+    tokio::spawn(async move {
+        p2p_node.run().await.ok();
+    });
 
     let econ = Arc::new({
         let dir = tempfile::tempdir().unwrap();
         hydra_econ::EconLedger::new(dir.path().to_str().unwrap()).unwrap()
     });
 
-    let relay_config = hydra_config::RelayConfig {
-        endpoints: vec![],
-        mode: "never".to_string(),
-        device_id: "test".to_string(),
-    };
-
     let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let socks_addr = socks_listener.local_addr().unwrap();
     drop(socks_listener);
 
-    let server = hydra_core::Socks5Server::new(socks_addr, ai, p2p_handle, econ, &relay_config);
+    let server = hydra_core::Socks5Server::new(
+        socks_addr,
+        ai,
+        p2p_handle,
+        econ,
+        empty_transports(),
+        "off".to_string(),
+    );
     let registry = server.registry();
-    tokio::spawn(async move { server.run().await.ok(); });
+    tokio::spawn(async move {
+        server.run().await.ok();
+    });
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -290,8 +319,14 @@ async fn test_connection_registry_tracking() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let stats = registry.stats();
-    assert!(stats.total_count >= 1, "Should have at least 1 tracked connection");
-    assert!(stats.total_bytes_up + stats.total_bytes_down > 0, "Should have tracked bytes");
+    assert!(
+        stats.total_count >= 1,
+        "Should have at least 1 tracked connection"
+    );
+    assert!(
+        stats.total_bytes_up + stats.total_bytes_down > 0,
+        "Should have tracked bytes"
+    );
 }
 
 /// Test AI routing fallback (no model, no peers -> direct).
@@ -341,7 +376,11 @@ async fn test_ai_routing_selects_best_peer() {
     };
 
     let result = ai.decide_route(request).await.unwrap();
-    assert_eq!(result.path, vec!["trusted-fast"], "Should select highest-trust peer");
+    assert_eq!(
+        result.path,
+        vec!["trusted-fast"],
+        "Should select highest-trust peer"
+    );
     assert_eq!(result.transport, "vless");
 }
 
@@ -357,6 +396,9 @@ async fn test_telegram_detection_in_registry() {
     let tg_snap = snaps.iter().find(|s| s.id == tg_id).unwrap();
     let normal_snap = snaps.iter().find(|s| s.id == normal_id).unwrap();
 
-    assert!(tg_snap.is_telegram, "149.154.x.x should be detected as Telegram");
+    assert!(
+        tg_snap.is_telegram,
+        "149.154.x.x should be detected as Telegram"
+    );
     assert!(!normal_snap.is_telegram, "8.8.8.8 should not be Telegram");
 }

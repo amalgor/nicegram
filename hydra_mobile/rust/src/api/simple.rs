@@ -7,7 +7,7 @@ pub fn init_app() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::new(
-        "info,hydra_core::relay=debug,libp2p=warn,libp2p_noise=warn,libp2p_kad=warn,libp2p_gossipsub=warn,libp2p_swarm=warn,libp2p_dns=warn,libp2p_identify=warn,libp2p_mdns=warn,hickory=warn,rustls=warn,tungstenite=debug"
+        "info,hydra_core::transport=debug,libp2p=warn,libp2p_noise=warn,libp2p_kad=warn,libp2p_gossipsub=warn,libp2p_swarm=warn,libp2p_dns=warn,libp2p_identify=warn,libp2p_mdns=warn,hickory=warn,rustls=warn,tungstenite=debug"
     );
     let subscriber = tracing_subscriber::registry()
         .with(filter)
@@ -20,7 +20,7 @@ pub fn init_app() {
 use hydra_ai::AiNegotiator;
 use hydra_config::HydraConfig;
 use hydra_core::connections::ConnectionRegistry;
-use hydra_core::Socks5Server;
+use hydra_core::{transport, Socks5Server};
 use hydra_econ::EconLedger;
 use hydra_p2p::P2PNode;
 use std::net::SocketAddr;
@@ -32,13 +32,20 @@ use std::time::Duration;
 lazy_static::lazy_static! {
     static ref SHARED_REGISTRY: tokio::sync::Mutex<Option<Arc<ConnectionRegistry>>> =
         tokio::sync::Mutex::new(None);
-    static ref SHARED_RELAY_MODE: tokio::sync::Mutex<Option<Arc<std::sync::RwLock<String>>>> =
+    static ref SHARED_PROXY_MODE: tokio::sync::Mutex<Option<Arc<std::sync::RwLock<String>>>> =
         tokio::sync::Mutex::new(None);
     static ref NODE_STARTED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
 }
 
 static SNAPSHOT_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn init_quota_from_config(config: &HydraConfig) {
+    let (transport_url, device_id) = config
+        .primary_quota_transport()
+        .unwrap_or_else(|| (String::new(), "hydra-mobile".to_string()));
+    crate::api::quota::init_quota(transport_url, device_id);
+}
 
 pub fn init_extension_runtime(base_dir: String) -> anyhow::Result<()> {
     init_app();
@@ -58,18 +65,7 @@ pub async fn prepare_local_runtime(base_dir: String) -> anyhow::Result<()> {
         std::sync::atomic::Ordering::Relaxed,
     );
 
-    let relay_endpoint = config
-        .relay
-        .endpoints
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "wss://relay.hydra-net.work".to_string());
-    let device_id = if config.relay.device_id.trim().is_empty() {
-        "hydra-mobile".to_string()
-    } else {
-        config.relay.device_id.clone()
-    };
-    crate::api::quota::init_quota(relay_endpoint, device_id);
+    init_quota_from_config(&config);
 
     let ai = Arc::new(AiNegotiator::new(&config.ai));
     {
@@ -93,18 +89,7 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
     let config_path = base_path.join("hydra.toml");
     let config = HydraConfig::load_with_base_dir(&config_path, &base_path)?;
 
-    let relay_endpoint = config
-        .relay
-        .endpoints
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "wss://relay.hydra-net.work".to_string());
-    let device_id = if config.relay.device_id.trim().is_empty() {
-        "hydra-mobile".to_string()
-    } else {
-        config.relay.device_id.clone()
-    };
-    crate::api::quota::init_quota(relay_endpoint, device_id);
+    init_quota_from_config(&config);
 
     // Store the SOCKS5 port for tun2proxy to read
     crate::api::vpn::SOCKS5_PORT.store(
@@ -156,25 +141,33 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
         Err(e) => {
             tracing::warn!(
                 "P2P node init failed (expected on Android — no /etc/resolv.conf): {}. \
-                 Continuing without peer discovery; relay-only mode.",
+                 Continuing without peer discovery; transport routing still available.",
                 e
             );
             P2PNode::dummy_handle()
         }
     };
 
+    let transports = transport::build_transports(&config.transports)?;
     let addr = SocketAddr::from(([127, 0, 0, 1], config.network.socks5_port));
     tracing::info!("Starting SOCKS5 Server on {}", addr);
-    let server = Socks5Server::new(addr, ai, p2p_handle, econ, &config.relay);
+    let server = Socks5Server::new(
+        addr,
+        ai,
+        p2p_handle,
+        econ,
+        transports,
+        config.network.proxy_mode.clone(),
+    );
 
-    // Store registry and relay_mode handle for FRB API access
+    // Store registry and proxy mode handle for FRB API access
     {
         let mut shared = SHARED_REGISTRY.lock().await;
         *shared = Some(server.registry());
     }
     {
-        let mut shared = SHARED_RELAY_MODE.lock().await;
-        *shared = Some(server.relay_mode_handle());
+        let mut shared = SHARED_PROXY_MODE.lock().await;
+        *shared = Some(server.proxy_mode_handle());
     }
 
     tokio::spawn(async move {
@@ -275,11 +268,11 @@ fn ensure_snapshot_writer() {
 /// Set proxy mode at runtime. Values: "off", "telegram", "full".
 /// Called from Flutter Settings when user changes proxy mode.
 pub async fn set_proxy_mode(mode: String) -> anyhow::Result<()> {
-    let guard = SHARED_RELAY_MODE.lock().await;
-    let relay_mode = guard
+    let guard = SHARED_PROXY_MODE.lock().await;
+    let proxy_mode = guard
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Node not started"))?;
-    if let Ok(mut m) = relay_mode.write() {
+    if let Ok(mut m) = proxy_mode.write() {
         tracing::info!("Proxy mode changed to: {}", mode);
         *m = mode;
     }

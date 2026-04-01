@@ -11,17 +11,21 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 libp2p = { workspace = true }
+async-trait = "0.1"
 futures = "0.3"
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 tokio-rustls = "0.26"
 rustls = { version = "0.23", features = ["ring"] }
 webpki-roots = "0.26"
+protobuf = "3.6"
+vpn-link-serde = "0.1.5"
 hydra-config = { path = "../hydra-config" }
 hydra-p2p = { path = "../hydra-p2p" }
 hydra-ai = { path = "../hydra-ai" }
 hydra-econ = { path = "../hydra-econ" }
 libp2p-dns = "0.44.0"
+leaf = { git = "https://github.com/eycorsican/leaf", tag = "v0.14.2", default-features = false, features = ["config-json", "outbound-chain", "outbound-reality", "outbound-vless", "outbound-ws"] }
 
 [dev-dependencies]
 tempfile = "3"

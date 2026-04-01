@@ -15,7 +15,6 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool get wantKeepAlive => true;
 
   String _proxyMode = 'telegram';
-  final List<String> _relayEndpoints = [];
   bool _cryptoEnabled = false;
 
   @override
@@ -28,8 +27,6 @@ class _SettingsScreenState extends State<SettingsScreen>
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _proxyMode = prefs.getString('proxy_mode') ?? 'telegram';
-      _relayEndpoints.clear();
-      _relayEndpoints.addAll(prefs.getStringList('relay_endpoints') ?? []);
       _cryptoEnabled = prefs.getBool('crypto_enabled') ?? false;
     });
   }
@@ -78,7 +75,7 @@ class _SettingsScreenState extends State<SettingsScreen>
               _buildProxyModeRadio(
                 'telegram',
                 'Telegram Only',
-                'Route only Telegram traffic through relay (default)',
+                'Route only Telegram traffic through configured transports',
               ),
               _buildProxyModeRadio(
                 'full',
@@ -88,38 +85,6 @@ class _SettingsScreenState extends State<SettingsScreen>
             ],
           ),
         ),
-
-        const Divider(height: 32),
-        Text('Relay Endpoints', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 8),
-        if (_relayEndpoints.isEmpty)
-          const Card(
-            child: Padding(
-              padding: EdgeInsets.all(16),
-              child: Text(
-                'No relay endpoints configured.\nEndpoints will be discovered via P2P network.',
-                style: TextStyle(color: Colors.grey),
-              ),
-            ),
-          )
-        else
-          ...(_relayEndpoints.map(
-            (ep) => Card(
-              child: ListTile(
-                leading: const Icon(Icons.cloud_outlined),
-                title: Text(
-                  ep,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                ),
-                trailing: const Icon(
-                  Icons.check_circle,
-                  color: Colors.green,
-                  size: 16,
-                ),
-              ),
-            ),
-          )),
-
         const Divider(height: 32),
         Text(
           'Crypto Settlement',
