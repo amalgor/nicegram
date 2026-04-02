@@ -10,22 +10,25 @@
 
 **Каноническая копия плана:** корень репозитория (`hydra-architecture-review-3ce054.md`). Копия в `~/.windsurf/plans/` при расхождении считается устаревшей — перенесите изменения из репозитория.
 
-**Снимок на 2026-03-29 (обновлён после MVP Sprint)**
+**Снимок на 2026-04-02 (обновлён после live Base Sepolia readiness)**
 
 | Этап плана (часть 5) | Статус | Где смотреть в коде |
 |----------------------|--------|---------------------|
 | **Этап 0** — стабилизация | Выполнен | `hydra-config/`, `hydra-p2p/src/lib.rs`, `hydra-ai/src/lib.rs`, `hydra-core/src/main.rs` + `hydra.toml` |
 | **Этап 1** — Content Intelligence (Telegram) | Выполнен | `hydra-content/`, Flutter: `screens/content_screen.dart`, `widgets/message_card.dart` |
-| **Sprint: Network + Crypto + Content** | Выполнен | `hydra-relay-worker/`, `hydra-core/src/relay.rs`, `hydra-econ/src/circle.rs`, `STRATEGY.md` |
+| **HRX Phase 0** — multi-transport routing foundation | Выполнен | `hydra-core/src/transport/`, `hydra-config/src/lib.rs`, `hydra_mobile/rust/src/api/simple.rs` |
+| **HRX Phase 1** — on-chain route book | Выполнен | `contracts/`, `contracts/script/DeployHydraRouteBook.s.sol` |
+| **HRX Phase 2** — embedded wallet + marketplace | Выполнен | `hydra-exchange/`, `hydra_mobile/lib/exchange/`, `screens/marketplace_screen.dart`, `hydra.toml`, `contracts/` |
+| **Sprint: Network + Crypto + Content** | Исторический baseline | `hydra-relay-worker/`, `hydra-core/src/relay.rs`, `STRATEGY.md` |
 | **Sprint: Mobile MVP Readiness** | Выполнен | См. ниже |
 | **Сборка Android** | Проходит | `hydra_mobile/`: VpnService + `tun2proxy`, bundled `qwen2.5-0.5b.gguf` |
 
 **Mobile MVP Readiness Sprint (завершён 2026-03-29):**
 - **64 unit + integration теста**: `hydra-core/src/socks.rs` (SOCKS5 parsing), `hydra-core/src/relay.rs` (relay), `hydra-core/src/connections.rs` (registry), `hydra-ai/src/lib.rs` (routing), `hydra-config/src/lib.rs` (config), `hydra_mobile/rust/src/api/quota.rs` (quota), `hydra-core/tests/integration.rs` (end-to-end SOCKS5, domain connect, auth rejection, registry tracking, AI routing)
 - **Connection tracking**: `hydra-core/src/connections.rs` — `ConnectionRegistry` с route type, bytes, Telegram detection, AI reasoning, per-connection proxy override
-- **Selective Telegram routing**: Telegram DC IPs → relay, остальное → direct. Настраивается в `[relay].mode`
+- **Selective Telegram routing**: Telegram DC IPs → relay, остальное → direct. Текущее управление идёт через `[network].proxy_mode` и `[[transports]].mode`
 - **VPN port bug fix**: `vpn.rs` → `SOCKS5_PORT` AtomicU16 из конфига
-- **Flutter UI restructure**: `main.dart` разделён на `screens/` + `widgets/`. Новый Connections screen, folding message cards, connection summary на Connect screen
+- **Flutter UI restructure**: `main.dart` разделён на `screens/` + `widgets/`. После Phase 2 навигация расширена до Connect / Network / Marketplace / AI / Content / Logs / Settings
 - **Config robustness**: `#[serde(default)]` на всех config structs — partial TOML работает
 
 **Соответствие пунктам аудита §1.2 (кратко):**
@@ -35,17 +38,24 @@
 - **[P8] Путь к модели в core** — исправлено: путь из `HydraConfig` / `hydra.toml`, дефолты в `hydra-config`.
 - **[P5] `set_active_model` пустой** — исправлено: перезагрузка весов через `AiNegotiator::load_model` при поднятом узле (`SHARED_AI`).
 - **[P6] Два tokio runtime (VPN)** — осознанный компромисс: в `hydra_mobile/rust/src/api/vpn.rs` отдельный поток и runtime для долгого цикла `tun2proxy` (TUN FD); это не замена глобального runtime FRB, а изоляция блокирующего/долгоживущего цикла. Унификация с одним runtime — отдельная задача, если появятся регрессии или метрики.
-- **[P4] econ settlement** — реализовано: `circle.rs` с Circle API (wallet set, wallets, transfer, balance check, tx polling). Testnet Arbitrum Sepolia.
+- **[P4] econ settlement** — решение пересмотрено: legacy REST settlement path удалён из активной архитектуры; `hydra-econ` оставлен как локальный ledger, а on-chain HRX вынесен в `hydra-exchange` на Base Sepolia.
 - **Остаётся открытым:** [P2] onion без послойного шифрования, [P3] SOCKS5 без auth, graceful shutdown, миграция `sled`→`redb`/sqlite, тесты — см. §1.2–1.3 как список направлений.
 
-**Sprint Network + Crypto + Content (2026-03-29) — ВЫПОЛНЕН:**
+**HRX Phase 1 + Phase 2 (2026-04-02) — LIVE BASE SEPOLIA READY:**
+- `contracts/` теперь содержит Foundry project и `HydraRouteBook` для Base Sepolia.
+- `hydra-exchange/` добавлен как отдельный Rust crate с `alloy`-клиентом, локальным BIP-39 wallet flow и ABI bindings для `HydraRouteBook`/ERC-8004/USDC. ABI for ERC-8004 теперь вендорятся из официальных JSON artifacts.
+- `[crypto]` в `hydra-config` переведён на Base Sepolia schema: `chain`, `rpc_url`, `route_book_address`, `identity_registry_address`, `reputation_registry_address`, `usdc_address`. Корневой `hydra.toml` мигрирован на новый schema и pin-ит live Base Sepolia registry addresses.
+- Старый settlement path удалён из `hydra-econ`; мобильный UI больше не показывает legacy crypto-настройки.
+- В Flutter добавлена вкладка Marketplace: wallet, balances, agent registration, offer browse, manual feedback. UI теперь различает `disabled`, `incomplete config`, `no offers` и `load failed`.
+- `HydraRouteBook` задеплоен на Base Sepolia по адресу `0x70594C7C33544fc0F22592005004B219dfbb012E` (tx `0x258c73e8d1b85299739028e57f65399a13397c17893682d30fbea19f821f3aad`, block `39671496`), `contracts/deployments.json` заполнён.
+- Для acceptance data зарегистрирован live agent `3377` (tx `0x869a57c910f7063ad45ff64e960538848e13aac225ed2e86b43f44be6f44506a`) и создан offer `#1` (tx `0xc6460e57553ffce315421110baaefe184f9aac17cec84e55a996bf191a9f7751`) с параметрами `US`, `vless`, `1 USDC/GB`, `1 USDC stake`, `100 Mbps` от wallet `0x6c69ee6e524f12d20c14c4b8caaa754012c9dc63`.
+- Operational note: live ERC-8004 proxy на Base Sepolia даёт ложный `NotActivated` в Foundry script simulation для `register()` / `ownerOf()`. Реальные `cast call/send` работают; acceptance seeding был завершён прямыми транзакциями, а не через `seed-base-sepolia.sh`.
+
+**Sprint Network + Crypto + Content (2026-03-29) — ИСТОРИЧЕСКИЙ BASELINE:**
 - Cloudflare Worker WSS relay (`hydra-relay-worker/`): WSS-to-TCP proxy с KV-квотами, whitelist Telegram DC.
 - Rust WSS relay client (`hydra-core/src/relay.rs`): `tokio-tungstenite`, интеграция в SOCKS5 handler (auto/always/never).
-- Circle USDC settlement (`hydra-econ/src/circle.rs`): developer-controlled wallets, Arbitrum Sepolia testnet.
 - Gossipsub relay endpoint sharing: топик `hydra/relay-endpoints/1.0` в `hydra-p2p`.
-- Конфигурация: `[relay]` и `[crypto]` секции в `hydra-config`.
-- Quota system: CF Worker KV + Rust `quota.rs` + Flutter circular progress widget.
-- Settings screen (5-я вкладка): proxy mode radio, relay endpoints, crypto toggle.
+- На дату 2026-04-02 этот блок следует читать как историю развития. Актуальные transport/runtime правила описаны в `SERVICE_MANUAL.md`.
 - STRATEGY.md: продуктовое позиционирование, экономика, целевые рынки, конкурентный анализ.
 - Android APK: успешная сборка с новыми компонентами.
 
@@ -59,7 +69,7 @@
 - Account: `8e418b62669470a077532442d2cf76e1` (Alex@alder.ru)
 - Subdomain: `hydra-net.workers.dev`
 
-**Следующая логическая работа:** real-device тест Android -> CF Worker -> Telegram DC, этап 2 плана — Attention tracking + персонализация.
+**Следующая логическая работа:** x402 / offer creation flow / route-selection integration между HRX и transport runtime, плюс iOS validation для Marketplace и tunnel stack.
 
 **Мобильный Content (фактическая зрелость, 2026-03-29):**
 - **Суммаризация в приложении:** логика есть в Rust (`hydra-content` → `Summarizer` + `MessageHandler`: для текста >200 символов вызывается LLM или fallback). На устройстве она **не доходит до UI**: не вызывается `listen_for_updates` (никто не забирает `take_updates_receiver` и не запускает цикл), нет экспорта в FRB для `fetch_and_process` / готовых `ProcessedMessage`. Пользователь видит только JSON-список диалогов.

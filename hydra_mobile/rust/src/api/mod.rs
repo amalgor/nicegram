@@ -1,4 +1,5 @@
 pub mod content;
+pub mod exchange;
 pub mod model_manager;
 pub mod quota;
 pub mod shared_state;

@@ -1,6 +1,6 @@
 # Hydra: Product Strategy
 
-**Last updated:** 2026-03-29
+**Last updated:** 2026-04-02
 
 ---
 
@@ -38,7 +38,7 @@ User's Phone
         └── Economic Layer
               ├── Trust/reputation scoring per peer
               ├── Traffic debt accounting
-              └── USDC settlement (Circle developer-controlled wallets)
+              └── HRX client on Base Sepolia (local EOA wallet + on-chain offers/feedback)
 ```
 
 ---
@@ -109,8 +109,8 @@ User pays $5/month subscription
 ### Relay operator model
 - Anyone can run a Hydra relay node (Cloudflare Worker, VPS, or home server)
 - Operators deploy their own Workers with custom domains
-- Revenue share tracked via hydra-econ debt/settlement system
-- Settlement in USDC via Circle developer-controlled wallets
+- Revenue share tracked locally via hydra-econ debt ledger today
+- Formal marketplace coordination moves to Hydra Route Exchange on Base Sepolia with app-local wallets
 
 ### Franchise model
 - Regional partners handle distribution, support, payment collection
@@ -165,7 +165,7 @@ The combination of acute demand (censorship), mature technology (on-device LLM),
 |------|------------|--------|------------|
 | CF Worker CPU limit (10ms) too tight for WSS relay | Medium | High | Prototype first; fallback to Durable Objects or VPS |
 | SNI-based blocking of Worker domains | High (Russia) | Medium | Custom domains, ECH (Encrypted Client Hello), domain rotation |
-| Circle KYC friction for settlement | Medium | Low | Testnet first; keep settlement interface abstract |
+| Base gas friction / wallet backup UX | Medium | Medium | Base Sepolia first, explicit backup flow, local-wallet UX before mainnet |
 | GGUF model too large for distribution | Low | Medium | Download-on-first-run for >0.5B models |
 | P2P DHT bootstrap fails behind strict NAT | Medium | Medium | Relay-first architecture; DHT as optimization, not requirement |
 
@@ -173,12 +173,12 @@ The combination of acute demand (censorship), mature technology (on-device LLM),
 
 ## 9. Immediate Roadmap (Current Sprint)
 
-1. Cloudflare Worker WSS relay + Rust client
-2. USDC settlement via Circle (testnet)
-3. Gossipsub relay endpoint sharing
-4. Quota system (KV + client tracking + UI)
-5. Settings screen (proxy mode selection)
-6. Android APK build and real-device test
+1. Hydra Route Exchange wallet/offers feedback loop on Base Sepolia
+2. Offer creation and stake deposit flows on top of HydraRouteBook
+3. x402-based payment path for automated settlement
+4. Route selection integration between on-chain offers and mobile network runtime
+5. iOS parity and device validation for Marketplace + tunnel stack
+6. Mainnet hardening once UX and economics stabilize
 
 ### Post-sprint
 - Folding UI (expandable content cards)

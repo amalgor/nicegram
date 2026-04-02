@@ -4,13 +4,25 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-: "${HRX_BASE_SEPOLIA_RPC_URL:?HRX_BASE_SEPOLIA_RPC_URL must be set}"
-: "${HRX_ERC8004_IDENTITY_REGISTRY:?HRX_ERC8004_IDENTITY_REGISTRY must be set}"
+FOUNDRY_BIN="${FOUNDRY_BIN:-$HOME/.foundry/bin}"
+FORGE_BIN="${FORGE_BIN:-$FOUNDRY_BIN/forge}"
+CAST_BIN="${CAST_BIN:-$FOUNDRY_BIN/cast}"
+RPC_URL="${HRX_BASE_SEPOLIA_RPC_URL:-https://sepolia.base.org}"
+
+if [[ ! -x "$FORGE_BIN" ]]; then
+  echo "forge not found at $FORGE_BIN" >&2
+  exit 1
+fi
+
+if [[ ! -x "$CAST_BIN" ]]; then
+  echo "cast not found at $CAST_BIN" >&2
+  exit 1
+fi
 
 FORGE_TARGET="script/DeployHydraRouteBook.s.sol:DeployHydraRouteBookScript"
 BROADCAST_FILE="$ROOT_DIR/broadcast/DeployHydraRouteBook.s.sol/84532/run-latest.json"
 
-forge script "$FORGE_TARGET" --rpc-url "$HRX_BASE_SEPOLIA_RPC_URL" --broadcast "$@"
+"$FORGE_BIN" script "$FORGE_TARGET" --rpc-url "$RPC_URL" --broadcast "$@"
 
 if [[ ! -f "$BROADCAST_FILE" ]]; then
   echo "Broadcast artifact not found: $BROADCAST_FILE" >&2
@@ -27,7 +39,7 @@ if [[ -z "$TX_HASH" || "$TX_HASH" == "null" ]]; then
   exit 1
 fi
 
-RECEIPT_JSON="$(cast receipt "$TX_HASH" --rpc-url "$HRX_BASE_SEPOLIA_RPC_URL" --json)"
+RECEIPT_JSON="$("$CAST_BIN" receipt "$TX_HASH" --rpc-url "$RPC_URL" --json)"
 CONTRACT_ADDRESS="$(jq -r '.contractAddress // empty' <<<"$RECEIPT_JSON")"
 BLOCK_NUMBER_RAW="$(jq -r '.blockNumber // empty' <<<"$RECEIPT_JSON")"
 
@@ -42,12 +54,12 @@ if [[ -z "$BLOCK_NUMBER_RAW" || "$BLOCK_NUMBER_RAW" == "null" ]]; then
 fi
 
 if [[ "$BLOCK_NUMBER_RAW" == 0x* ]]; then
-  BLOCK_NUMBER="$(cast to-dec "$BLOCK_NUMBER_RAW")"
+  BLOCK_NUMBER="$("$CAST_BIN" to-dec "$BLOCK_NUMBER_RAW")"
 else
   BLOCK_NUMBER="$BLOCK_NUMBER_RAW"
 fi
 
-forge script "$FORGE_TARGET" \
+"$FORGE_BIN" script "$FORGE_TARGET" \
   --sig "writeDeploymentMetadata(address,bytes32,uint256)" \
   "$CONTRACT_ADDRESS" \
   "$TX_HASH" \

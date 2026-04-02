@@ -9,6 +9,8 @@ contract DeployHydraRouteBookScript is ScriptBase {
 
     uint256 public constant BASE_SEPOLIA_CHAIN_ID = 84532;
     address public constant BASE_SEPOLIA_USDC = 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
+    address public constant BASE_SEPOLIA_IDENTITY_REGISTRY = 0x8004A818BFB912233c491871b3d84c89A494BD9e;
+    address public constant BASE_SEPOLIA_REPUTATION_REGISTRY = 0x8004B663056A597Dffe9eCcC1965A193B7388713;
     uint256 public constant DEFAULT_WITHDRAWAL_DELAY = 1 days;
 
     string internal constant DEPLOYMENT_KEY = "base-sepolia";
@@ -23,8 +25,8 @@ contract DeployHydraRouteBookScript is ScriptBase {
 
     function loadConfig() public returns (DeploymentConfig memory config) {
         config.usdc = vm.envOr("HRX_BASE_SEPOLIA_USDC", BASE_SEPOLIA_USDC);
-        config.identityRegistry = vm.envAddress("HRX_ERC8004_IDENTITY_REGISTRY");
-        config.reputationRegistry = vm.envOr("HRX_ERC8004_REPUTATION_REGISTRY", address(0));
+        config.identityRegistry = vm.envOr("HRX_ERC8004_IDENTITY_REGISTRY", BASE_SEPOLIA_IDENTITY_REGISTRY);
+        config.reputationRegistry = vm.envOr("HRX_ERC8004_REPUTATION_REGISTRY", BASE_SEPOLIA_REPUTATION_REGISTRY);
         config.withdrawalDelay = DEFAULT_WITHDRAWAL_DELAY;
     }
 

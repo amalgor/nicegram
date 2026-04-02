@@ -6,11 +6,13 @@ members = [
     "hydra-ai",
     "hydra-p2p",
     "hydra-econ",
+    "hydra-exchange",
     "hydra_mobile/rust"
 ]
 resolver = "2"
 
 [workspace.dependencies]
+alloy = { version = "1.0.41", features = ["full", "signer-mnemonic", "node-bindings"] }
 tokio = { version = "1.40", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 libp2p = { version = "0.56", features = ["tcp", "dns", "websocket", "noise", "yamux", "kad", "gossipsub", "identify", "macros", "tokio", "mdns", "ping", "request-response", "cbor"] }
@@ -23,3 +25,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sled = "0.34"
 llama-cpp-2 = "0.1.140"
+zeroize = "1.8"

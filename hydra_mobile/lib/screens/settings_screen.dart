@@ -15,7 +15,6 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool get wantKeepAlive => true;
 
   String _proxyMode = 'telegram';
-  bool _cryptoEnabled = false;
 
   @override
   void initState() {
@@ -27,7 +26,6 @@ class _SettingsScreenState extends State<SettingsScreen>
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _proxyMode = prefs.getString('proxy_mode') ?? 'telegram';
-      _cryptoEnabled = prefs.getBool('crypto_enabled') ?? false;
     });
   }
 
@@ -42,14 +40,6 @@ class _SettingsScreenState extends State<SettingsScreen>
     } catch (e) {
       debugPrint("Failed to set proxy mode in Rust: $e");
     }
-  }
-
-  Future<void> _toggleCrypto(bool value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('crypto_enabled', value);
-    setState(() {
-      _cryptoEnabled = value;
-    });
   }
 
   @override
@@ -87,40 +77,32 @@ class _SettingsScreenState extends State<SettingsScreen>
         ),
         const Divider(height: 32),
         Text(
-          'Crypto Settlement',
+          'Marketplace',
           style: Theme.of(context).textTheme.titleLarge,
         ),
         const SizedBox(height: 8),
-        SwitchListTile(
-          title: const Text('Enable USDC Settlement'),
-          subtitle: const Text('Arbitrum Sepolia testnet'),
-          value: _cryptoEnabled,
-          onChanged: _toggleCrypto,
-        ),
-        if (_cryptoEnabled) ...[
-          const Card(
-            child: Padding(
-              padding: EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Wallet Status',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  SizedBox(height: 8),
-                  Text('Chain: Arbitrum Sepolia'),
-                  Text('Balance: -- USDC (testnet)'),
-                  SizedBox(height: 8),
-                  Text(
-                    'Configure Circle API key in hydra.toml [crypto] section.',
-                    style: TextStyle(color: Colors.grey, fontSize: 12),
-                  ),
-                ],
-              ),
+        const Card(
+          child: Padding(
+            padding: EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Hydra Route Exchange',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                SizedBox(height: 8),
+                Text('Chain: Base Sepolia'),
+                Text('Wallet custody: local secure storage'),
+                SizedBox(height: 8),
+                Text(
+                  'Configure contract addresses and RPC endpoint in hydra.toml [crypto]. Wallet creation, agent registration, offers, and feedback live in the Marketplace tab.',
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              ],
             ),
           ),
-        ],
+        ),
 
         const Divider(height: 32),
         Text('About', style: Theme.of(context).textTheme.titleLarge),

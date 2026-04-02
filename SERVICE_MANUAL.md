@@ -11,8 +11,9 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 3. **hydra-p2p** — Сетевой слой на базе `libp2p`. Управляет соединениями, телеметрией и протоколами связи между узлами.
 4. **hydra-ai** — Модуль искусственного интеллекта. Инференс локальной LLM (llama.cpp через llama-cpp-2 + GGUF) для маршрутизации и обработки контента.
 5. **hydra-content** — Content Intelligence. Telegram-клиент (grammers MTProto), TLDR-фолдинг, суммаризация через LLM, attention tracking (хранилище по конфигу `[content]`).
-6. **hydra-econ** — Экономический слой и репутационная система (на базе `sled`).
-7. **hydra_mobile/rust** — Мост Flutter-Rust (flutter_rust_bridge). VPN-интерфейс (tun2proxy), менеджер моделей, телеметрия и API Content для мобильного UI.
+6. **hydra-econ** — Локальный экономический слой и репутационная система (на базе `sled`) для trust/debt без ончейн settlement.
+7. **hydra-exchange** — Base Sepolia HRX client. Локальный EOA wallet (BIP-39), `alloy` bindings для `HydraRouteBook`, ERC-8004 identity/reputation и чтения USDC balance.
+8. **hydra_mobile/rust** — Мост Flutter-Rust (flutter_rust_bridge). VPN-интерфейс (tun2proxy), менеджер моделей, телеметрия, API Content и FRB API Marketplace для мобильного UI.
 
 ## Конфигурация
 Все параметры вынесены в `hydra.toml` (TOML-файл в рабочей директории). При отсутствии файла используются значения по умолчанию. Пример конфигурации: `hydra.toml.example`.
@@ -23,8 +24,8 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **[econ]** — `db_path`, `settlement_threshold_bytes`
 - **[telegram]** — `api_id`, `api_hash`, `session_path`
 - **[content]** — `db_path`, `summarization_max_tokens`, `cache_ttl_seconds`
-- **[relay]** — `endpoints` (WSS relay URLs), `mode` (auto/always/never), `device_id`
-- **[crypto]** — `enabled`, `circle_api_key`, `settlement_chain`, `wallet_set_id`, `entity_secret`
+- **[[transports]]** — transport list в порядке failover/приоритета: `type = "wss" | "vless"`, `mode = "telegram" | "all"`, transport-specific поля (`endpoints`, `device_id`, `url`)
+- **[crypto]** — `enabled`, `chain`, `rpc_url`, `route_book_address`, `identity_registry_address`, `reputation_registry_address`, `usdc_address`
 - **[bootstrap]** — `listen_port` (для bootstrap-нод)
 
 На мобильном устройстве конфигурация загружается из `{app_documents_dir}/hydra.toml`, относительные пути автоматически разрешаются относительно `app_documents_dir`.
@@ -39,11 +40,11 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **База данных**: `sled` (встраиваемая key-value СУБД для хранения репутации пиров).
 - **Конфигурация**: `toml` crate.
 - **Кэширование AI**: `moka` (concurrent cache с TTL).
-- **Крипто-расчёты**: Circle API (REST) через `reqwest`, USDC на Arbitrum Sepolia.
+- **On-chain HRX client**: `alloy` + локальные ABI bindings, Base Sepolia, native Circle USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e`.
 - **Форматы данных**: JSON (промпты AI, API), CBOR (бинарные сетевые протоколы).
 - **Мобильный мост**: `flutter_rust_bridge` 2.11.1.
 - **VPN перехват**: `tun2proxy` (SOCKS5 bridge через TUN-интерфейс Android).
-- **Flutter UI**: Material 3, `shared_preferences` для настроек.
+- **Flutter UI**: Material 3, `shared_preferences` для runtime/filter state, `flutter_secure_storage` для хранения mnemonic в Android Keystore / iOS Keychain.
 
 ---
 
@@ -77,13 +78,24 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Trust Score (0-100)**: Повышается при успешном пропуске трафика (+1), понижается при обрывах (-10).
 - **Debt (Долг)**: Учет объема переданных данных (в байтах).
 - **Хранение**: Персистентно на диске, путь из `[econ].db_path`.
-- **USDC Settlement** (`circle.rs`): Интеграция с Circle developer-controlled wallets для расчётов в USDC. Поддержка Arbitrum Sepolia (testnet). API: создание wallet set, создание кошельков, проверка баланса, перевод USDC, ожидание подтверждения транзакции. Конфигурация через `[crypto]` секцию.
 - **Proof of Transfer**: Каркас для верификации доставки данных.
+
+### 4A. On-Chain HRX Client (hydra-exchange)
+- **Chain target**: только Base Sepolia в рамках текущего runtime.
+- **Wallet model**: локальный EOA wallet из 12-word BIP-39 mnemonic, derivation path `m/44'/60'/0'/0/0`.
+- **Pinned public addresses**: USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e`, Identity Registry `0x8004A818BFB912233c491871b3d84c89A494BD9e`, Reputation Registry `0x8004B663056A597Dffe9eCcC1965A193B7388713`.
+- **Live route book**: `0x70594C7C33544fc0F22592005004B219dfbb012E` on Base Sepolia, deploy tx `0x258c73e8d1b85299739028e57f65399a13397c17893682d30fbea19f821f3aad`, block `39671496`.
+- **Acceptance seed data**: provider wallet `0x6c69ee6e524f12d20c14c4b8caaa754012c9dc63`, agent `3377` (tx `0x869a57c910f7063ad45ff64e960538848e13aac225ed2e86b43f44be6f44506a`), offer `#1` (tx `0xc6460e57553ffce315421110baaefe184f9aac17cec84e55a996bf191a9f7751`) with `region = US`, `protocol = vless`, `price = 1 USDC/GB`, `stake = 1 USDC`, `bandwidth = 100 Mbps`.
+- **Operational quirk**: live ERC-8004 proxy calls `register()` / `ownerOf()` return spurious `NotActivated` errors under Foundry script simulation. Actual on-chain `cast call/send` works. Current acceptance seed was completed with direct `cast send` instead of `seed-base-sepolia.sh`.
+- **Bindings**: `HydraRouteBook`, official ERC-8004 ABI JSON for `IdentityRegistry.register()` / `ReputationRegistry.giveFeedback(...)`, ERC-20 `balanceOf`.
+- **Read path**: `query_offers(region, protocol)` нормализует offers в мобильную view model и при наличии registry подмешивает reputation summary.
+- **Write path**: agent registration и manual feedback submission подписываются локально через mnemonic, передаваемый из Flutter только на время операции.
 
 ### 5. Ядро (hydra-core)
 - **SOCKS5 Server**: Принимает соединения от локальных приложений, порт из `[network].socks5_port`.
 - **Multi-hop Relay**: Последовательно устанавливает stream-каналы через промежуточные узлы.
-- **WSS Relay** (`relay.rs`): Клиент для Cloudflare Worker WSS relay. При недоступности прямого соединения или P2P пиров, трафик маршрутизируется через WSS-туннель к Cloudflare Worker, который проксирует TCP к целевому серверу. Режимы: `auto` (fallback), `always` (принудительно), `never` (отключено). Конфигурация через `[relay]` секцию.
+- **Transport layer** (`transport/`): `Socks5Server` работает со списком `ConfiguredTransport` в порядке TOML-конфига. Поддерживаются `WssTransport` и `VlessTransport` (tcp+reality; grpc+reality URL currently parse-only).
+- **Routing policy**: глобальный `proxy_mode` остаётся в `[network]` (`off | telegram | full`). Для proxied-трафика действует fail-closed: если подходящие transports исчерпаны, соединение закрывается без direct fallback.
 
 ### 6. Cloudflare Worker Relay (hydra-relay-worker/)
 Отдельный проект (TypeScript, вне Rust workspace). Развёрнут на Cloudflare Workers free tier.
@@ -97,16 +109,18 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Endpoints**: `/health` (healthcheck), `/quota?device_id=...` (проверка квоты), WebSocket upgrade (relay).
 
 ### 7. Мобильный слой (hydra_mobile)
-- **Flutter UI**: 5 вкладок — Connect (VPN toggle + quota + connection summary), Connections (live connection list с per-connection proxy toggle), AI Models (скачивание/выбор), Content (Telegram auth + folding message cards), Settings (proxy mode, relay endpoints, crypto).
-- **UI Architecture**: Разделён на отдельные файлы: `screens/connect_screen.dart`, `screens/connections_screen.dart`, `screens/models_screen.dart`, `screens/content_screen.dart`, `screens/settings_screen.dart`, `widgets/quota_widget.dart`, `widgets/connection_tile.dart`, `widgets/message_card.dart`.
-- **Rust bridge**: `flutter_rust_bridge` для синхронных и асинхронных вызовов. Новые API: `get_active_connections()`, `get_connection_stats()`, `set_connection_proxy()`, `fetch_channel_messages()`.
+- **Flutter UI**: 7 вкладок — Connect, Network, Marketplace, AI, Content, Logs, Settings.
+- **UI Architecture**: Добавлены `screens/marketplace_screen.dart` и `exchange/` слой (`HydraExchangeRepository`, backend, models, secure mnemonic store).
+- **Rust bridge**: `flutter_rust_bridge` используется и для network/runtime API, и для Marketplace API: `get_marketplace_config_status()`, `create_wallet()`, `import_wallet()`, `get_wallet_balances()`, `list_route_offers()`, `register_agent()`, `submit_feedback()`.
 - **VPN**: Android VpnService → TUN FD → `tun2proxy` → локальный SOCKS5 → hydra-core. **Исправлен баг**: `vpn.rs` теперь читает `socks5_port` из загруженной конфигурации через `SOCKS5_PORT` AtomicU16, а не из `NetworkConfig::default()`.
 - **Connection Tracking** (`hydra-core/src/connections.rs`): `ConnectionRegistry` — thread-safe реестр всех соединений с tracking bytes, route type, Telegram detection, AI reasoning, force-proxy override.
 - **Selective Routing**: Telegram DC трафик (149.154.0.0/16, 91.108.0.0/16) автоматически маршрутизируется через relay. Остальной трафик — direct. Пользователь может переключить per-connection.
 - **Content Intelligence**: Tap on dialog → `fetch_channel_messages()` → `MessageHandler::fetch_and_process()` → `Summarizer::process()` → `FoldableMessageCard` с 4 уровнями (Headline/Summary/KeyPoints/FullText). Attention tracking при expand/collapse.
 - **Model Manager**: Скачивание моделей с HuggingFace, горячая замена через `SHARED_AI`.
 - **Quota Manager** (`quota.rs`): Локальный трекинг потреблённого трафика с периодической синхронизацией с CF Worker KV.
-- **Settings**: Proxy mode (Off/Telegram Only/Full VPN), список relay endpoints, статус USDC кошелька. Убран нефункциональный "Selected Apps".
+- **Marketplace**: локальный wallet onboarding, balances (ETH + USDC), ERC-8004 agent registration, filters `region/protocol` с `SharedPreferences`, offers list и manual feedback.
+- **Marketplace runtime states**: экран явно различает `disabled`, `incomplete config`, `no offers` и `load failed`; пустой `route_book_address` в `hydra.toml` больше не вываливает сырой backend exception в UI.
+- **Settings**: Proxy mode и краткая on-chain status card. Legacy settlement UI удалён.
 
 ---
 
@@ -133,12 +147,27 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 ### Sprint: Network + Crypto + Content (март 2026) — ВЫПОЛНЕНО
 - **Cloudflare Worker WSS relay** (`hydra-relay-worker/`): WSS-to-TCP proxy с квотами в KV.
 - **Rust WSS relay client** (`hydra-core/src/relay.rs`): `tokio-tungstenite`, интеграция в SOCKS5 handler с fallback.
-- **Circle USDC settlement** (`hydra-econ/src/circle.rs`): developer-controlled wallets, Arbitrum Sepolia testnet.
 - **Gossipsub relay sharing**: топик `hydra/relay-endpoints/1.0` в `hydra-p2p`, publish/subscribe.
 - **Quota system**: CF Worker KV tracking + Rust `quota.rs` + Flutter circular progress widget.
-- **Settings screen**: proxy mode (Off/Telegram/Selected/Full VPN), relay endpoints, crypto toggle.
+- **Settings screen**: proxy mode control и runtime wiring для transport policy.
 - **STRATEGY.md**: продуктовое позиционирование, экономика, целевые рынки.
 - **Android APK**: успешная сборка с новыми компонентами.
+
+### HRX Phase 1: On-Chain Route Book (апрель 2026) — ВЫПОЛНЕНО
+- **Foundry project** (`contracts/`): isolated контрактный workspace для Base Sepolia.
+- **HydraRouteBook**: escrow-модель офферов, query API, delayed withdrawal, slash-claim hook.
+- **Deploy flow**: Base Sepolia deploy script + `deployments.json` для dev/test артефактов.
+- **Runtime direction**: Arbitrum/Circle settlement path признан legacy и выведен из дальнейшего плана.
+
+### HRX Phase 2: Embedded Wallet + Marketplace (апрель 2026) — ВЫПОЛНЕНО
+- **`hydra-exchange`**: новый Rust crate на `alloy` для Base Sepolia reads/writes.
+- **Config migration**: `[crypto]` переведён на Base Sepolia schema без legacy REST settlement ключей.
+- **Tracked config**: корневой `hydra.toml` мигрирован на `[[transports]]` + новый `[crypto]`, официальные Base Sepolia registry addresses pinned.
+- **Local wallet custody**: mnemonic хранится только через `flutter_secure_storage`, в Rust передаётся лишь на время подписания.
+- **Marketplace tab**: wallet, balances, ERC-8004 agent registration, on-chain offers, manual feedback.
+- **Live deployment**: `contracts/deployments.json` заполнён реальным Base Sepolia deploy; `route_book_address` записан в корневой `hydra.toml`.
+- **Seeded acceptance data**: создан live agent `3377` и offer `#1`, так что Marketplace можно валидировать против непустого on-chain state.
+- **Docs cleanup**: legacy settlement wording удалён из активной архитектуры.
 
 ### Sprint: Mobile MVP Readiness (март 2026) — ВЫПОЛНЕНО
 - **Unit tests (64 теста)**: SOCKS5 parsing, relay logic, quota, AI routing, config loading, connection registry, integration tests (SOCKS5 end-to-end, domain connect, auth rejection, registry tracking, AI routing).
@@ -154,7 +183,7 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Config `#[serde(default)]`**: Все config structs теперь поддерживают partial TOML (missing sections → defaults).
 
 ### Android Build & Runtime Fixes (29 марта 2026) — ВЫПОЛНЕНО
-- **Logs screen** (`lib/screens/logs_screen.dart`): Добавлен экран логов с фильтрацией, auto-scroll, copy-all, цветовой маркировкой по уровню (ERROR/WARN/INFO/DEBUG/TRACE). 6 вкладок в навигации.
+- **Logs screen** (`lib/screens/logs_screen.dart`): Добавлен экран логов с фильтрацией, auto-scroll, copy-all, цветовой маркировкой по уровню (ERROR/WARN/INFO/DEBUG/TRACE). После Marketplace расширена навигация до 7 вкладок.
 - **Double-start protection**: `start_hydra_node()` защищён `AtomicBool` — повторные вызовы игнорируются (idempotent).
 - **P2P graceful fallback**: На Android libp2p не может инициализироваться (нет `/etc/resolv.conf`). `P2PNode::dummy_handle()` создаёт no-op handle, SOCKS5 сервер продолжает работу без peer discovery (relay-only mode).
 - **Direct-first routing strategy**: Telegram-трафик сначала пробует прямое подключение (5s timeout), и только при неудаче переключается на WSS relay. Это решает проблему routing loop (relay через VPN) и обеспечивает минимальную задержку когда Telegram не заблокирован.
@@ -239,7 +268,7 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 
 ### Этап 3: Production deployment
 - **Custom domain** для CF Worker relay — ВЫПОЛНЕНО: `relay.hydra-net.work` (домен `hydra-net.work`).
-- **Production USDC** (mainnet, реальные деньги).
+- **HRX settlement hardening**: offer creation/staking UI, x402 flow, mainnet economics.
 - **Franchise model**: региональные операторы relay-нод.
 - **iOS build** и App Store distribution.
 

@@ -1,0 +1,307 @@
+use alloy::primitives::{Address, FixedBytes, U256};
+use alloy::providers::{Provider, ProviderBuilder};
+use alloy::rpc::types::TransactionReceipt;
+use anyhow::{Result, bail};
+
+use crate::bindings::{HydraRouteBook, IdentityRegistry, ReputationRegistry, UsdcToken};
+use crate::config::{BASE_SEPOLIA_CHAIN, ExchangeConfig};
+use crate::models::{
+    AgentRegistrationResult, ReputationSummary, RouteOfferView, TxHashResult, WalletBalances,
+};
+use crate::wallet::LocalWallet;
+
+#[derive(Debug, Clone)]
+pub struct RouteExchangeClient {
+    config: ExchangeConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentRegistrar {
+    config: ExchangeConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReputationClient {
+    config: ExchangeConfig,
+}
+
+impl RouteExchangeClient {
+    pub fn new(config: ExchangeConfig) -> Self {
+        Self { config }
+    }
+
+    pub async fn query_offers(&self, region: &str, protocol: &str) -> Result<Vec<RouteOfferView>> {
+        let region = normalize_region(region)?;
+        let protocol = normalize_protocol(protocol)?;
+        let total = self.total_offers().await?;
+        let reputation_client = self
+            .config
+            .reputation_registry_address
+            .map(|_| ReputationClient::new(self.config.clone()));
+
+        let mut offers = Vec::new();
+        for offer_id in 1..=total {
+            let view = self.get_offer(offer_id).await?;
+            if !view.active || view.region != region {
+                continue;
+            }
+            if !view
+                .protocols
+                .iter()
+                .any(|item| item.eq_ignore_ascii_case(&protocol))
+            {
+                continue;
+            }
+
+            let enriched = if let Some(client) = &reputation_client {
+                let reputation = client.summary_for_agent(view.agent_id).await?;
+                RouteOfferView {
+                    reputation,
+                    ..view
+                }
+            } else {
+                view
+            };
+
+            offers.push(enriched);
+        }
+
+        Ok(offers)
+    }
+
+    pub async fn get_offer(&self, offer_id: u64) -> Result<RouteOfferView> {
+        let provider = ProviderBuilder::new().connect_http(self.config.rpc_url.clone());
+        let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
+        let offer = route_book
+            .getOffer(U256::from(offer_id))
+            .call()
+            .await?;
+
+        Ok(RouteOfferView {
+            offer_id,
+            provider: format!("{:#x}", offer.provider),
+            agent_id: offer.agentId.to(),
+            endpoint_ciphertext: offer.endpointCiphertext,
+            protocols: offer.protocols,
+            region: offer.region,
+            price_per_gb_raw: offer.pricePerGB.to_string(),
+            price_per_gb: format_unsigned_fixed(&offer.pricePerGB, 6),
+            stake_amount_raw: offer.stakeAmount.to_string(),
+            stake_amount: format_unsigned_fixed(&offer.stakeAmount, 6),
+            bandwidth_mbps: offer.bandwidthMbps.to(),
+            created_at: offer.createdAt,
+            deactivated_at: offer.deactivatedAt,
+            active: offer.active,
+            reputation: None,
+        })
+    }
+
+    pub async fn wallet_balances(&self, address: Address) -> Result<WalletBalances> {
+        let provider = ProviderBuilder::new().connect_http(self.config.rpc_url.clone());
+        let eth_balance: U256 = provider.get_balance(address).await?;
+        let usdc = UsdcToken::new(self.config.usdc_address, provider);
+        let usdc_balance = usdc.balanceOf(address).call().await?;
+
+        Ok(WalletBalances {
+            address: format!("{:#x}", address),
+            chain: BASE_SEPOLIA_CHAIN.to_string(),
+            eth_balance_wei: eth_balance.to_string(),
+            eth_balance: format_unsigned_fixed(&eth_balance, 18),
+            usdc_address: format!("{:#x}", self.config.usdc_address),
+            usdc_balance_raw: usdc_balance.to_string(),
+            usdc_balance: format_unsigned_fixed(&usdc_balance, 6),
+        })
+    }
+
+    async fn total_offers(&self) -> Result<u64> {
+        let provider = ProviderBuilder::new().connect_http(self.config.rpc_url.clone());
+        let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
+        let total = route_book.totalOffers().call().await?;
+        Ok(total.to())
+    }
+}
+
+impl AgentRegistrar {
+    pub fn new(config: ExchangeConfig) -> Self {
+        Self { config }
+    }
+
+    pub async fn register(&self, mnemonic: &str) -> Result<AgentRegistrationResult> {
+        let signer = LocalWallet::signer_from_phrase(mnemonic)?;
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.config.rpc_url.clone());
+        let identity = IdentityRegistry::new(self.config.identity_registry_address, provider);
+
+        let preview = identity.register_0().call().await?;
+        let pending = identity.register_0().send().await?;
+        let tx_hash = format!("{:#x}", pending.tx_hash());
+        let receipt = pending.get_receipt().await?;
+        let agent_id = decode_registered_agent_id(&receipt).unwrap_or_else(|| preview.to());
+
+        Ok(AgentRegistrationResult { agent_id, tx_hash })
+    }
+}
+
+impl ReputationClient {
+    pub fn new(config: ExchangeConfig) -> Self {
+        Self { config }
+    }
+
+    pub async fn give_feedback(
+        &self,
+        mnemonic: &str,
+        agent_id: u64,
+        positive: bool,
+        tag1: &str,
+    ) -> Result<TxHashResult> {
+        let registry_address = self
+            .config
+            .reputation_registry_address
+            .ok_or_else(|| anyhow::anyhow!("Missing [crypto].reputation_registry_address."))?;
+        let normalized_tag = normalize_tag(tag1)?;
+        let signer = LocalWallet::signer_from_phrase(mnemonic)?;
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.config.rpc_url.clone());
+        let reputation = ReputationRegistry::new(registry_address, provider);
+
+        let value: i128 = if positive { 1 } else { -1 };
+        let pending = reputation
+            .giveFeedback(
+                U256::from(agent_id),
+                value,
+                0,
+                normalized_tag,
+                String::new(),
+                String::new(),
+                String::new(),
+                FixedBytes::<32>::ZERO,
+            )
+            .send()
+            .await?;
+        let tx_hash = format!("{:#x}", pending.tx_hash());
+        let _receipt = pending.get_receipt().await?;
+
+        Ok(TxHashResult { tx_hash })
+    }
+
+    pub async fn summary_for_agent(&self, agent_id: u64) -> Result<Option<ReputationSummary>> {
+        let Some(registry_address) = self.config.reputation_registry_address else {
+            return Ok(None);
+        };
+        let provider = ProviderBuilder::new().connect_http(self.config.rpc_url.clone());
+        let reputation = ReputationRegistry::new(registry_address, provider);
+        let clients = reputation.getClients(U256::from(agent_id)).call().await?;
+
+        if clients.is_empty() {
+            return Ok(Some(ReputationSummary {
+                feedback_count: 0,
+                summary_value: "0".to_string(),
+                value_decimals: 0,
+                formatted_value: "0".to_string(),
+            }));
+        }
+
+        let summary = reputation
+            .getSummary(U256::from(agent_id), clients, String::new(), String::new())
+            .call()
+            .await?;
+
+        Ok(Some(ReputationSummary {
+            feedback_count: summary.count,
+            summary_value: summary.summaryValue.to_string(),
+            value_decimals: summary.summaryValueDecimals,
+            formatted_value: format_signed_fixed(summary.summaryValue, summary.summaryValueDecimals),
+        }))
+    }
+}
+
+fn decode_registered_agent_id(receipt: &TransactionReceipt) -> Option<u64> {
+    receipt
+        .decoded_log::<IdentityRegistry::Registered>()
+        .map(|event| event.data.agentId.to())
+}
+
+fn normalize_region(region: &str) -> Result<String> {
+    let normalized = region.trim().to_uppercase();
+    if normalized.len() != 2 || !normalized.chars().all(|c| c.is_ascii_uppercase()) {
+        bail!("Region must be an uppercase ISO-3166 alpha-2 code.");
+    }
+    Ok(normalized)
+}
+
+fn normalize_protocol(protocol: &str) -> Result<String> {
+    let normalized = protocol.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        bail!("Protocol filter must not be empty.");
+    }
+    Ok(normalized)
+}
+
+fn normalize_tag(tag1: &str) -> Result<String> {
+    let normalized = tag1.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "availability" | "latency" | "throughput" | "trust" => Ok(normalized),
+        _ => bail!("Unsupported feedback tag '{}'.", tag1),
+    }
+}
+
+fn format_unsigned_fixed(value: &U256, decimals: usize) -> String {
+    format_fixed_string(&value.to_string(), decimals, false)
+}
+
+fn format_signed_fixed(value: i128, decimals: u8) -> String {
+    let abs = value.unsigned_abs().to_string();
+    format_fixed_string(&abs, decimals as usize, value.is_negative())
+}
+
+fn format_fixed_string(raw: &str, decimals: usize, negative: bool) -> String {
+    if decimals == 0 {
+        return if negative {
+            format!("-{}", raw)
+        } else {
+            raw.to_string()
+        };
+    }
+
+    let mut digits = raw.to_string();
+    if digits.len() <= decimals {
+        digits = format!("{}{}", "0".repeat(decimals + 1 - digits.len()), digits);
+    }
+
+    let split = digits.len() - decimals;
+    let integer = &digits[..split];
+    let fraction = digits[split..].trim_end_matches('0');
+    let number = if fraction.is_empty() {
+        integer.to_string()
+    } else {
+        format!("{}.{}", integer, fraction)
+    };
+
+    if negative {
+        format!("-{}", number)
+    } else {
+        number
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formatters_render_expected_values() {
+        assert_eq!(format_fixed_string("1234500", 6, false), "1.2345");
+        assert_eq!(format_fixed_string("1000000", 6, false), "1");
+        assert_eq!(format_fixed_string("42", 0, false), "42");
+        assert_eq!(format_signed_fixed(-32, 1), "-3.2");
+    }
+
+    #[test]
+    fn tag_validation_is_fixed_enum() {
+        assert!(normalize_tag("availability").is_ok());
+        assert!(normalize_tag("latency").is_ok());
+        assert!(normalize_tag("speed").is_err());
+    }
+}

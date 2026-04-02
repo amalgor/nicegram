@@ -236,7 +236,6 @@ contract DeployHydraRouteBookScriptTest is TestBase {
 
     function setUp() public {
         script = new DeployHydraRouteBookScript();
-        vm.setEnv("HRX_ERC8004_IDENTITY_REGISTRY", vm.toString(address(0x1001)));
     }
 
     function testLoadConfigUsesBaseSepoliaDefaults() public {
@@ -245,8 +244,16 @@ contract DeployHydraRouteBookScriptTest is TestBase {
         assertEq(
             config.usdc, 0x036CbD53842c5426634e7929541eC2318f3dCF7e, "script should default to Circle Base Sepolia USDC"
         );
-        assertEq(config.identityRegistry, address(0x1001), "identity registry should come from env");
-        assertEq(config.reputationRegistry, address(0), "reputation registry should default to zero");
+        assertEq(
+            config.identityRegistry,
+            0x8004A818BFB912233c491871b3d84c89A494BD9e,
+            "identity registry should default to live Base Sepolia registry"
+        );
+        assertEq(
+            config.reputationRegistry,
+            0x8004B663056A597Dffe9eCcC1965A193B7388713,
+            "reputation registry should default to live Base Sepolia registry"
+        );
         assertEq(config.withdrawalDelay, 1 days, "withdrawal delay should use phase one default");
     }
 
@@ -256,6 +263,7 @@ contract DeployHydraRouteBookScriptTest is TestBase {
             vm.removeFile(path);
         }
 
+        vm.setEnv("HRX_ERC8004_IDENTITY_REGISTRY", vm.toString(address(0x1001)));
         vm.setEnv("HRX_ERC8004_REPUTATION_REGISTRY", vm.toString(address(0x2002)));
         script.writeDeploymentMetadataToPath(path, address(0x3003), bytes32(uint256(0xAABBCCDD)), 123456);
 

@@ -7,6 +7,7 @@
 // ignore_for_file: argument_type_not_assignable
 
 import 'api/content.dart';
+import 'api/exchange.dart';
 import 'api/model_manager.dart';
 import 'api/quota.dart';
 import 'api/shared_state.dart';

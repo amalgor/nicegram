@@ -37,6 +37,7 @@ dependencies:
   rust_lib_hydra_mobile:
     path: rust_builder
   flutter_rust_bridge: 2.11.1
+  flutter_secure_storage: ^10.0.0
   path_provider: ^2.1.5
   shared_preferences: ^2.5.0
 

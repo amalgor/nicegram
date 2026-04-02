@@ -187,30 +187,103 @@ fn default_transports() -> Vec<TransportConfig> {
     }]
 }
 
-/// Crypto settlement configuration (Circle USDC)
+/// On-chain marketplace configuration (Base Sepolia)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CryptoConfig {
-    /// Enable crypto settlement
+    /// Enable on-chain marketplace features.
     pub enabled: bool,
-    /// Circle API key (developer-controlled wallets)
-    pub circle_api_key: String,
-    /// Target chain for settlement
-    pub settlement_chain: String,
-    /// Wallet set ID (created via Circle API)
-    pub wallet_set_id: String,
-    /// Entity secret for signing (hex-encoded)
-    pub entity_secret: String,
+    /// Supported chain name. Phase 2 supports only BASE-SEPOLIA.
+    pub chain: String,
+    /// JSON-RPC endpoint for the target chain.
+    pub rpc_url: String,
+    /// Hydra Route Book contract address.
+    pub route_book_address: String,
+    /// ERC-8004 identity registry address.
+    pub identity_registry_address: String,
+    /// ERC-8004 reputation registry address. Leave empty to disable reputation reads/writes.
+    pub reputation_registry_address: String,
+    /// USDC contract address for the selected chain.
+    pub usdc_address: String,
 }
 
 impl Default for CryptoConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            circle_api_key: String::new(),
-            settlement_chain: "ARB-SEPOLIA".to_string(),
-            wallet_set_id: String::new(),
-            entity_secret: String::new(),
+            chain: "BASE-SEPOLIA".to_string(),
+            rpc_url: "https://sepolia.base.org".to_string(),
+            route_book_address: String::new(),
+            identity_registry_address: "0x8004A818BFB912233c491871b3d84c89A494BD9e"
+                .to_string(),
+            reputation_registry_address: "0x8004B663056A597Dffe9eCcC1965A193B7388713"
+                .to_string(),
+            usdc_address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e".to_string(),
+        }
+    }
+}
+
+/// Dynamic route discovery configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscoveryConfig {
+    /// How often to refresh discovered routes from the route book.
+    pub poll_interval_secs: u64,
+    /// Maximum number of active offers to keep in the discovery cache.
+    pub max_offers: u64,
+    /// Prefer free offers when ordering discovered routes.
+    pub prefer_free: bool,
+    /// Timeout for a single route book RPC refresh.
+    pub rpc_timeout_secs: u64,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: 300,
+            max_offers: 50,
+            prefer_free: true,
+            rpc_timeout_secs: 10,
+        }
+    }
+}
+
+/// User-facing local credit configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CreditConfig {
+    /// Anonymous trial credit granted before the user links Telegram.
+    pub trial_credit_usdc: f64,
+    /// Credit limit granted after Telegram anchor is available.
+    pub linked_credit_usdc: f64,
+    /// Multiplier applied after a successful top-up/payment.
+    pub growth_factor: f64,
+    /// Utilization threshold for soft reminders.
+    pub soft_nudge_threshold: f64,
+    /// Utilization threshold where premium traffic is throttled.
+    pub soft_throttle_threshold: f64,
+    /// Utilization threshold where premium traffic falls back to free routes.
+    pub fallback_threshold: f64,
+    /// Minimum throughput fraction when throttling is active.
+    pub min_speed_pct: f64,
+    /// Minimum interval between repeated nudges.
+    pub nudge_interval_secs: u64,
+    /// Number of successful payments required to unlock advanced tools.
+    pub advanced_after_payments: u32,
+}
+
+impl Default for CreditConfig {
+    fn default() -> Self {
+        Self {
+            trial_credit_usdc: 0.1,
+            linked_credit_usdc: 1.0,
+            growth_factor: 2.0,
+            soft_nudge_threshold: 0.5,
+            soft_throttle_threshold: 0.8,
+            fallback_threshold: 1.0,
+            min_speed_pct: 0.25,
+            nudge_interval_secs: 3600,
+            advanced_after_payments: 3,
         }
     }
 }
@@ -236,6 +309,8 @@ pub struct HydraConfig {
     pub network: NetworkConfig,
     pub ai: AiConfig,
     pub econ: EconConfig,
+    pub discovery: DiscoveryConfig,
+    pub credit: CreditConfig,
     pub telegram: TelegramConfig,
     pub content: ContentConfig,
     #[serde(default = "default_transports")]
@@ -250,6 +325,8 @@ impl Default for HydraConfig {
             network: NetworkConfig::default(),
             ai: AiConfig::default(),
             econ: EconConfig::default(),
+            discovery: DiscoveryConfig::default(),
+            credit: CreditConfig::default(),
             telegram: TelegramConfig::default(),
             content: ContentConfig::default(),
             transports: default_transports(),
@@ -344,6 +421,19 @@ mod tests {
         assert_eq!(config.ai.cache_ttl_seconds, 300);
         assert_eq!(config.ai.cache_max_items, 1000);
         assert_eq!(config.econ.settlement_threshold_bytes, 10_000_000);
+        assert_eq!(config.discovery.poll_interval_secs, 300);
+        assert_eq!(config.discovery.max_offers, 50);
+        assert!(config.discovery.prefer_free);
+        assert_eq!(config.discovery.rpc_timeout_secs, 10);
+        assert!((config.credit.trial_credit_usdc - 0.1).abs() < f64::EPSILON);
+        assert!((config.credit.linked_credit_usdc - 1.0).abs() < f64::EPSILON);
+        assert!((config.credit.growth_factor - 2.0).abs() < f64::EPSILON);
+        assert!((config.credit.soft_nudge_threshold - 0.5).abs() < f64::EPSILON);
+        assert!((config.credit.soft_throttle_threshold - 0.8).abs() < f64::EPSILON);
+        assert!((config.credit.fallback_threshold - 1.0).abs() < f64::EPSILON);
+        assert!((config.credit.min_speed_pct - 0.25).abs() < f64::EPSILON);
+        assert_eq!(config.credit.nudge_interval_secs, 3600);
+        assert_eq!(config.credit.advanced_after_payments, 3);
         assert_eq!(config.transports.len(), 1);
         assert_eq!(
             config.transports[0],
@@ -354,7 +444,20 @@ mod tests {
             }
         );
         assert!(!config.crypto.enabled);
-        assert_eq!(config.crypto.settlement_chain, "ARB-SEPOLIA");
+        assert_eq!(config.crypto.chain, "BASE-SEPOLIA");
+        assert_eq!(config.crypto.rpc_url, "https://sepolia.base.org");
+        assert_eq!(
+            config.crypto.identity_registry_address,
+            "0x8004A818BFB912233c491871b3d84c89A494BD9e"
+        );
+        assert_eq!(
+            config.crypto.reputation_registry_address,
+            "0x8004B663056A597Dffe9eCcC1965A193B7388713"
+        );
+        assert_eq!(
+            config.crypto.usdc_address,
+            "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+        );
         assert_eq!(config.bootstrap.listen_port, 33097);
     }
 
@@ -404,6 +507,23 @@ cache_max_items = 500
 db_path = "my_db"
 settlement_threshold_bytes = 5000000
 
+[discovery]
+poll_interval_secs = 60
+max_offers = 10
+prefer_free = false
+rpc_timeout_secs = 5
+
+[credit]
+trial_credit_usdc = 0.2
+linked_credit_usdc = 2.0
+growth_factor = 3.0
+soft_nudge_threshold = 0.6
+soft_throttle_threshold = 0.85
+fallback_threshold = 1.05
+min_speed_pct = 0.4
+nudge_interval_secs = 120
+advanced_after_payments = 5
+
 [telegram]
 api_id = 12345
 api_hash = "abc123"
@@ -427,10 +547,12 @@ mode = "all"
 
 [crypto]
 enabled = true
-circle_api_key = "key123"
-settlement_chain = "ETH-MAINNET"
-wallet_set_id = "ws-1"
-entity_secret = "secret"
+chain = "BASE-SEPOLIA"
+rpc_url = "https://base.example/rpc"
+route_book_address = "0x1111111111111111111111111111111111111111"
+identity_registry_address = "0x2222222222222222222222222222222222222222"
+reputation_registry_address = "0x3333333333333333333333333333333333333333"
+usdc_address = "0x4444444444444444444444444444444444444444"
 
 [bootstrap]
 listen_port = 44444
@@ -443,6 +565,15 @@ listen_port = 44444
         assert_eq!(config.network.p2p_listen_port, 5000);
         assert_eq!(config.network.proxy_mode, "full");
         assert_eq!(config.ai.max_generation_tokens, 256);
+        assert_eq!(config.discovery.poll_interval_secs, 60);
+        assert_eq!(config.discovery.max_offers, 10);
+        assert!(!config.discovery.prefer_free);
+        assert_eq!(config.discovery.rpc_timeout_secs, 5);
+        assert!((config.credit.trial_credit_usdc - 0.2).abs() < f64::EPSILON);
+        assert!((config.credit.linked_credit_usdc - 2.0).abs() < f64::EPSILON);
+        assert!((config.credit.growth_factor - 3.0).abs() < f64::EPSILON);
+        assert!((config.credit.min_speed_pct - 0.4).abs() < f64::EPSILON);
+        assert_eq!(config.credit.advanced_after_payments, 5);
         assert_eq!(config.transports.len(), 2);
         assert_eq!(
             config.transports[0],
@@ -457,6 +588,12 @@ listen_port = 44444
             TransportConfig::Vless { mode, .. } if *mode == TransportMode::All
         ));
         assert!(config.crypto.enabled);
+        assert_eq!(config.crypto.chain, "BASE-SEPOLIA");
+        assert_eq!(config.crypto.rpc_url, "https://base.example/rpc");
+        assert_eq!(
+            config.crypto.route_book_address,
+            "0x1111111111111111111111111111111111111111"
+        );
         assert_eq!(config.bootstrap.listen_port, 44444);
     }
 
@@ -551,5 +688,47 @@ listen_port = 44444
             config.primary_quota_transport(),
             Some(("wss://relay.example.com".to_string(), "device-1".to_string()))
         );
+    }
+
+    #[test]
+    fn test_repo_root_hydra_toml_uses_current_schema() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../hydra.toml");
+        let config = HydraConfig::load(&repo_root).expect("repo root hydra.toml should parse");
+
+        assert_eq!(config.network.proxy_mode, "telegram");
+        assert!(!config.transports.is_empty());
+        assert!(matches!(config.transports[0], TransportConfig::Wss { .. }));
+        assert_eq!(config.crypto.chain, "BASE-SEPOLIA");
+        assert_eq!(
+            config.crypto.identity_registry_address,
+            "0x8004A818BFB912233c491871b3d84c89A494BD9e"
+        );
+        assert_eq!(
+            config.crypto.reputation_registry_address,
+            "0x8004B663056A597Dffe9eCcC1965A193B7388713"
+        );
+    }
+
+    #[test]
+    fn test_load_partial_credit_and_discovery_use_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hydra.toml");
+        std::fs::write(
+            &path,
+            r#"
+[discovery]
+poll_interval_secs = 123
+
+[credit]
+trial_credit_usdc = 0.3
+"#,
+        )
+        .unwrap();
+
+        let config = HydraConfig::load(&path).unwrap();
+        assert_eq!(config.discovery.poll_interval_secs, 123);
+        assert_eq!(config.discovery.max_offers, 50);
+        assert!((config.credit.trial_credit_usdc - 0.3).abs() < f64::EPSILON);
+        assert!((config.credit.linked_credit_usdc - 1.0).abs() < f64::EPSILON);
     }
 }

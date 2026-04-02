@@ -1,5 +1,3 @@
-pub mod circle;
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sled::Db;
