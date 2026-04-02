@@ -23,3 +23,13 @@
 .DS_Store
 Thumbs.db
 hydra-relay-worker/node_modules/
+
+# Foundry / HRX contracts
+/contracts/cache/
+/contracts/out/
+/contracts/broadcast/
+/contracts/lib/*
+!/contracts/lib/.gitkeep
+/contracts/.tmp/
+/contracts/.env*
+/contracts/keystore/
