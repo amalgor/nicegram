@@ -1,0 +1,38 @@
+# Hydra mobile runtime configuration
+# This file is copied into the app documents directory on first launch.
+
+[network]
+proxy_mode = "telegram"
+
+[[transports]]
+type = "wss"
+endpoints = ["wss://relay.hydra-net.work"]
+mode = "all"
+device_id = ""
+
+[crypto]
+enabled = true
+chain = "BASE-SEPOLIA"
+rpc_url = "https://sepolia.base.org"
+route_book_address = "0x70594C7C33544fc0F22592005004B219dfbb012E"
+deal_board_address = "0x0c811902c990c4D330c1269cc955140d975f7035"
+identity_registry_address = "0x8004A818BFB912233c491871b3d84c89A494BD9e"
+reputation_registry_address = "0x8004B663056A597Dffe9eCcC1965A193B7388713"
+usdc_address = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+
+[discovery]
+poll_interval_secs = 300
+max_offers = 50
+prefer_free = true
+rpc_timeout_secs = 10
+
+[credit]
+trial_credit_usdc = 0.1
+linked_credit_usdc = 1.0
+growth_factor = 2.0
+soft_nudge_threshold = 0.5
+soft_throttle_threshold = 0.8
+fallback_threshold = 1.0
+min_speed_pct = 0.25
+nudge_interval_secs = 3600
+advanced_after_payments = 3

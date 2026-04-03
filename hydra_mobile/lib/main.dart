@@ -43,6 +43,17 @@ void _initGlobalLogStream() async {
   }
 }
 
+Future<void> _materializeBundledConfigIfNeeded(String baseDir) async {
+  final configFile = File('$baseDir/hydra.toml');
+  if (await configFile.exists()) {
+    return;
+  }
+
+  final content = await rootBundle.loadString('assets/hydra.toml');
+  await configFile.writeAsString(content);
+  debugPrint('Materialized bundled hydra.toml to ${configFile.path}');
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await RustLib.init();
@@ -53,6 +64,7 @@ Future<void> main() async {
 
   try {
     final baseDir = await HydraPlatformGateway.instance.resolveBaseDir();
+    await _materializeBundledConfigIfNeeded(baseDir);
     await prepareLocalRuntime(baseDir: baseDir);
     initModelManager(baseDir: baseDir);
 

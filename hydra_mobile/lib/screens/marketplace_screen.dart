@@ -26,7 +26,7 @@ class _MarketplaceScreenState extends State<MarketplaceScreen>
   bool _loading = true;
   bool _loadingOffers = true;
   bool _busy = false;
-  String _region = 'US';
+  String _region = '';
   String _protocol = 'vless';
   String? _offersError;
 
@@ -39,12 +39,10 @@ class _MarketplaceScreenState extends State<MarketplaceScreen>
 
   Future<void> _initialize() async {
     try {
-      final locale = WidgetsBinding.instance.platformDispatcher.locale;
-      final region = locale.countryCode?.toUpperCase();
       final filters = await _repository.loadFilters(
-        defaultRegion: (region != null && region.length == 2) ? region : 'US',
+        defaultRegion: '',
       );
-      _region = filters['region'] ?? 'US';
+      _region = filters['region'] ?? '';
       _protocol = filters['protocol'] ?? 'vless';
       await _loadConfigStatus();
       await _loadWalletState();

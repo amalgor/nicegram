@@ -5,7 +5,7 @@ use anyhow::{Result, bail};
 use std::str::FromStr;
 
 use crate::bindings::{HydraRouteBook, IdentityRegistry, ReputationRegistry, UsdcToken};
-use crate::config::{BASE_SEPOLIA_CHAIN, ExchangeConfig};
+use crate::config::{BASE_SEPOLIA_CHAIN, ExchangeConfig, http_client};
 use crate::models::{
     AgentRegistrationResult, CreateOfferInput, OfferMutationResult, ReputationSummary,
     RouteOfferView, TxHashResult, WalletBalances,
@@ -67,11 +67,11 @@ impl RouteExchangeClient {
     }
 
     pub async fn query_offers(&self, region: &str, protocol: &str) -> Result<Vec<RouteOfferView>> {
-        let region = normalize_region(region)?;
+        let region = normalize_optional_region(region)?;
         let protocol = normalize_protocol(protocol)?;
         let mut offers = Vec::new();
         for view in self.list_active_offers(usize::MAX).await? {
-            if view.region != region {
+            if region.as_ref().is_some_and(|region| view.region != *region) {
                 continue;
             }
             if !view
@@ -89,7 +89,8 @@ impl RouteExchangeClient {
     }
 
     pub async fn get_offer(&self, offer_id: u64) -> Result<RouteOfferView> {
-        let provider = ProviderBuilder::new().connect_http(self.config.rpc_url.clone());
+        let provider = ProviderBuilder::new()
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
         let offer = route_book
             .getOffer(U256::from(offer_id))
@@ -116,7 +117,8 @@ impl RouteExchangeClient {
     }
 
     pub async fn wallet_balances(&self, address: Address) -> Result<WalletBalances> {
-        let provider = ProviderBuilder::new().connect_http(self.config.rpc_url.clone());
+        let provider = ProviderBuilder::new()
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let eth_balance: U256 = provider.get_balance(address).await?;
         let usdc = UsdcToken::new(self.config.usdc_address, provider);
         let usdc_balance = usdc.balanceOf(address).call().await?;
@@ -133,7 +135,8 @@ impl RouteExchangeClient {
     }
 
     async fn total_offers(&self) -> Result<u64> {
-        let provider = ProviderBuilder::new().connect_http(self.config.rpc_url.clone());
+        let provider = ProviderBuilder::new()
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
         let total = route_book.totalOffers().call().await?;
         Ok(total.to())
@@ -147,7 +150,7 @@ impl RouteExchangeClient {
         let signer = LocalWallet::signer_from_phrase(mnemonic)?;
         let provider = ProviderBuilder::new()
             .wallet(signer)
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let signer_address = provider.wallet().default_signer().address();
         let route_book = HydraRouteBook::new(self.config.route_book_address, provider.clone());
         let usdc = UsdcToken::new(self.config.usdc_address, provider.clone());
@@ -200,7 +203,7 @@ impl RouteExchangeClient {
         let signer = LocalWallet::signer_from_phrase(mnemonic)?;
         let provider = ProviderBuilder::new()
             .wallet(signer)
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
 
         let pending = route_book.deactivateOffer(U256::from(offer_id)).send().await?;
@@ -221,7 +224,7 @@ impl RouteExchangeClient {
         let signer = LocalWallet::signer_from_phrase(mnemonic)?;
         let provider = ProviderBuilder::new()
             .wallet(signer)
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
 
         let pending = route_book.withdrawStake(U256::from(offer_id)).send().await?;
@@ -244,7 +247,7 @@ impl AgentRegistrar {
         let signer = LocalWallet::signer_from_phrase(mnemonic)?;
         let provider = ProviderBuilder::new()
             .wallet(signer)
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let identity = IdentityRegistry::new(self.config.identity_registry_address, provider);
 
         let preview = identity.register_0().call().await?;
@@ -277,7 +280,7 @@ impl ReputationClient {
         let signer = LocalWallet::signer_from_phrase(mnemonic)?;
         let provider = ProviderBuilder::new()
             .wallet(signer)
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let reputation = ReputationRegistry::new(registry_address, provider);
 
         let value: i128 = if positive { 1 } else { -1 };
@@ -304,7 +307,8 @@ impl ReputationClient {
         let Some(registry_address) = self.config.reputation_registry_address else {
             return Ok(None);
         };
-        let provider = ProviderBuilder::new().connect_http(self.config.rpc_url.clone());
+        let provider = ProviderBuilder::new()
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let reputation = ReputationRegistry::new(registry_address, provider);
         let clients = reputation.getClients(U256::from(agent_id)).call().await?;
 
@@ -349,6 +353,15 @@ fn normalize_region(region: &str) -> Result<String> {
         bail!("Region must be an uppercase ISO-3166 alpha-2 code.");
     }
     Ok(normalized)
+}
+
+fn normalize_optional_region(region: &str) -> Result<Option<String>> {
+    let normalized = region.trim();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+
+    normalize_region(normalized).map(Some)
 }
 
 fn normalize_protocol(protocol: &str) -> Result<String> {
@@ -442,5 +455,14 @@ mod tests {
         assert!(normalize_tag("availability").is_ok());
         assert!(normalize_tag("latency").is_ok());
         assert!(normalize_tag("speed").is_err());
+    }
+
+    #[test]
+    fn empty_region_filter_is_allowed_for_queries() {
+        assert_eq!(normalize_optional_region("").unwrap(), None);
+        assert_eq!(
+            normalize_optional_region(" us ").unwrap(),
+            Some("US".to_string())
+        );
     }
 }

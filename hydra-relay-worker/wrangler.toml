@@ -25,4 +25,4 @@ class_name = "HydraProviderSession"
 
 [[migrations]]
 tag = "v1-provider-sessions"
-new_sqlite_classes = ["HydraProviderSession"]
+new_classes = ["HydraProviderSession"]

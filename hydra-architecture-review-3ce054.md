@@ -20,7 +20,7 @@
 | **HRX Phase 1** — on-chain route book | Выполнен | `contracts/`, `contracts/script/DeployHydraRouteBook.s.sol` |
 | **HRX Phase 2** — embedded wallet + marketplace | Выполнен | `hydra-exchange/`, `hydra_mobile/lib/exchange/`, `screens/marketplace_screen.dart`, `hydra.toml`, `contracts/` |
 | **HRX Phase 3 MVP** — credit-first route discovery | Выполнен (repo-side) | `hydra-core/src/discovery.rs`, `hydra-econ/src/credit.rs`, `hydra_mobile/lib/screens/balance_screen.dart`, `hydra_mobile/rust/src/credit_runtime.rs` |
-| **HRX Phases 4A/4B/5A/5B-soft** — provider growth + soft safety | Выполнен (repo-side) | `hydra-exchange/src/client.rs`, `hydra-relay-worker/src/index.ts`, `hydra-econ/src/provider.rs`, `hydra_mobile/rust/src/provider_runtime.rs`, `hydra_mobile/lib/screens/balance_screen.dart` |
+| **HRX Phases 4A/4B/5A/5B-soft** — provider growth + soft safety | Выполнен (repo + ops baseline) | `hydra-exchange/src/client.rs`, `hydra-relay-worker/src/index.ts`, `hydra-econ/src/provider.rs`, `hydra_mobile/rust/src/provider_runtime.rs`, `hydra_mobile/lib/screens/balance_screen.dart` |
 | **Sprint: Network + Crypto + Content** | Исторический baseline | `hydra-relay-worker/`, `hydra-core/src/relay.rs`, `STRATEGY.md` |
 | **Sprint: Mobile MVP Readiness** | Выполнен | См. ниже |
 | **Сборка Android** | Проходит | `hydra_mobile/`: VpnService + `tun2proxy`, bundled `qwen2.5-0.5b.gguf` |
@@ -71,6 +71,9 @@
 - `RouteDiscoveryService` теперь объединяет RouteBook offers и `hydra/services/1.0` announcements. Soft-risk penalties уже штрафуют price outliers, fresh routes, unstaked/zero-stake providers, low-feedback paths и relay concentration.
 - В `hydra_mobile/rust` добавлен `provider_runtime`: long-lived provider relay session, service announcement publishing, provider earnings/status API и threshold/window-ready reputation sync bookkeeping.
 - В Flutter `BalanceScreen` теперь содержит mobile-first Share & Earn surface; отдельный provider dashboard/CLI больше не рассматривается как основной продуктовый entry-point.
+- **Operational follow-up (2026-04-03):** live Cloudflare deploy завершён с worker version `93b673f4-6ccc-4e94-9256-72c9bdafc5f4`; `/health` зелёный, legacy direct relay подтверждён на `httpbin.org:80`, provider registration даёт `{"type":"registered"}`, consumer без provider получает HTTP `503`.
+- **DealBoard validation (2026-04-03):** `HydraDealBoard.totalOffers()` уже не пустой; seeded deal offer `#1` создан tx `0x4137cc1811329072f3dd206937e34f214b43d7662318cad569341df2d237e46a` для agent `3377` (`RUB`, rate `100_000_000`, min `1 USDC`, max `100 USDC`, method `bank_transfer`).
+- **Durable artifact:** подробный operational log сохранён в `reports/2026-04-03-ops-validation.md`.
 
 **Sprint Network + Crypto + Content (2026-03-29) — ИСТОРИЧЕСКИЙ BASELINE:**
 - Cloudflare Worker WSS relay (`hydra-relay-worker/`): WSS-to-TCP proxy с KV-квотами, whitelist Telegram DC.
@@ -89,8 +92,10 @@
 - WebSocket relay: WSS upgrade with `X-Hydra-Target: host:port` and `X-Hydra-Device: device-id`
 - Account: `8e418b62669470a077532442d2cf76e1` (Alex@alder.ru)
 - Subdomain: `hydra-net.workers.dev`
+- Durable Object runtime: `HydraProviderSession` binding live. Current production version after provider-session deploy is `93b673f4-6ccc-4e94-9256-72c9bdafc5f4` (`2026-04-03T09:07:31Z`).
+- Migration choice: repo now uses `new_classes = ["HydraProviderSession"]`, not `new_sqlite_classes`. Это намеренный KV-backed choice для hibernation-only DO без persistent storage. Если later появится durable state or plan constraints, migration strategy надо пересмотреть.
 
-**Следующая логическая работа:** device validation для dynamic premium/provider routing на Android/iOS, затем Track B monetization (top-up / deal board) как реальный источник settled balance для Share & Earn graduation, и только потом hardening/scaling вроде full route gossip mesh, non-blocking LLM scoring и multi-hop provider chaining.
+**Следующая логическая работа:** Android runtime blockers закрыты: bundled mobile `hydra.toml` materialize-ится на first launch, `Full VPN` на устройстве реально использует WSS transport без fail-closed warnings, а `ParcelFileDescriptor` double-close устранён через `detachFd()` и подтверждён 3 stop/start VPN cycles без `fdsan`. Следующий реальный шаг — iOS device validation и end-to-end mobile provider session против live Cloudflare Worker, затем Track B monetization как источник settled balance для Share & Earn graduation, и только потом hardening/scaling вроде full route gossip mesh, non-blocking LLM scoring и multi-hop provider chaining.
 
 **Мобильный Content (фактическая зрелость, 2026-03-29):**
 - **Суммаризация в приложении:** логика есть в Rust (`hydra-content` → `Summarizer` + `MessageHandler`: для текста >200 символов вызывается LLM или fallback). На устройстве она **не доходит до UI**: не вызывается `listen_for_updates` (никто не забирает `take_updates_receiver` и не запускает цикл), нет экспорта в FRB для `fetch_and_process` / готовых `ProcessedMessage`. Пользователь видит только JSON-список диалогов.

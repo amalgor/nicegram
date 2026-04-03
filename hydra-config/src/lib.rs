@@ -182,7 +182,7 @@ impl TransportConfig {
 fn default_transports() -> Vec<TransportConfig> {
     vec![TransportConfig::Wss {
         endpoints: vec!["wss://relay.hydra-net.work".to_string()],
-        mode: TransportMode::Telegram,
+        mode: TransportMode::All,
         device_id: String::new(),
     }]
 }
@@ -469,7 +469,7 @@ mod tests {
             config.transports[0],
             TransportConfig::Wss {
                 endpoints: vec!["wss://relay.hydra-net.work".to_string()],
-                mode: TransportMode::Telegram,
+                mode: TransportMode::All,
                 device_id: String::new(),
             }
         );

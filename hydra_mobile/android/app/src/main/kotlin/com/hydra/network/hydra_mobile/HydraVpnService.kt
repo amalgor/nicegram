@@ -6,8 +6,6 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 
 class HydraVpnService : VpnService() {
-    private var vpnInterface: ParcelFileDescriptor? = null
-
     companion object {
         const val ACTION_CONNECT = "com.hydra.network.START_VPN"
         const val ACTION_DISCONNECT = "com.hydra.network.STOP_VPN"
@@ -27,7 +25,7 @@ class HydraVpnService : VpnService() {
     }
 
     private fun startVpn() {
-        if (vpnInterface != null) return
+        if (isRunning || currentFd >= 0) return
 
         try {
             val builder = Builder()
@@ -40,13 +38,13 @@ class HydraVpnService : VpnService() {
                 // For simplicity, we can exclude the app itself, so P2P traffic goes directly via standard network
                 .addDisallowedApplication(packageName)
 
-            vpnInterface = builder.establish()
+            val vpnInterface = builder.establish()
+                ?: throw IllegalStateException("VpnService.establish() returned null")
+            val rawFd = vpnInterface.detachFd()
             isRunning = true
-            
-            val fd = vpnInterface?.fd ?: return
-            currentFd = fd
-            Log.i("HydraVpnService", "VPN established with FD: $fd")
-            onVpnStarted?.invoke(fd)
+            currentFd = rawFd
+            Log.i("HydraVpnService", "VPN established with detached FD: $rawFd")
+            onVpnStarted?.invoke(rawFd)
             
         } catch (e: Exception) {
             Log.e("HydraVpnService", "Failed to start VPN", e)
@@ -55,12 +53,6 @@ class HydraVpnService : VpnService() {
     }
 
     private fun stopVpn() {
-        try {
-            vpnInterface?.close()
-        } catch (e: Exception) {
-            Log.e("HydraVpnService", "Error closing VPN interface", e)
-        }
-        vpnInterface = null
         isRunning = false
         currentFd = -1
         stopSelf()

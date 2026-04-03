@@ -4,7 +4,7 @@ use alloy::sol_types::SolEvent;
 use anyhow::{Context, Result, bail};
 
 use crate::bindings::{HydraDealBoard, UsdcToken};
-use crate::config::ExchangeConfig;
+use crate::config::{ExchangeConfig, http_client};
 use crate::models::{
     AcceptDealResult, DealEscrowStatus, DealEscrowView, DealOfferView, ReputationSummary,
     TxHashResult,
@@ -36,7 +36,7 @@ impl DealBoardClient {
     pub async fn query_deals(&self, currency: &str) -> Result<Vec<DealOfferView>> {
         let address = self.deal_board_address()?;
         let provider = ProviderBuilder::new()
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let board = HydraDealBoard::new(address, &provider);
 
         let total = board.totalOffers().call().await
@@ -79,7 +79,7 @@ impl DealBoardClient {
     pub async fn get_offer(&self, offer_id: u64) -> Result<DealOfferView> {
         let address = self.deal_board_address()?;
         let provider = ProviderBuilder::new()
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let board = HydraDealBoard::new(address, &provider);
 
         let offer = board
@@ -116,7 +116,7 @@ impl DealBoardClient {
         let signer = LocalWallet::signer_from_phrase(mnemonic)?;
         let provider = ProviderBuilder::new()
             .wallet(signer)
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let board = HydraDealBoard::new(address, &provider);
 
         let amount = parse_usdc_amount(usdc_amount)?;
@@ -145,7 +145,7 @@ impl DealBoardClient {
         let signer = LocalWallet::signer_from_phrase(mnemonic)?;
         let provider = ProviderBuilder::new()
             .wallet(signer)
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let board = HydraDealBoard::new(address, &provider);
 
         let pending = board
@@ -165,7 +165,7 @@ impl DealBoardClient {
     pub async fn check_status(&self, escrow_id: u64) -> Result<DealEscrowView> {
         let address = self.deal_board_address()?;
         let provider = ProviderBuilder::new()
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let board = HydraDealBoard::new(address, &provider);
 
         let escrow = board
@@ -193,7 +193,7 @@ impl DealBoardClient {
         let signer = LocalWallet::signer_from_phrase(mnemonic)?;
         let provider = ProviderBuilder::new()
             .wallet(signer)
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let board = HydraDealBoard::new(address, &provider);
 
         let pending = board
@@ -216,7 +216,7 @@ impl DealBoardClient {
         let signer = LocalWallet::signer_from_phrase(mnemonic)?;
         let provider = ProviderBuilder::new()
             .wallet(signer)
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let usdc = UsdcToken::new(self.config.usdc_address, &provider);
 
         let parsed = parse_usdc_amount(amount)?;
@@ -239,7 +239,7 @@ impl DealBoardClient {
     async fn fetch_reputation(&self, agent_id: u64) -> Option<ReputationSummary> {
         let registry_address = self.config.reputation_registry_address?;
         let provider = ProviderBuilder::new()
-            .connect_http(self.config.rpc_url.clone());
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let registry = crate::bindings::ReputationRegistry::new(registry_address, &provider);
 
         let clients = registry

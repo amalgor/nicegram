@@ -61,6 +61,7 @@ class _DealsScreenState extends State<DealsScreen> {
       _showMessage('Create or import a wallet first in Advanced Tools.');
       return;
     }
+    if (!mounted) return;
 
     final amountController = TextEditingController(text: offer.minAmount);
     final confirmed = await showDialog<String>(
@@ -197,8 +198,7 @@ class _DealsScreenState extends State<DealsScreen> {
               )
             else
               ..._offers
-                  .map((offer) => _buildDealCard(context, offer))
-                  .toList(),
+                  .map((offer) => _buildDealCard(context, offer)),
           ],
         ),
       ),

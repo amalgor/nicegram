@@ -9,9 +9,12 @@ anyhow = { workspace = true }
 hydra-config = { path = "../hydra-config" }
 hydra-p2p = { path = "../hydra-p2p" }
 rand = "0.8"
+reqwest = { version = "0.13", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sled = { workspace = true }
 tokio = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 url = "2.5"
+webpki-roots = "0.26"
 zeroize = { workspace = true }

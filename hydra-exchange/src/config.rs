@@ -1,7 +1,33 @@
 use alloy::primitives::Address;
 use anyhow::{Context, Result, bail};
 use hydra_config::CryptoConfig;
+use std::sync::OnceLock;
 use url::Url;
+
+/// Shared reqwest client with webpki-roots TLS config.
+/// Avoids rustls-platform-verifier which panics on Android without JNI init.
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+pub fn http_client() -> reqwest::Client {
+    HTTP_CLIENT
+        .get_or_init(|| {
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let tls_config = rustls::ClientConfig::builder_with_provider(
+                    rustls::crypto::ring::default_provider().into(),
+                )
+                .with_safe_default_protocol_versions()
+                .expect("ring provider supports default TLS versions")
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+
+            reqwest::Client::builder()
+                .use_preconfigured_tls(tls_config)
+                .build()
+                .expect("Failed to build HTTP client with webpki-roots TLS")
+        })
+        .clone()
+}
 
 pub const BASE_SEPOLIA_CHAIN: &str = "BASE-SEPOLIA";
 pub const BASE_SEPOLIA_CHAIN_ID: u64 = 84_532;

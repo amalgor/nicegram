@@ -3622,11 +3622,14 @@ dependencies = [
  "hydra-config",
  "hydra-p2p",
  "rand 0.8.5",
+ "reqwest",
+ "rustls 0.23.36 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "sled",
  "tokio",
  "url",
+ "webpki-roots 0.26.11",
  "zeroize",
 ]
 

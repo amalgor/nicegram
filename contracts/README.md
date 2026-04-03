@@ -13,8 +13,11 @@ Current live deployment:
 - `HydraDealBoard`: `0x0c811902c990c4D330c1269cc955140d975f7035`
 - Deploy tx: `0xa2a3bce4789177f5337b1421dfa854e1ebe1a1c745cb4a71f89d9e39e2bf37e7`
 - Deploy block: `39717554`
-- Agent registration tx: `0x869a57c910f7063ad45ff64e960538848e13aac225ed2e86b43f44be6f44506a`
-- Offer creation tx: `0xc6460e57553ffce315421110baaefe184f9aac17cec84e55a996bf191a9f7751`
+- Seeded dealer agent: `3377` owned by `0x6c69ee6e524f12d20c14c4b8caaa754012c9dc63`
+- Seeded deal offer: `#1`
+- Seed tx: `0x4137cc1811329072f3dd206937e34f214b43d7662318cad569341df2d237e46a`
+- Seed block: `39719689`
+- Seed params: `RUB`, rate `100_000_000` (100 RUB per 1 USDC with 6 decimals), min `1 USDC`, max `100 USDC`, payment method `bank_transfer`
 - Live seeding note: `register()` / `ownerOf()` on the live ERC-8004 proxy returned spurious `NotActivated` errors under Foundry script simulation. The acceptance seed was finalized with direct `cast send` transactions instead of `seed-base-sepolia.sh`.
 
 ## Environment

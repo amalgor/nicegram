@@ -32,6 +32,7 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **[bootstrap]** — `listen_port` (для bootstrap-нод)
 
 На мобильном устройстве конфигурация загружается из `{app_documents_dir}/hydra.toml`, относительные пути автоматически разрешаются относительно `app_documents_dir`.
+На Android/iOS этот файл теперь materialize-ится из bundled asset `hydra_mobile/assets/hydra.toml` при первом запуске приложения, если в documents dir ещё нет `hydra.toml`. Это защищает release build от silent fallback на `HydraConfig::default()`.
 
 ## Применяемые технологии и библиотеки
 - **Сеть**: `libp2p` (TCP, Noise, Yamux, Kademlia DHT, Gossipsub, mDNS).
@@ -89,6 +90,8 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Pinned public addresses**: USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e`, Identity Registry `0x8004A818BFB912233c491871b3d84c89A494BD9e`, Reputation Registry `0x8004B663056A597Dffe9eCcC1965A193B7388713`.
 - **Live route book**: `0x70594C7C33544fc0F22592005004B219dfbb012E` on Base Sepolia, deploy tx `0x258c73e8d1b85299739028e57f65399a13397c17893682d30fbea19f821f3aad`, block `39671496`.
 - **Acceptance seed data**: provider wallet `0x6c69ee6e524f12d20c14c4b8caaa754012c9dc63`, agent `3377` (tx `0x869a57c910f7063ad45ff64e960538848e13aac225ed2e86b43f44be6f44506a`), offer `#1` (tx `0xc6460e57553ffce315421110baaefe184f9aac17cec84e55a996bf191a9f7751`) with `region = US`, `protocol = vless`, `price = 1 USDC/GB`, `stake = 1 USDC`, `bandwidth = 100 Mbps`.
+- **Live deal board**: `0x0c811902c990c4D330c1269cc955140d975f7035` on Base Sepolia, deploy tx `0xa2a3bce4789177f5337b1421dfa854e1ebe1a1c745cb4a71f89d9e39e2bf37e7`, block `39717554`.
+- **Deal acceptance seed data**: same dealer wallet `0x6c69ee6e524f12d20c14c4b8caaa754012c9dc63`, agent `3377`, deal offer `#1` (tx `0x4137cc1811329072f3dd206937e34f214b43d7662318cad569341df2d237e46a`, block `39719689`) with `currency = RUB`, `rate = 100_000_000` (100 RUB per 1 USDC, 6 decimals), `min = 1 USDC`, `max = 100 USDC`, `payment_method = bank_transfer`.
 - **Operational quirk**: live ERC-8004 proxy calls `register()` / `ownerOf()` return spurious `NotActivated` errors under Foundry script simulation. Actual on-chain `cast call/send` works. Current acceptance seed was completed with direct `cast send` instead of `seed-base-sepolia.sh`.
 - **Bindings**: `HydraRouteBook`, official ERC-8004 ABI JSON for `IdentityRegistry.register()` / `ReputationRegistry.giveFeedback(...)`, ERC-20 `balanceOf`.
 - **Read path**: `query_offers(region, protocol)` нормализует offers в мобильную view model и при наличии registry подмешивает reputation summary.
@@ -119,10 +122,14 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **URL (fallback):** `https://hydra-relay.hydra-net.workers.dev`
 - **Домен:** `hydra-net.work` (Cloudflare Registrar, zone active, SSL auto-provisioned)
 - **KV namespace:** `HYDRA_QUOTAS` (id: `82ed22205d834b94b87f42502823a59e`)
+- **Durable Object namespace:** `HydraProviderSession` via `HYDRA_PROVIDER_SESSIONS` (current live worker version `93b673f4-6ccc-4e94-9256-72c9bdafc5f4`, deployed `2026-04-03T09:07:31Z`).
 - **WSS-to-TCP relay**: Принимает WebSocket-соединения с заголовком `X-Hydra-Target: host:port`, открывает TCP-соединение к цели через `connect()` API.
 - **Quota tracking**: KV namespace `HYDRA_QUOTAS` для учёта трафика по device_id с дневным лимитом (50 MB free tier).
 - **Безопасность**: Whitelist Telegram DC IP-диапазонов (149.154.*, 91.108.*).
 - **Endpoints**: `/health` (healthcheck), `/quota?device_id=...` (проверка квоты), WebSocket upgrade (relay).
+- **Migration note**: в `wrangler.toml` используется `new_classes = ["HydraProviderSession"]`, а не `new_sqlite_classes`, потому что DO хранит только hibernated WebSocket session state и не использует persistent storage/SQLite API. Это осознанный KV-backed выбор; если позже понадобится durable storage или free-plan portability под новые DO defaults, схему миграции нужно пересмотреть.
+- **Live verification (2026-04-03)**: `/health` возвращает `ok`; legacy direct relay проверен через `X-Hydra-Target` на `httpbin.org:80` с реальным HTTP payload и quota decrement (`codex-httpbin-org`); consumer без провайдера получает HTTP `503 Provider is offline`; provider registration через `X-Hydra-Mode: provider` успешно открывает WebSocket и получает `{"type":"registered"}`.
+- **Ops report**: точные deploy/verification outputs сохранены в `reports/2026-04-03-ops-validation.md`.
 
 ### 7. Мобильный слой (hydra_mobile)
 - **Flutter UI**: 7 вкладок — Connect, Network, Balance, AI, Content, Logs, Settings. Advanced Marketplace больше не является default entry-point и открывается из Balance.
@@ -296,7 +303,10 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **DealAgent** (`hydra-ai/src/deal_agent.rs`): AI-powered deal scoring (reputation 40%, rate 40%, payment method 20%), LLM re-ranking of top-5 deals when model loaded, auto-approve vs confirmation decision based on `auto_spend_limit`. 5 unit tests pass (16 total in hydra-ai).
 - **Flutter UI**: `deals_screen.dart` with currency filter, deal cards, accept dialog. Wired to Balance screen "Top Up" button. FRB API functions in `exchange.rs` (7 new endpoints). Models, backend, repository layers extended.
 - **Live deployment**: `0x0c811902c990c4D330c1269cc955140d975f7035` on Base Sepolia, deploy tx `0xa2a3bce4789177f5337b1421dfa854e1ebe1a1c745cb4a71f89d9e39e2bf37e7`, block `39717554`. `deal_board_address` recorded in `hydra.toml` and `deployments.json`.
-- **Pending**: FRB codegen (`flutter_rust_bridge_codegen generate`), device validation.
+- **Operational follow-up (2026-04-03)**: FRB codegen выполнен, `flutter analyze`/`flutter test` зелёные, release APK собран в `hydra_mobile/build/app/outputs/flutter-apk/app-release.apk`, DealBoard `totalOffers()` теперь `1` после live seeding offer `#1`.
+- **Physical Android validation (2026-04-03)**: release APK проверен на устройстве `M2101K7BNY` (Android 13). Подтверждены `VpnService`/`tun0`, Balance UX, Share & Earn toggle, live `P2P Deals` offer `#1` и live RouteBook offer `#1` через advanced Marketplace. Runtime blockers тоже закрыты: `hydra.toml` теперь materialize-ится из bundled asset на first launch, `Full VPN` больше не упирается в missing transports, а `ParcelFileDescriptor` double-close исправлен через `detachFd()` в Android `HydraVpnService`. После фикса non-Telegram traffic в `full` режиме реально пошёл через `wss://relay.hydra-net.work`, а 3 stop/start VPN cycles подряд прошли без `fdsan` и без смены PID. Подробности: `reports/2026-04-03-ops-validation.md`.
+- **TLS fix (Android)**: `rustls-platform-verifier` паникует на Android без JNI-инициализации. Исправлено: `hydra-exchange/src/config.rs` — синглтон `http_client()` строит `reqwest::Client` с явным `ring` CryptoProvider + `webpki-roots` корневыми сертификатами. Все `ProviderBuilder::new().connect_http(url)` заменены на `connect_reqwest(http_client(), url)` в `client.rs` и `deal_client.rs` (18 call sites). Зависимости `rustls`, `webpki-roots`, `reqwest` добавлены в `hydra-exchange/Cargo.toml`. 13 тестов проходят.
+- **Pending**: iOS device validation, real mobile provider session against deployed Worker, и end-to-end user validation именно Telegram censorship path / premium trial UX, уже поверх исправленного Android runtime.
 
 ### Этап 2: Attention + персонализация
 - **AttentionTracker** — полнота клиентского трекинга и политика событий.
