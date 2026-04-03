@@ -1,12 +1,14 @@
 use alloy::primitives::{Address, FixedBytes, U256};
-use alloy::providers::{Provider, ProviderBuilder};
+use alloy::providers::{Provider, ProviderBuilder, WalletProvider};
 use alloy::rpc::types::TransactionReceipt;
 use anyhow::{Result, bail};
+use std::str::FromStr;
 
 use crate::bindings::{HydraRouteBook, IdentityRegistry, ReputationRegistry, UsdcToken};
 use crate::config::{BASE_SEPOLIA_CHAIN, ExchangeConfig};
 use crate::models::{
-    AgentRegistrationResult, ReputationSummary, RouteOfferView, TxHashResult, WalletBalances,
+    AgentRegistrationResult, CreateOfferInput, OfferMutationResult, ReputationSummary,
+    RouteOfferView, TxHashResult, WalletBalances,
 };
 use crate::wallet::LocalWallet;
 
@@ -30,9 +32,7 @@ impl RouteExchangeClient {
         Self { config }
     }
 
-    pub async fn query_offers(&self, region: &str, protocol: &str) -> Result<Vec<RouteOfferView>> {
-        let region = normalize_region(region)?;
-        let protocol = normalize_protocol(protocol)?;
+    pub async fn list_active_offers(&self, max_offers: usize) -> Result<Vec<RouteOfferView>> {
         let total = self.total_offers().await?;
         let reputation_client = self
             .config
@@ -41,15 +41,12 @@ impl RouteExchangeClient {
 
         let mut offers = Vec::new();
         for offer_id in 1..=total {
-            let view = self.get_offer(offer_id).await?;
-            if !view.active || view.region != region {
-                continue;
+            if offers.len() >= max_offers {
+                break;
             }
-            if !view
-                .protocols
-                .iter()
-                .any(|item| item.eq_ignore_ascii_case(&protocol))
-            {
+
+            let view = self.get_offer(offer_id).await?;
+            if !view.active {
                 continue;
             }
 
@@ -64,6 +61,28 @@ impl RouteExchangeClient {
             };
 
             offers.push(enriched);
+        }
+
+        Ok(offers)
+    }
+
+    pub async fn query_offers(&self, region: &str, protocol: &str) -> Result<Vec<RouteOfferView>> {
+        let region = normalize_region(region)?;
+        let protocol = normalize_protocol(protocol)?;
+        let mut offers = Vec::new();
+        for view in self.list_active_offers(usize::MAX).await? {
+            if view.region != region {
+                continue;
+            }
+            if !view
+                .protocols
+                .iter()
+                .any(|item| item.eq_ignore_ascii_case(&protocol))
+            {
+                continue;
+            }
+
+            offers.push(view);
         }
 
         Ok(offers)
@@ -118,6 +137,101 @@ impl RouteExchangeClient {
         let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
         let total = route_book.totalOffers().call().await?;
         Ok(total.to())
+    }
+
+    pub async fn create_offer(
+        &self,
+        mnemonic: &str,
+        input: CreateOfferInput,
+    ) -> Result<OfferMutationResult> {
+        let signer = LocalWallet::signer_from_phrase(mnemonic)?;
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.config.rpc_url.clone());
+        let signer_address = provider.wallet().default_signer().address();
+        let route_book = HydraRouteBook::new(self.config.route_book_address, provider.clone());
+        let usdc = UsdcToken::new(self.config.usdc_address, provider.clone());
+
+        let stake_amount = parse_u256(&input.stake_amount_raw, "stake amount")?;
+        let price_per_gb = parse_u256(&input.price_per_gb_raw, "price per GB")?;
+        let region = normalize_region(&input.region)?;
+        let protocols = normalize_protocols(&input.protocols)?;
+        let endpoint_url = input.endpoint_url.trim();
+        if endpoint_url.is_empty() {
+            bail!("Endpoint URL must not be empty.");
+        }
+
+        let allowance = usdc
+            .allowance(signer_address, self.config.route_book_address)
+            .call()
+            .await?;
+        if allowance < stake_amount {
+            usdc.approve(self.config.route_book_address, stake_amount)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+        }
+
+        let pending = route_book
+            .createOffer(
+                U256::from(input.agent_id),
+                endpoint_url.to_string(),
+                protocols,
+                region,
+                price_per_gb,
+                stake_amount,
+                U256::from(input.bandwidth_mbps),
+            )
+            .send()
+            .await?;
+        let tx_hash = format!("{:#x}", pending.tx_hash());
+        let receipt = pending.get_receipt().await?;
+        let offer_id = decode_created_offer_id(&receipt);
+
+        Ok(OfferMutationResult { offer_id, tx_hash })
+    }
+
+    pub async fn deactivate_offer(
+        &self,
+        mnemonic: &str,
+        offer_id: u64,
+    ) -> Result<OfferMutationResult> {
+        let signer = LocalWallet::signer_from_phrase(mnemonic)?;
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.config.rpc_url.clone());
+        let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
+
+        let pending = route_book.deactivateOffer(U256::from(offer_id)).send().await?;
+        let tx_hash = format!("{:#x}", pending.tx_hash());
+        let _receipt = pending.get_receipt().await?;
+
+        Ok(OfferMutationResult {
+            offer_id: Some(offer_id),
+            tx_hash,
+        })
+    }
+
+    pub async fn withdraw_stake(
+        &self,
+        mnemonic: &str,
+        offer_id: u64,
+    ) -> Result<OfferMutationResult> {
+        let signer = LocalWallet::signer_from_phrase(mnemonic)?;
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(self.config.rpc_url.clone());
+        let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
+
+        let pending = route_book.withdrawStake(U256::from(offer_id)).send().await?;
+        let tx_hash = format!("{:#x}", pending.tx_hash());
+        let _receipt = pending.get_receipt().await?;
+
+        Ok(OfferMutationResult {
+            offer_id: Some(offer_id),
+            tx_hash,
+        })
     }
 }
 
@@ -223,6 +337,12 @@ fn decode_registered_agent_id(receipt: &TransactionReceipt) -> Option<u64> {
         .map(|event| event.data.agentId.to())
 }
 
+fn decode_created_offer_id(receipt: &TransactionReceipt) -> Option<u64> {
+    receipt
+        .decoded_log::<HydraRouteBook::OfferCreated>()
+        .map(|event| event.data.offerId.to())
+}
+
 fn normalize_region(region: &str) -> Result<String> {
     let normalized = region.trim().to_uppercase();
     if normalized.len() != 2 || !normalized.chars().all(|c| c.is_ascii_uppercase()) {
@@ -237,6 +357,25 @@ fn normalize_protocol(protocol: &str) -> Result<String> {
         bail!("Protocol filter must not be empty.");
     }
     Ok(normalized)
+}
+
+fn normalize_protocols(protocols: &[String]) -> Result<Vec<String>> {
+    let normalized: Vec<String> = protocols
+        .iter()
+        .map(|item| normalize_protocol(item))
+        .collect::<Result<Vec<_>>>()?;
+    if normalized.is_empty() {
+        bail!("Offer must contain at least one protocol.");
+    }
+    Ok(normalized)
+}
+
+fn parse_u256(raw: &str, field: &str) -> Result<U256> {
+    let value = raw.trim();
+    if value.is_empty() {
+        bail!("{field} must not be empty.");
+    }
+    U256::from_str(value).map_err(|error| anyhow::anyhow!("Invalid {field} '{value}': {error}"))
 }
 
 fn normalize_tag(tag1: &str) -> Result<String> {

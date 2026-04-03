@@ -15,14 +15,32 @@ use libp2p::{
 };
 use hydra_config::NetworkConfig;
 use libp2p_stream as p2p_stream;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub const TUNNEL_PROTOCOL: StreamProtocol = StreamProtocol::new("/hydra/tunnel/1.0.0");
 pub const RELAY_ENDPOINTS_TOPIC: &str = "hydra/relay-endpoints/1.0";
+pub const SERVICE_ANNOUNCEMENTS_TOPIC: &str = "hydra/services/1.0";
 use telemetry::{PeerMetrics, TelemetryStore};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
+
+const SERVICE_ANNOUNCEMENT_TTL_SECS: u64 = 900;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceAnnouncement {
+    pub agent_id: u64,
+    pub endpoint_url: String,
+    pub protocols: Vec<String>,
+    pub region: String,
+    pub price_per_gb_raw: String,
+    pub bandwidth_mbps: u64,
+    pub tier: String,
+    pub announced_at: u64,
+    #[serde(default)]
+    pub source_peer_id: String,
+}
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "HydraEvent")]
@@ -101,6 +119,13 @@ pub enum P2PCommand {
         data: Vec<u8>,
         resp: oneshot::Sender<Result<()>>,
     },
+    PublishServiceAnnouncement {
+        announcement: ServiceAnnouncement,
+        resp: oneshot::Sender<Result<()>>,
+    },
+    GetServiceAnnouncements {
+        resp: oneshot::Sender<Vec<ServiceAnnouncement>>,
+    },
 }
 
 pub struct P2PNode {
@@ -115,6 +140,7 @@ pub struct P2PNode {
 pub struct P2PHandle {
     cmd_tx: mpsc::Sender<P2PCommand>,
     telemetry: Arc<TelemetryStore>,
+    service_announcements: Arc<tokio::sync::RwLock<Vec<ServiceAnnouncement>>>,
 }
 
 impl P2PHandle {
@@ -181,6 +207,27 @@ impl P2PHandle {
         rx.await
             .map_err(|e| anyhow!("Failed to receive PublishRelayEndpoint response: {}", e))?
     }
+
+    pub async fn publish_service_announcement(&self, announcement: ServiceAnnouncement) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(P2PCommand::PublishServiceAnnouncement { announcement, resp: tx })
+            .await
+            .map_err(|e| anyhow!("Failed to send PublishServiceAnnouncement command: {}", e))?;
+        rx.await
+            .map_err(|e| anyhow!("Failed to receive PublishServiceAnnouncement response: {}", e))?
+    }
+
+    pub async fn get_service_announcements(&self) -> Vec<ServiceAnnouncement> {
+        let now = now_epoch_secs();
+        self.service_announcements
+            .read()
+            .await
+            .iter()
+            .filter(|item| now.saturating_sub(item.announced_at) <= SERVICE_ANNOUNCEMENT_TTL_SECS)
+            .cloned()
+            .collect()
+    }
 }
 
 impl P2PNode {
@@ -192,6 +239,7 @@ impl P2PNode {
         P2PHandle {
             cmd_tx: tx,
             telemetry: Arc::new(TelemetryStore::new()),
+            service_announcements: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         }
     }
 
@@ -227,6 +275,9 @@ let kademlia = kad::Behaviour::new(peer_id, store);
 
                 let relay_topic = IdentTopic::new(RELAY_ENDPOINTS_TOPIC);
                 gossipsub.subscribe(&relay_topic)
+                    .map_err(|e| std::io::Error::other(format!("gossipsub subscribe: {}", e)))?;
+                let services_topic = IdentTopic::new(SERVICE_ANNOUNCEMENTS_TOPIC);
+                gossipsub.subscribe(&services_topic)
                     .map_err(|e| std::io::Error::other(format!("gossipsub subscribe: {}", e)))?;
 
                 let mdns_enabled = listen_port == 0;
@@ -289,9 +340,11 @@ let kademlia = kad::Behaviour::new(peer_id, store);
         }
 
         let telemetry = Arc::new(TelemetryStore::new());
+        let service_announcements = Arc::new(tokio::sync::RwLock::new(Vec::new()));
         let p2p_handle = P2PHandle {
             cmd_tx: tx,
             telemetry: telemetry.clone(),
+            service_announcements: service_announcements.clone(),
         };
         Ok((
             Self {
@@ -384,6 +437,24 @@ let kademlia = kad::Behaviour::new(peer_id, store);
                                 if let Ok(text) = String::from_utf8(message.data.clone()) {
                                     info!("Received relay endpoint from {}: {}", propagation_source, text);
                                 }
+                            } else if message.topic == IdentTopic::new(SERVICE_ANNOUNCEMENTS_TOPIC).hash() {
+                                match serde_json::from_slice::<ServiceAnnouncement>(&message.data) {
+                                    Ok(mut announcement) => {
+                                        announcement.source_peer_id = propagation_source.to_string();
+                                        let mut store = self.p2p.service_announcements.write().await;
+                                        if let Some(existing) = store.iter_mut().find(|item| {
+                                            item.agent_id == announcement.agent_id
+                                                && item.endpoint_url == announcement.endpoint_url
+                                        }) {
+                                            *existing = announcement;
+                                        } else {
+                                            store.push(announcement);
+                                        }
+                                    }
+                                    Err(error) => {
+                                        warn!("Failed to parse service announcement: {}", error);
+                                    }
+                                }
                             }
                         }
                         SwarmEvent::Behaviour(HydraEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
@@ -434,12 +505,53 @@ let kademlia = kad::Behaviour::new(peer_id, store);
                                     .map_err(|e| anyhow!("Gossipsub publish failed: {}", e));
                                 let _ = resp.send(result);
                             }
+                            P2PCommand::PublishServiceAnnouncement { announcement, resp } => {
+                                let topic = IdentTopic::new(SERVICE_ANNOUNCEMENTS_TOPIC);
+                                let encoded = serde_json::to_vec(&announcement)
+                                    .map_err(|e| anyhow!("Failed to encode service announcement: {}", e));
+                                let result = encoded.and_then(|bytes| {
+                                    self.swarm
+                                        .behaviour_mut()
+                                        .gossipsub
+                                        .publish(topic, bytes)
+                                        .map(|_| ())
+                                        .map_err(|e| anyhow!("Gossipsub publish failed: {}", e))
+                                });
+                                if result.is_ok() {
+                                    let mut store = self.p2p.service_announcements.write().await;
+                                    if let Some(existing) = store.iter_mut().find(|item| {
+                                        item.agent_id == announcement.agent_id
+                                            && item.endpoint_url == announcement.endpoint_url
+                                    }) {
+                                        *existing = announcement.clone();
+                                    } else {
+                                        store.push(announcement.clone());
+                                    }
+                                }
+                                let _ = resp.send(result);
+                            }
+                            P2PCommand::GetServiceAnnouncements { resp } => {
+                                let now = now_epoch_secs();
+                                let items = self.p2p.service_announcements.read().await
+                                    .iter()
+                                    .filter(|item| now.saturating_sub(item.announced_at) <= SERVICE_ANNOUNCEMENT_TTL_SECS)
+                                    .cloned()
+                                    .collect();
+                                let _ = resp.send(items);
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 async fn handle_incoming_tunnel(

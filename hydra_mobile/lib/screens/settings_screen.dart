@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:hydra_mobile/credit/credit_repository.dart';
 import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -15,6 +16,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool get wantKeepAlive => true;
 
   String _proxyMode = 'telegram';
+  bool _advancedMode = false;
 
   @override
   void initState() {
@@ -26,6 +28,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _proxyMode = prefs.getString('proxy_mode') ?? 'telegram';
+      _advancedMode = prefs.getBool(CreditRepository.advancedModeKey) ?? false;
     });
   }
 
@@ -40,6 +43,14 @@ class _SettingsScreenState extends State<SettingsScreen>
     } catch (e) {
       debugPrint("Failed to set proxy mode in Rust: $e");
     }
+  }
+
+  Future<void> _saveAdvancedMode(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(CreditRepository.advancedModeKey, enabled);
+    setState(() {
+      _advancedMode = enabled;
+    });
   }
 
   @override
@@ -77,7 +88,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         ),
         const Divider(height: 32),
         Text(
-          'Marketplace',
+          'Balance',
           style: Theme.of(context).textTheme.titleLarge,
         ),
         const SizedBox(height: 8),
@@ -88,18 +99,27 @@ class _SettingsScreenState extends State<SettingsScreen>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Hydra Route Exchange',
+                  'Starter balance',
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 SizedBox(height: 8),
-                Text('Chain: Base Sepolia'),
-                Text('Wallet custody: local secure storage'),
-                SizedBox(height: 8),
                 Text(
-                  'Configure contract addresses and RPC endpoint in hydra.toml [crypto]. Wallet creation, agent registration, offers, and feedback live in the Marketplace tab.',
+                  'Hydra starts with free routes and introduces faster paths only when they help. The default flow stays simple and does not require a separate sign-up.',
                   style: TextStyle(color: Colors.grey, fontSize: 12),
                 ),
               ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: SwitchListTile(
+            value: _advancedMode,
+            onChanged: _saveAdvancedMode,
+            title: const Text('Show advanced tools'),
+            subtitle: const Text(
+              'Reveals provider and power-user tools such as the full route exchange screen.',
+              style: TextStyle(fontSize: 12),
             ),
           ),
         ),

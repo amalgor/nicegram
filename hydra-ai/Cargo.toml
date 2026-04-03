@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 hydra-config = { path = "../hydra-config" }
+hydra-exchange = { path = "../hydra-exchange" }
 llama-cpp-2 = { workspace = true }
 tokio.workspace = true
 anyhow = { workspace = true }

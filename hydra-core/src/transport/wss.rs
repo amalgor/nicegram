@@ -8,6 +8,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio_tungstenite::tungstenite;
 use tracing::{debug, info, warn};
+use url::Url;
 
 fn build_tls_connector() -> Result<tokio_rustls::TlsConnector> {
     let provider = rustls::crypto::ring::default_provider();
@@ -21,10 +22,15 @@ fn build_tls_connector() -> Result<tokio_rustls::TlsConnector> {
     Ok(tokio_rustls::TlsConnector::from(Arc::new(config)))
 }
 
-/// Max concurrent WSS relay handshakes to prevent tokio thread starvation.
 const MAX_CONCURRENT_RELAY: usize = 4;
 
-/// A relay connection through a Cloudflare Worker WSS endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedEndpoint {
+    host: String,
+    port: u16,
+    target_agent: Option<String>,
+}
+
 pub struct WssTransport {
     endpoints: Vec<String>,
     device_id: String,
@@ -40,7 +46,6 @@ impl WssTransport {
         }
     }
 
-    /// Connect to target through the first available relay endpoint.
     async fn connect_to_target(&self, target: &str) -> Result<TransportStream> {
         let _permit = tokio::time::timeout(
             std::time::Duration::from_secs(15),
@@ -63,9 +68,8 @@ impl WssTransport {
             for endpoint in &transport.endpoints {
                 match transport.try_endpoint(endpoint, &target_owned).await {
                     Ok(stream) => return Ok(stream),
-                    Err(e) => {
-                        warn!("Relay endpoint {} failed: {}", endpoint, e);
-                        continue;
+                    Err(error) => {
+                        warn!("Relay endpoint {} failed: {}", endpoint, error);
                     }
                 }
             }
@@ -77,15 +81,14 @@ impl WssTransport {
 
         handle
             .await
-            .map_err(|e| anyhow::anyhow!("Relay task panicked: {}", e))?
+            .map_err(|error| anyhow::anyhow!("Relay task panicked: {}", error))?
     }
 
-    /// Connect through a specific relay endpoint using WebSocket.
     async fn try_endpoint(&self, endpoint: &str, target: &str) -> Result<TransportStream> {
-        let host = extract_host(endpoint);
-        info!("Relay: [{}] connecting to {} ...", target, host);
+        let parsed = parse_endpoint(endpoint)?;
+        info!("Relay: [{}] connecting to {} ...", target, parsed.host);
 
-        let tcp_addr = format!("{}:443", host);
+        let tcp_addr = format!("{}:{}", parsed.host, parsed.port);
         let tcp_stream = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             TcpStream::connect(&tcp_addr),
@@ -97,11 +100,9 @@ impl WssTransport {
         })?
         .context("TCP connect failed")?;
 
-        debug!("Relay: [{}] TCP connected to {}", target, tcp_addr);
-
         let tls_connector = build_tls_connector()?;
-        let server_name = rustls::pki_types::ServerName::try_from(host.as_str())
-            .map_err(|e| anyhow::anyhow!("Invalid server name '{}': {}", host, e))?
+        let server_name = rustls::pki_types::ServerName::try_from(parsed.host.as_str())
+            .map_err(|error| anyhow::anyhow!("Invalid server name '{}': {}", parsed.host, error))?
             .to_owned();
 
         let tls_stream = tokio::time::timeout(
@@ -115,9 +116,7 @@ impl WssTransport {
         })?
         .context("TLS handshake failed")?;
 
-        debug!("Relay: [{}] TLS established", target);
-
-        let request = tungstenite::http::Request::builder()
+        let mut request = tungstenite::http::Request::builder()
             .uri(endpoint)
             .header("Upgrade", "websocket")
             .header("Connection", "Upgrade")
@@ -126,11 +125,17 @@ impl WssTransport {
                 "Sec-WebSocket-Key",
                 tungstenite::handshake::client::generate_key(),
             )
-            .header("Host", &host)
+            .header("Host", &parsed.host)
             .header("X-Hydra-Target", target)
-            .header("X-Hydra-Device", &self.device_id)
-            .body(())
-            .context("Failed to build WSS request")?;
+            .header("X-Hydra-Device", &self.device_id);
+
+        if let Some(agent_id) = &parsed.target_agent {
+            request = request
+                .header("X-Hydra-Mode", "consumer")
+                .header("X-Hydra-Target-Agent", agent_id);
+        }
+
+        let request = request.body(()).context("Failed to build WSS request")?;
 
         let ws_result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -144,7 +149,6 @@ impl WssTransport {
         .context("WebSocket handshake failed")?;
 
         let (ws_stream, _response) = ws_result;
-
         info!("WSS relay connected to {} via {}", target, endpoint);
 
         let (local_stream, bridge_stream) = create_tcp_pair().await?;
@@ -158,6 +162,13 @@ impl WssTransport {
                     match msg {
                         Ok(tungstenite::Message::Binary(data)) => {
                             if bridge_write.write_all(&data).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(tungstenite::Message::Text(text)) => {
+                            if text.contains("\"type\":\"error\"")
+                                || text.contains("\"type\":\"closed\"")
+                            {
                                 break;
                             }
                         }
@@ -212,12 +223,48 @@ impl Transport for WssTransport {
 }
 
 pub fn extract_host(url: &str) -> String {
-    url.replace("wss://", "")
-        .replace("ws://", "")
-        .split('/')
-        .next()
-        .unwrap_or("localhost")
-        .to_string()
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            let host = parsed.host_str()?.to_string();
+            Some(match parsed.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host,
+            })
+        })
+        .unwrap_or_else(|| {
+            url.replace("wss://", "")
+                .replace("ws://", "")
+                .split('/')
+                .next()
+                .unwrap_or("localhost")
+                .split('?')
+                .next()
+                .unwrap_or("localhost")
+                .to_string()
+        })
+}
+
+fn parse_endpoint(url: &str) -> Result<ParsedEndpoint> {
+    let parsed = Url::parse(url).context("Invalid WSS endpoint URL")?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing host in WSS endpoint"))?
+        .to_string();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("Missing port in WSS endpoint"))?;
+    let target_agent = parsed
+        .query_pairs()
+        .find(|(key, _)| key == "agent")
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    Ok(ParsedEndpoint {
+        host,
+        port,
+        target_agent,
+    })
 }
 
 async fn create_tcp_pair() -> Result<(TcpStream, TcpStream)> {
@@ -244,6 +291,10 @@ mod tests {
             extract_host("wss://relay.hydra-net.work/path"),
             "relay.hydra-net.work"
         );
+        assert_eq!(
+            extract_host("wss://relay.hydra-net.work?agent=3377"),
+            "relay.hydra-net.work"
+        );
     }
 
     #[test]
@@ -261,6 +312,14 @@ mod tests {
     #[test]
     fn test_extract_host_empty() {
         assert_eq!(extract_host(""), "");
+    }
+
+    #[test]
+    fn test_parse_endpoint_keeps_agent_and_port() {
+        let parsed = parse_endpoint("wss://relay.hydra-net.work:7443/ws?agent=12").unwrap();
+        assert_eq!(parsed.host, "relay.hydra-net.work");
+        assert_eq!(parsed.port, 7443);
+        assert_eq!(parsed.target_agent.as_deref(), Some("12"));
     }
 
     #[test]

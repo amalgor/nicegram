@@ -57,6 +57,25 @@ identity_registry_address = "0x8004A818BFB912233c491871b3d84c89A494BD9e"
 reputation_registry_address = "0x8004B663056A597Dffe9eCcC1965A193B7388713"  # optional for feedback/reputation
 usdc_address = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
 
+# Dynamic route discovery from the on-chain route book.
+[discovery]
+poll_interval_secs = 300
+max_offers = 50
+prefer_free = true
+rpc_timeout_secs = 10
+
+# Credit-first MVP policy for premium route access.
+[credit]
+trial_credit_usdc = 0.1
+linked_credit_usdc = 1.0
+growth_factor = 2.0
+soft_nudge_threshold = 0.5
+soft_throttle_threshold = 0.8
+fallback_threshold = 1.0
+min_speed_pct = 0.25
+nudge_interval_secs = 3600
+advanced_after_payments = 3
+
 # Bootstrap node (only used with --bootstrap flag)
 [bootstrap]
 listen_port = 33097

@@ -18,3 +18,11 @@ preview_id = "cd0d9e4e110241c3bcabcc831551c84f"
 [vars]
 # Default daily quota in bytes (50 MB)
 DEFAULT_DAILY_QUOTA = "52428800"
+
+[[durable_objects.bindings]]
+name = "HYDRA_PROVIDER_SESSIONS"
+class_name = "HydraProviderSession"
+
+[[migrations]]
+tag = "v1-provider-sessions"
+new_sqlite_classes = ["HydraProviderSession"]

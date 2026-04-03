@@ -3,8 +3,8 @@ use alloy::providers::{ProviderBuilder, WalletProvider};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol;
 use hydra_exchange::{
-    AgentRegistrar, BASE_SEPOLIA_CHAIN, BASE_SEPOLIA_CHAIN_ID, ExchangeConfig, LocalWallet,
-    ReputationClient, RouteExchangeClient,
+    AgentRegistrar, BASE_SEPOLIA_CHAIN, BASE_SEPOLIA_CHAIN_ID, CreateOfferInput, ExchangeConfig,
+    LocalWallet, ReputationClient, RouteExchangeClient,
 };
 use url::Url;
 
@@ -75,7 +75,7 @@ async fn wallet_balances_and_offer_query_work_against_anvil() -> anyhow::Result<
         usdc.address().to_owned(),
         identity.address().to_owned(),
         reputation.address().to_owned(),
-        U256::from(1_u64),
+        U256::from(0_u64),
     )
     .await?;
 
@@ -115,6 +115,7 @@ async fn wallet_balances_and_offer_query_work_against_anvil() -> anyhow::Result<
         chain_id: BASE_SEPOLIA_CHAIN_ID,
         rpc_url: Url::parse(anvil.endpoint_url().as_str())?,
         route_book_address: route_book.address().to_owned(),
+        deal_board_address: None,
         identity_registry_address: identity.address().to_owned(),
         reputation_registry_address: Some(reputation.address().to_owned()),
         usdc_address: usdc.address().to_owned(),
@@ -153,7 +154,7 @@ async fn register_and_feedback_work_against_anvil() -> anyhow::Result<()> {
         usdc.address().to_owned(),
         identity.address().to_owned(),
         reputation.address().to_owned(),
-        U256::from(1_u64),
+        U256::from(0_u64),
     )
     .await?;
 
@@ -162,6 +163,7 @@ async fn register_and_feedback_work_against_anvil() -> anyhow::Result<()> {
         chain_id: BASE_SEPOLIA_CHAIN_ID,
         rpc_url: Url::parse(anvil.endpoint_url().as_str())?,
         route_book_address: route_book.address().to_owned(),
+        deal_board_address: None,
         identity_registry_address: identity.address().to_owned(),
         reputation_registry_address: Some(reputation.address().to_owned()),
         usdc_address: usdc.address().to_owned(),
@@ -189,6 +191,88 @@ async fn register_and_feedback_work_against_anvil() -> anyhow::Result<()> {
         .await?;
     assert_eq!(summary.as_ref().map(|item| item.feedback_count), Some(1));
     assert_eq!(summary.as_ref().map(|item| item.formatted_value.as_str()), Some("1"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_deactivate_and_withdraw_offer_work_against_anvil() -> anyhow::Result<()> {
+    let signer: PrivateKeySigner = ANVIL_PRIVATE_KEY.parse()?;
+    let anvil = alloy::node_bindings::Anvil::new()
+        .path(anvil_path())
+        .spawn();
+    let provider = ProviderBuilder::new()
+        .wallet(signer)
+        .connect_http(anvil.endpoint_url());
+    let signer_address = provider.wallet().default_signer().address();
+
+    let usdc = MockUSDCArtifact::deploy(provider.clone()).await?;
+    let identity = MockIdentityRegistryArtifact::deploy(provider.clone()).await?;
+    let reputation = MockReputationRegistryArtifact::deploy(provider.clone()).await?;
+    let route_book = HydraRouteBookArtifact::deploy(
+        provider.clone(),
+        usdc.address().to_owned(),
+        identity.address().to_owned(),
+        reputation.address().to_owned(),
+        U256::from(1_u64),
+    )
+    .await?;
+
+    identity
+        .setOwner(U256::from(7_u64), signer_address)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    usdc.mint(signer_address, U256::from(3 * ONE_USDC))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let client = RouteExchangeClient::new(ExchangeConfig {
+        chain: BASE_SEPOLIA_CHAIN.to_string(),
+        chain_id: BASE_SEPOLIA_CHAIN_ID,
+        rpc_url: Url::parse(anvil.endpoint_url().as_str())?,
+        route_book_address: route_book.address().to_owned(),
+        deal_board_address: None,
+        identity_registry_address: identity.address().to_owned(),
+        reputation_registry_address: Some(reputation.address().to_owned()),
+        usdc_address: usdc.address().to_owned(),
+    });
+
+    let created = client
+        .create_offer(
+            ANVIL_MNEMONIC,
+            CreateOfferInput {
+                agent_id: 7,
+                endpoint_url: "wss://relay.hydra-net.work?agent=7".to_string(),
+                protocols: vec!["wss".to_string()],
+                region: "US".to_string(),
+                price_per_gb_raw: ONE_USDC.to_string(),
+                stake_amount_raw: ONE_USDC.to_string(),
+                bandwidth_mbps: 42,
+            },
+        )
+        .await?;
+    assert_eq!(created.offer_id, Some(1));
+    assert!(created.tx_hash.starts_with("0x"));
+
+    let offer = client.get_offer(1).await?;
+    assert_eq!(offer.agent_id, 7);
+    assert_eq!(offer.bandwidth_mbps, 42);
+    assert_eq!(offer.stake_amount_raw, ONE_USDC.to_string());
+
+    let deactivated = client.deactivate_offer(ANVIL_MNEMONIC, 1).await?;
+    assert_eq!(deactivated.offer_id, Some(1));
+    let offer = client.get_offer(1).await?;
+    assert!(!offer.active);
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let withdrawn = client.withdraw_stake(ANVIL_MNEMONIC, 1).await?;
+    assert_eq!(withdrawn.offer_id, Some(1));
+    let offer = client.get_offer(1).await?;
+    assert_eq!(offer.stake_amount_raw, "0");
 
     Ok(())
 }

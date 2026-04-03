@@ -1,3 +1,6 @@
+pub mod credit;
+pub mod provider;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sled::Db;

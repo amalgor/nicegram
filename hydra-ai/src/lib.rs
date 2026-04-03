@@ -9,7 +9,9 @@ use tracing::{debug, error, info};
 
 use hydra_config::AiConfig;
 
+pub mod deal_agent;
 pub mod models;
+pub use deal_agent::DealAgent;
 pub use models::qwen2_infer::Qwen2Infer;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]

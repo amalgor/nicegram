@@ -19,6 +19,8 @@
 | **HRX Phase 0** — multi-transport routing foundation | Выполнен | `hydra-core/src/transport/`, `hydra-config/src/lib.rs`, `hydra_mobile/rust/src/api/simple.rs` |
 | **HRX Phase 1** — on-chain route book | Выполнен | `contracts/`, `contracts/script/DeployHydraRouteBook.s.sol` |
 | **HRX Phase 2** — embedded wallet + marketplace | Выполнен | `hydra-exchange/`, `hydra_mobile/lib/exchange/`, `screens/marketplace_screen.dart`, `hydra.toml`, `contracts/` |
+| **HRX Phase 3 MVP** — credit-first route discovery | Выполнен (repo-side) | `hydra-core/src/discovery.rs`, `hydra-econ/src/credit.rs`, `hydra_mobile/lib/screens/balance_screen.dart`, `hydra_mobile/rust/src/credit_runtime.rs` |
+| **HRX Phases 4A/4B/5A/5B-soft** — provider growth + soft safety | Выполнен (repo-side) | `hydra-exchange/src/client.rs`, `hydra-relay-worker/src/index.ts`, `hydra-econ/src/provider.rs`, `hydra_mobile/rust/src/provider_runtime.rs`, `hydra_mobile/lib/screens/balance_screen.dart` |
 | **Sprint: Network + Crypto + Content** | Исторический baseline | `hydra-relay-worker/`, `hydra-core/src/relay.rs`, `STRATEGY.md` |
 | **Sprint: Mobile MVP Readiness** | Выполнен | См. ниже |
 | **Сборка Android** | Проходит | `hydra_mobile/`: VpnService + `tun2proxy`, bundled `qwen2.5-0.5b.gguf` |
@@ -28,7 +30,7 @@
 - **Connection tracking**: `hydra-core/src/connections.rs` — `ConnectionRegistry` с route type, bytes, Telegram detection, AI reasoning, per-connection proxy override
 - **Selective Telegram routing**: Telegram DC IPs → relay, остальное → direct. Текущее управление идёт через `[network].proxy_mode` и `[[transports]].mode`
 - **VPN port bug fix**: `vpn.rs` → `SOCKS5_PORT` AtomicU16 из конфига
-- **Flutter UI restructure**: `main.dart` разделён на `screens/` + `widgets/`. После Phase 2 навигация расширена до Connect / Network / Marketplace / AI / Content / Logs / Settings
+- **Flutter UI restructure**: `main.dart` разделён на `screens/` + `widgets/`. После Phase 3 default navigation: Connect / Network / Balance / AI / Content / Logs / Settings; advanced Marketplace остаётся доступен из Balance.
 - **Config robustness**: `#[serde(default)]` на всех config structs — partial TOML работает
 
 **Соответствие пунктам аудита §1.2 (кратко):**
@@ -51,6 +53,25 @@
 - Для acceptance data зарегистрирован live agent `3377` (tx `0x869a57c910f7063ad45ff64e960538848e13aac225ed2e86b43f44be6f44506a`) и создан offer `#1` (tx `0xc6460e57553ffce315421110baaefe184f9aac17cec84e55a996bf191a9f7751`) с параметрами `US`, `vless`, `1 USDC/GB`, `1 USDC stake`, `100 Mbps` от wallet `0x6c69ee6e524f12d20c14c4b8caaa754012c9dc63`.
 - Operational note: live ERC-8004 proxy на Base Sepolia даёт ложный `NotActivated` в Foundry script simulation для `register()` / `ownerOf()`. Реальные `cast call/send` работают; acceptance seeding был завершён прямыми транзакциями, а не через `seed-base-sepolia.sh`.
 
+**HRX Phase 3 MVP (2026-04-02) — CREDIT-FIRST ROUTE DISCOVERY IMPLEMENTED:**
+- `hydra-config` расширен секциями `[discovery]` и `[credit]`; корневые `hydra.toml` и `hydra.toml.example` синхронизированы с новым schema.
+- В `hydra-core` добавлен `RouteDiscoveryService`: опрос `HydraRouteBook`, `moka` cache и конвертация transport-ready `endpoint_ciphertext` в discovered `ConfiguredTransport`.
+- `Socks5Server` теперь умеет объединять static transports и discovered routes, скрывать premium routes до trial/credit approval и делать graceful fallback на free routes при достижении лимита вместо hard failure.
+- `hydra-econ::credit` добавляет локальный `CreditLedger` с trial credit, linked credit для Telegram anchor, growth rules, nudge/throttle/fallback thresholds и unlock rule для advanced tier.
+- В мобильном Rust runtime добавлены `get_credit_status()`, `get_nudge()`, `dismiss_nudge()`, `accept_trial_route()` и `get_telegram_anchor_info()`. Внутренний credit runtime вынесен в отдельный модуль вне `crate::api`, чтобы FRB не тащил internal state types в публичный bridge.
+- В Flutter default UX смещён с Marketplace на Balance: `BalanceScreen`, `CreditStatusWidget` на Connect screen, AI card “Found a faster route”, advanced tools toggle и скрытие crypto-native flows до явного opt-in / unlock.
+- Advanced Marketplace не удалён: он сохраняется как provider/power-user surface, но больше не является first-run screen для массовой аудитории.
+
+**HRX Phases 4A/4B/5A/5B-soft (2026-04-02) — MOBILE-FIRST PROVIDER GROWTH + SOFT SAFETY IMPLEMENTED:**
+- `hydra-exchange` больше не read-only: добавлены `create_offer`, `deactivate_offer`, `withdraw_stake`, включая auto-`approve()` для USDC stake перед `createOffer(...)`.
+- `hydra-relay-worker` больше не только raw WSS relay: он поддерживает provider/consumer agent sessions через Durable Object `HydraProviderSession`.
+- Canonical provider descriptor зафиксирован как `wss://relay.hydra-net.work?agent=<agent_id>`. `WssTransport` понимает `?agent=` и использует header-based consumer mode вместо legacy raw-target-only handshake.
+- В `hydra-p2p` добавлен минимальный service gossip topic `hydra/services/1.0`; mobile provider публикуется туда как `tier = unstaked` до RouteBook graduation.
+- В `hydra-econ::provider` появился `ProviderMetricsLedger`: per-agent session count, bytes relayed, latency, throughput, uptime ratio, local routing score, pending reputation delta и earnings estimate.
+- `RouteDiscoveryService` теперь объединяет RouteBook offers и `hydra/services/1.0` announcements. Soft-risk penalties уже штрафуют price outliers, fresh routes, unstaked/zero-stake providers, low-feedback paths и relay concentration.
+- В `hydra_mobile/rust` добавлен `provider_runtime`: long-lived provider relay session, service announcement publishing, provider earnings/status API и threshold/window-ready reputation sync bookkeeping.
+- В Flutter `BalanceScreen` теперь содержит mobile-first Share & Earn surface; отдельный provider dashboard/CLI больше не рассматривается как основной продуктовый entry-point.
+
 **Sprint Network + Crypto + Content (2026-03-29) — ИСТОРИЧЕСКИЙ BASELINE:**
 - Cloudflare Worker WSS relay (`hydra-relay-worker/`): WSS-to-TCP proxy с KV-квотами, whitelist Telegram DC.
 - Rust WSS relay client (`hydra-core/src/relay.rs`): `tokio-tungstenite`, интеграция в SOCKS5 handler (auto/always/never).
@@ -69,7 +90,7 @@
 - Account: `8e418b62669470a077532442d2cf76e1` (Alex@alder.ru)
 - Subdomain: `hydra-net.workers.dev`
 
-**Следующая логическая работа:** x402 / offer creation flow / route-selection integration между HRX и transport runtime, плюс iOS validation для Marketplace и tunnel stack.
+**Следующая логическая работа:** device validation для dynamic premium/provider routing на Android/iOS, затем Track B monetization (top-up / deal board) как реальный источник settled balance для Share & Earn graduation, и только потом hardening/scaling вроде full route gossip mesh, non-blocking LLM scoring и multi-hop provider chaining.
 
 **Мобильный Content (фактическая зрелость, 2026-03-29):**
 - **Суммаризация в приложении:** логика есть в Rust (`hydra-content` → `Summarizer` + `MessageHandler`: для текста >200 символов вызывается LLM или fallback). На устройстве она **не доходит до UI**: не вызывается `listen_for_updates` (никто не забирает `take_updates_receiver` и не запускает цикл), нет экспорта в FRB для `fetch_and_process` / готовых `ProcessedMessage`. Пользователь видит только JSON-список диалогов.

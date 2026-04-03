@@ -22,7 +22,7 @@ use hydra_config::HydraConfig;
 use hydra_core::connections::ConnectionRegistry;
 use hydra_core::{transport, Socks5Server};
 use hydra_econ::EconLedger;
-use hydra_p2p::P2PNode;
+use hydra_p2p::{P2PHandle, P2PNode};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,6 +33,8 @@ lazy_static::lazy_static! {
     static ref SHARED_REGISTRY: tokio::sync::Mutex<Option<Arc<ConnectionRegistry>>> =
         tokio::sync::Mutex::new(None);
     static ref SHARED_PROXY_MODE: tokio::sync::Mutex<Option<Arc<std::sync::RwLock<String>>>> =
+        tokio::sync::Mutex::new(None);
+    static ref SHARED_P2P_HANDLE: tokio::sync::Mutex<Option<P2PHandle>> =
         tokio::sync::Mutex::new(None);
     static ref NODE_STARTED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
@@ -66,6 +68,7 @@ pub async fn prepare_local_runtime(base_dir: String) -> anyhow::Result<()> {
     );
 
     init_quota_from_config(&config);
+    let _ = crate::credit_runtime::init_credit_services(base_path.clone(), &config).await?;
 
     let ai = Arc::new(AiNegotiator::new(&config.ai));
     {
@@ -90,6 +93,8 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
     let config = HydraConfig::load_with_base_dir(&config_path, &base_path)?;
 
     init_quota_from_config(&config);
+    let (discovery, credit, provider_metrics) =
+        crate::credit_runtime::init_credit_services(base_path.clone(), &config).await?;
 
     // Store the SOCKS5 port for tun2proxy to read
     crate::api::vpn::SOCKS5_PORT.store(
@@ -149,15 +154,21 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
     };
 
     let transports = transport::build_transports(&config.transports)?;
+    if let Some(service) = &discovery {
+        service.attach_p2p_handle(p2p_handle.clone()).await;
+    }
     let addr = SocketAddr::from(([127, 0, 0, 1], config.network.socks5_port));
     tracing::info!("Starting SOCKS5 Server on {}", addr);
     let server = Socks5Server::new(
         addr,
         ai,
-        p2p_handle,
+        p2p_handle.clone(),
         econ,
         transports,
         config.network.proxy_mode.clone(),
+        discovery,
+        credit,
+        provider_metrics,
     );
 
     // Store registry and proxy mode handle for FRB API access
@@ -168,6 +179,10 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
     {
         let mut shared = SHARED_PROXY_MODE.lock().await;
         *shared = Some(server.proxy_mode_handle());
+    }
+    {
+        let mut shared = SHARED_P2P_HANDLE.lock().await;
+        *shared = Some(p2p_handle.clone());
     }
 
     tokio::spawn(async move {
@@ -180,6 +195,10 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
 
     tracing::info!("Hydra Core ready!");
     Ok(())
+}
+
+pub(crate) async fn shared_p2p_handle() -> Option<P2PHandle> {
+    SHARED_P2P_HANDLE.lock().await.clone()
 }
 
 /// Get active connections as JSON for Flutter UI.

@@ -1,20 +1,43 @@
 pub mod connections;
+pub mod discovery;
 pub mod onion;
 pub mod socks;
 pub mod transport;
 use anyhow::Result;
+use async_trait::async_trait;
 use connections::{ConnectionRegistry, RouteType};
+use discovery::RouteDiscoveryService;
 use hydra_ai::AiNegotiator;
 use hydra_econ::EconLedger;
+use hydra_econ::provider::ProviderMetricsLedger;
 use hydra_p2p::P2PHandle;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, warn};
 use transport::ConfiguredTransport;
 
 use std::sync::RwLock;
+
+#[derive(Debug, Clone, Default)]
+pub struct CreditRuntimeStatus {
+    pub premium_allowed: bool,
+    pub throttle_factor: f64,
+    pub fallback_to_free: bool,
+}
+
+#[async_trait]
+pub trait CreditController: Send + Sync {
+    async fn current_status(&self) -> Result<CreditRuntimeStatus>;
+    async fn record_usage(
+        &self,
+        transport: &ConfiguredTransport,
+        bytes_total: u64,
+        duration: Duration,
+    ) -> Result<()>;
+}
 
 pub struct Socks5Server {
     addr: SocketAddr,
@@ -27,6 +50,9 @@ pub struct Socks5Server {
     transports: Vec<ConfiguredTransport>,
     proxy_mode: Arc<RwLock<String>>,
     registry: Arc<ConnectionRegistry>,
+    discovery: Option<Arc<RouteDiscoveryService>>,
+    credit: Option<Arc<dyn CreditController>>,
+    provider_metrics: Option<Arc<ProviderMetricsLedger>>,
 }
 
 impl Socks5Server {
@@ -37,6 +63,9 @@ impl Socks5Server {
         econ: Arc<EconLedger>,
         transports: Vec<ConfiguredTransport>,
         proxy_mode: String,
+        discovery: Option<Arc<RouteDiscoveryService>>,
+        credit: Option<Arc<dyn CreditController>>,
+        provider_metrics: Option<Arc<ProviderMetricsLedger>>,
     ) -> Self {
         Self {
             addr,
@@ -46,6 +75,9 @@ impl Socks5Server {
             transports,
             proxy_mode: Arc::new(RwLock::new(proxy_mode)),
             registry: Arc::new(ConnectionRegistry::new()),
+            discovery,
+            credit,
+            provider_metrics,
         }
     }
 
@@ -65,6 +97,10 @@ impl Socks5Server {
     }
 
     pub async fn run(&self) -> Result<()> {
+        if let Some(discovery) = &self.discovery {
+            discovery.start_polling();
+        }
+
         let listener = TcpListener::bind(self.addr).await?;
         info!("Socks5 server listening on {}", self.addr);
 
@@ -79,9 +115,25 @@ impl Socks5Server {
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
             let registry = self.registry.clone();
+            let discovery = self.discovery.clone();
+            let credit = self.credit.clone();
+            let p2p = self.p2p.clone();
+            let provider_metrics = self.provider_metrics.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, transports, proxy_mode, registry).await {
+                if let Err(e) =
+                    handle_connection(
+                        stream,
+                        transports,
+                        proxy_mode,
+                        registry,
+                        discovery,
+                        credit,
+                        p2p,
+                        provider_metrics,
+                    )
+                        .await
+                {
                     error!("Error handling connection from {}: {}", peer_addr, e);
                 }
             });
@@ -96,6 +148,10 @@ async fn handle_connection(
     transports: Vec<ConfiguredTransport>,
     proxy_mode: String,
     registry: Arc<ConnectionRegistry>,
+    discovery: Option<Arc<RouteDiscoveryService>>,
+    credit: Option<Arc<dyn CreditController>>,
+    p2p: P2PHandle,
+    provider_metrics: Option<Arc<ProviderMetricsLedger>>,
 ) -> Result<()> {
     // 1. Negotiation (Handshake)
     let mut buf = [0u8; 2];
@@ -183,7 +239,48 @@ async fn handle_connection(
 
     let is_telegram = socks::is_telegram_target(&target_addr);
     let is_relay_infra = socks::is_relay_infrastructure(&target_addr);
-    let plan = select_transport_plan(&target_addr, is_telegram, is_relay_infra, &proxy_mode, &transports);
+    let credit_status = if let Some(controller) = &credit {
+        match controller.current_status().await {
+            Ok(status) => status,
+            Err(error) => {
+                warn!("Failed to load credit status, using safe defaults: {}", error);
+                CreditRuntimeStatus::default()
+            }
+        }
+    } else {
+        CreditRuntimeStatus::default()
+    };
+
+    let dynamic_transports = if let Some(discovery) = &discovery {
+        discovery.attach_p2p_handle(p2p.clone()).await;
+        discovery
+            .get_transports(&proxy_mode, is_telegram, credit_status.premium_allowed)
+            .await
+    } else {
+        Vec::new()
+    };
+    let premium_better = if credit_status.premium_allowed {
+        if let Some(discovery) = &discovery {
+            discovery.premium_is_materially_better().await
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let all_transports = order_candidate_transports(
+        transports,
+        dynamic_transports,
+        credit_status.clone(),
+        premium_better,
+    );
+    let plan = select_transport_plan(
+        &target_addr,
+        is_telegram,
+        is_relay_infra,
+        &proxy_mode,
+        &all_transports,
+    );
 
     let conn_id = registry.register(&target_addr, plan.requires_proxy());
     info!(
@@ -217,6 +314,7 @@ async fn handle_connection(
 
     let mut errors = Vec::new();
     for configured in plan.transports {
+        let connect_started = Instant::now();
         info!(
             "Connection #{}: trying transport {} to {}",
             conn_id,
@@ -226,7 +324,7 @@ async fn handle_connection(
         registry.update_route(
             conn_id,
             RouteType::Relay,
-            Some(format!("Via {}", configured.kind.as_str())),
+            Some(configured.metadata.label.clone()),
         );
 
         match configured.transport.connect(&target_addr).await {
@@ -234,10 +332,38 @@ async fn handle_connection(
                 stream.write_all(&socks::success_reply()).await?;
                 let (mut ri, mut wi) = stream.into_split();
                 let (mut ro, mut wo) = tokio::io::split(outbound);
-                let c2t = tokio::io::copy(&mut ri, &mut wo);
-                let t2c = tokio::io::copy(&mut ro, &mut wi);
+                let started_at = Instant::now();
+                let connect_latency_ms = connect_started.elapsed().as_millis() as u64;
+                let limit_bps =
+                    rate_limit_bytes_per_sec(&configured, credit_status.throttle_factor);
+                let c2t = copy_with_rate_limit(&mut ri, &mut wo, limit_bps);
+                let t2c = copy_with_rate_limit(&mut ro, &mut wi, limit_bps);
                 let (res_up, res_down) = tokio::join!(c2t, t2c);
-                registry.update_bytes(conn_id, res_up.unwrap_or(0), res_down.unwrap_or(0));
+                let up = res_up.unwrap_or(0);
+                let down = res_down.unwrap_or(0);
+                let duration = started_at.elapsed();
+                registry.update_bytes(conn_id, up, down);
+                if let Some(controller) = &credit {
+                    if let Err(error) = controller
+                        .record_usage(&configured, up.saturating_add(down), duration)
+                        .await
+                    {
+                        warn!("Failed to persist credit usage: {}", error);
+                    }
+                }
+                if let (Some(metrics), Some(agent_id)) =
+                    (&provider_metrics, configured.metadata.agent_id)
+                {
+                    if let Err(error) = metrics.record_success(
+                        agent_id,
+                        up.saturating_add(down),
+                        duration,
+                        connect_latency_ms,
+                        configured.metadata.price_per_gb_micro_usdc,
+                    ) {
+                        warn!("Failed to persist provider metrics success: {}", error);
+                    }
+                }
                 registry.close(conn_id);
                 return Ok(());
             }
@@ -248,6 +374,13 @@ async fn handle_connection(
                     configured.kind.as_str(),
                     e
                 );
+                if let (Some(metrics), Some(agent_id)) =
+                    (&provider_metrics, configured.metadata.agent_id)
+                {
+                    if let Err(error) = metrics.record_failure(agent_id) {
+                        warn!("Failed to persist provider metrics failure: {}", error);
+                    }
+                }
                 errors.push(format!("{}: {}", configured.kind.as_str(), e));
             }
         }
@@ -265,6 +398,104 @@ async fn handle_connection(
     stream.write_all(&socks::failure_reply()).await?;
     registry.close(conn_id);
     Ok(())
+}
+
+async fn copy_with_rate_limit<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    limit_bps: Option<u64>,
+) -> std::io::Result<u64>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    if let Some(limit_bps) = limit_bps {
+        let mut total = 0u64;
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            let n = tokio::io::AsyncReadExt::read(reader, &mut buf).await?;
+            if n == 0 {
+                tokio::io::AsyncWriteExt::shutdown(writer).await?;
+                return Ok(total);
+            }
+            tokio::io::AsyncWriteExt::write_all(writer, &buf[..n]).await?;
+            total = total.saturating_add(n as u64);
+            let delay_secs = (n as f64 / limit_bps as f64).max(0.0);
+            if delay_secs > 0.0 {
+                tokio::time::sleep(Duration::from_secs_f64(delay_secs)).await;
+            }
+        }
+    }
+
+    tokio::io::copy(reader, writer).await
+}
+
+fn rate_limit_bytes_per_sec(
+    transport: &ConfiguredTransport,
+    throttle_factor: f64,
+) -> Option<u64> {
+    if !transport.metadata.is_premium() || throttle_factor >= 0.999 {
+        return None;
+    }
+
+    let advertised = transport.metadata.bandwidth_mbps.unwrap_or(16).max(1);
+    let base_bytes_per_sec = advertised.saturating_mul(125_000);
+    Some(
+        ((base_bytes_per_sec as f64) * throttle_factor)
+            .round()
+            .max(16_384.0) as u64,
+    )
+}
+
+fn order_candidate_transports(
+    static_transports: Vec<ConfiguredTransport>,
+    dynamic_transports: Vec<ConfiguredTransport>,
+    credit_status: CreditRuntimeStatus,
+    premium_better: bool,
+) -> Vec<ConfiguredTransport> {
+    let mut static_free = Vec::new();
+    let mut discovered_free = Vec::new();
+    let mut premium = Vec::new();
+
+    for transport in static_transports.into_iter().chain(dynamic_transports) {
+        if transport.metadata.is_premium() {
+            premium.push(transport);
+        } else if matches!(
+            transport.metadata.source,
+            transport::TransportSource::StaticConfig
+        ) {
+            static_free.push(transport);
+        } else {
+            discovered_free.push(transport);
+        }
+    }
+
+    discovered_free.sort_by(|a, b| {
+        b.metadata
+            .reputation_score
+            .partial_cmp(&a.metadata.reputation_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.metadata.bandwidth_mbps.cmp(&a.metadata.bandwidth_mbps))
+    });
+    premium.sort_by(|a, b| {
+        b.metadata
+            .reputation_score
+            .partial_cmp(&a.metadata.reputation_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.metadata.bandwidth_mbps.cmp(&a.metadata.bandwidth_mbps))
+    });
+
+    let mut ordered = Vec::new();
+    if credit_status.premium_allowed && premium_better && !credit_status.fallback_to_free {
+        ordered.extend(premium);
+        ordered.extend(static_free);
+        ordered.extend(discovered_free);
+    } else {
+        ordered.extend(static_free);
+        ordered.extend(discovered_free);
+        ordered.extend(premium);
+    }
+    ordered
 }
 
 async fn do_direct(
@@ -357,7 +588,9 @@ fn select_transport_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::{Transport, TransportKind, TransportStream};
+    use crate::transport::{
+        Transport, TransportKind, TransportMetadata, TransportSource, TransportStream,
+    };
     use async_trait::async_trait;
     use hydra_config::TransportMode;
 
@@ -383,6 +616,19 @@ mod tests {
             kind: TransportKind::Wss,
             mode,
             transport: Arc::new(DummyTransport),
+            metadata: TransportMetadata {
+                source: TransportSource::StaticConfig,
+                offer_id: None,
+                agent_id: None,
+                price_per_gb_micro_usdc: 0,
+                stake_amount_micro_usdc: 0,
+                bandwidth_mbps: None,
+                reputation_score: 0.0,
+                feedback_count: 0,
+                created_at: None,
+                endpoint_host: None,
+                label: "dummy".to_string(),
+            },
         }
     }
 
@@ -466,5 +712,25 @@ mod tests {
         );
         assert!(plan.requires_proxy());
         assert!(plan.transports.is_empty());
+    }
+
+    #[test]
+    fn premium_routes_stay_last_without_credit_signal() {
+        let static_transport = configured(TransportMode::Telegram);
+        let mut premium = configured(TransportMode::All);
+        premium.metadata.source = TransportSource::DiscoveredPremium;
+        premium.metadata.price_per_gb_micro_usdc = 1_000_000;
+        let ordered = order_candidate_transports(
+            vec![static_transport.clone()],
+            vec![premium.clone()],
+            CreditRuntimeStatus {
+                premium_allowed: false,
+                throttle_factor: 1.0,
+                fallback_to_free: false,
+            },
+            false,
+        );
+        assert_eq!(ordered.first().unwrap().metadata.source, TransportSource::StaticConfig);
+        assert!(ordered.last().unwrap().metadata.is_premium());
     }
 }

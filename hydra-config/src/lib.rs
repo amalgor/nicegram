@@ -199,6 +199,8 @@ pub struct CryptoConfig {
     pub rpc_url: String,
     /// Hydra Route Book contract address.
     pub route_book_address: String,
+    /// Hydra Deal Board contract address (P2P fiat-to-USDC escrow).
+    pub deal_board_address: String,
     /// ERC-8004 identity registry address.
     pub identity_registry_address: String,
     /// ERC-8004 reputation registry address. Leave empty to disable reputation reads/writes.
@@ -214,11 +216,37 @@ impl Default for CryptoConfig {
             chain: "BASE-SEPOLIA".to_string(),
             rpc_url: "https://sepolia.base.org".to_string(),
             route_book_address: String::new(),
+            deal_board_address: String::new(),
             identity_registry_address: "0x8004A818BFB912233c491871b3d84c89A494BD9e"
                 .to_string(),
             reputation_registry_address: "0x8004B663056A597Dffe9eCcC1965A193B7388713"
                 .to_string(),
             usdc_address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e".to_string(),
+        }
+    }
+}
+
+/// P2P deal agent configuration — controls autonomous deal negotiation behavior
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentConfig {
+    /// Maximum USDC amount the agent can auto-approve without user confirmation (6 decimals)
+    pub auto_spend_limit: f64,
+    /// Maximum acceptable rate premium over market rate (fraction, e.g. 0.15 = 15%)
+    pub max_rate_premium: f64,
+    /// Preferred fiat payment methods in priority order (e.g. ["sbp", "bank-transfer"])
+    pub preferred_payment_methods: Vec<String>,
+    /// Minimum dealer reputation score to consider (0-100)
+    pub min_dealer_reputation: i64,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            auto_spend_limit: 5.0,
+            max_rate_premium: 0.15,
+            preferred_payment_methods: vec![],
+            min_dealer_reputation: 0,
         }
     }
 }
@@ -316,6 +344,7 @@ pub struct HydraConfig {
     #[serde(default = "default_transports")]
     pub transports: Vec<TransportConfig>,
     pub crypto: CryptoConfig,
+    pub agent: AgentConfig,
     pub bootstrap: BootstrapConfig,
 }
 
@@ -331,6 +360,7 @@ impl Default for HydraConfig {
             content: ContentConfig::default(),
             transports: default_transports(),
             crypto: CryptoConfig::default(),
+            agent: AgentConfig::default(),
             bootstrap: BootstrapConfig::default(),
         }
     }

@@ -3530,6 +3530,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "hydra-config",
+ "hydra-exchange",
  "llama-cpp-2",
  "moka",
  "serde",
@@ -3580,10 +3581,12 @@ dependencies = [
  "hydra-ai",
  "hydra-config",
  "hydra-econ",
+ "hydra-exchange",
  "hydra-p2p",
  "leaf",
  "libp2p",
  "libp2p-dns",
+ "moka",
  "protobuf",
  "rustls 0.23.36 (registry+https://github.com/rust-lang/crates.io-index)",
  "tempfile",
@@ -3594,6 +3597,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "url",
  "vpn-link-serde",
  "webpki-roots 0.26.11",
 ]
@@ -3616,9 +3620,11 @@ dependencies = [
  "alloy",
  "anyhow",
  "hydra-config",
+ "hydra-p2p",
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "sled",
  "tokio",
  "url",
  "zeroize",
@@ -6471,8 +6477,10 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "anyhow",
+ "async-trait",
  "chrono",
  "flutter_rust_bridge",
+ "futures-util",
  "hydra-ai",
  "hydra-config",
  "hydra-content",
@@ -6486,9 +6494,11 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
  "tracing-subscriber",
  "tun2proxy",
+ "zeroize",
 ]
 
 [[package]]

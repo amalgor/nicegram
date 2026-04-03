@@ -2,7 +2,8 @@ use alloy::primitives::Address;
 use anyhow::{Context, Result};
 use hydra_config::HydraConfig;
 use hydra_exchange::{
-    AgentRegistrar, ExchangeConfig, LocalWallet, ReputationClient, RouteExchangeClient,
+    AgentRegistrar, CreateOfferInput, ExchangeConfig, LocalWallet, ReputationClient,
+    RouteExchangeClient,
 };
 use serde::Serialize;
 
@@ -173,6 +174,45 @@ pub async fn register_agent(mnemonic: String) -> Result<String> {
     to_json(&registrar.register(&mnemonic).await?)
 }
 
+pub async fn create_offer(
+    mnemonic: String,
+    agent_id: u64,
+    endpoint_url: String,
+    protocols: Vec<String>,
+    region: String,
+    price_per_gb_raw: String,
+    stake_amount_raw: String,
+    bandwidth_mbps: u64,
+) -> Result<String> {
+    let client = RouteExchangeClient::new(load_exchange_config()?);
+    to_json(
+        &client
+            .create_offer(
+                &mnemonic,
+                CreateOfferInput {
+                    agent_id,
+                    endpoint_url,
+                    protocols,
+                    region,
+                    price_per_gb_raw,
+                    stake_amount_raw,
+                    bandwidth_mbps,
+                },
+            )
+            .await?,
+    )
+}
+
+pub async fn deactivate_offer(mnemonic: String, offer_id: u64) -> Result<String> {
+    let client = RouteExchangeClient::new(load_exchange_config()?);
+    to_json(&client.deactivate_offer(&mnemonic, offer_id).await?)
+}
+
+pub async fn withdraw_stake(mnemonic: String, offer_id: u64) -> Result<String> {
+    let client = RouteExchangeClient::new(load_exchange_config()?);
+    to_json(&client.withdraw_stake(&mnemonic, offer_id).await?)
+}
+
 pub async fn submit_feedback(
     mnemonic: String,
     agent_id: u64,
@@ -181,6 +221,43 @@ pub async fn submit_feedback(
 ) -> Result<String> {
     let client = ReputationClient::new(load_exchange_config()?);
     to_json(&client.give_feedback(&mnemonic, agent_id, positive, &tag1).await?)
+}
+
+// ── P2P Deal Board API ─────────────────────────────────────────────────
+
+pub async fn list_deal_offers(currency: String) -> Result<String> {
+    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    to_json(&client.query_deals(&currency).await?)
+}
+
+pub async fn get_deal_offer(offer_id: u64) -> Result<String> {
+    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    to_json(&client.get_offer(offer_id).await?)
+}
+
+pub async fn accept_deal(mnemonic: String, offer_id: u64, usdc_amount: String) -> Result<String> {
+    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    to_json(&client.accept_deal(offer_id, &usdc_amount, &mnemonic).await?)
+}
+
+pub async fn mark_fiat_sent(mnemonic: String, escrow_id: u64) -> Result<String> {
+    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    to_json(&client.mark_sent(escrow_id, &mnemonic).await?)
+}
+
+pub async fn check_escrow_status(escrow_id: u64) -> Result<String> {
+    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    to_json(&client.check_status(escrow_id).await?)
+}
+
+pub async fn claim_expired_escrow(mnemonic: String, escrow_id: u64) -> Result<String> {
+    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    to_json(&client.claim_expired(escrow_id, &mnemonic).await?)
+}
+
+pub async fn approve_deal_board_usdc(mnemonic: String, amount: String) -> Result<String> {
+    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    to_json(&client.approve_usdc(&amount, &mnemonic).await?)
 }
 
 #[cfg(test)]

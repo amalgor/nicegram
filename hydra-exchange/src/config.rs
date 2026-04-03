@@ -16,6 +16,7 @@ pub struct ExchangeConfig {
     pub chain_id: u64,
     pub rpc_url: Url,
     pub route_book_address: Address,
+    pub deal_board_address: Option<Address>,
     pub identity_registry_address: Address,
     pub reputation_registry_address: Option<Address>,
     pub usdc_address: Address,
@@ -46,6 +47,10 @@ impl ExchangeConfig {
             route_book_address: parse_required_address(
                 "route_book_address",
                 &config.route_book_address,
+            )?,
+            deal_board_address: parse_optional_address(
+                "deal_board_address",
+                &config.deal_board_address,
             )?,
             identity_registry_address: parse_required_address(
                 "identity_registry_address",
@@ -94,6 +99,7 @@ mod tests {
             chain: BASE_SEPOLIA_CHAIN.to_string(),
             rpc_url: BASE_SEPOLIA_RPC_URL.to_string(),
             route_book_address: "0x1111111111111111111111111111111111111111".to_string(),
+            deal_board_address: String::new(),
             identity_registry_address: BASE_SEPOLIA_IDENTITY_REGISTRY.to_string(),
             reputation_registry_address: BASE_SEPOLIA_REPUTATION_REGISTRY.to_string(),
             usdc_address: BASE_SEPOLIA_USDC.to_string(),

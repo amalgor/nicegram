@@ -2,7 +2,20 @@ import { connect } from "cloudflare:sockets";
 
 interface Env {
   HYDRA_QUOTAS: KVNamespace;
+  HYDRA_PROVIDER_SESSIONS: DurableObjectNamespace;
   DEFAULT_DAILY_QUOTA: string;
+}
+
+type SocketFrame = ArrayBuffer | Uint8Array;
+
+interface ProviderControlMessage {
+  type: "registered" | "connect" | "ready" | "close" | "closed" | "error" | "ping" | "pong";
+  target?: string;
+  message?: string;
+}
+
+interface WebSocketAttachment {
+  role: "provider" | "consumer";
 }
 
 function todayKey(deviceId: string): string {
@@ -28,7 +41,7 @@ async function checkAndUpdateQuota(
       used = data.bytes_used || 0;
       limit = data.bytes_limit || defaultLimit;
     } catch {
-      // corrupted entry, reset
+      // Reset corrupted entries on next write.
     }
   }
 
@@ -45,6 +58,366 @@ async function checkAndUpdateQuota(
   return { allowed: used < limit, remaining };
 }
 
+function defaultQuota(env: Env): number {
+  return parseInt(env.DEFAULT_DAILY_QUOTA, 10) || 52428800;
+}
+
+function socketByteLength(message: SocketFrame | string): number {
+  if (typeof message === "string") {
+    return new TextEncoder().encode(message).byteLength;
+  }
+  if (message instanceof Uint8Array) {
+    return message.byteLength;
+  }
+  return message.byteLength;
+}
+
+function parseSocketTarget(target: string): { hostname: string; port: number } {
+  const parts = target.split(":");
+  return {
+    hostname: parts[0],
+    port: parseInt(parts[1] || "443", 10),
+  };
+}
+
+function websocketPair(): [WebSocket, WebSocket] {
+  const pair = new WebSocketPair();
+  return Object.values(pair) as [WebSocket, WebSocket];
+}
+
+async function handleDirectConnection(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const target = request.headers.get("X-Hydra-Target");
+  if (!target) {
+    return new Response("Missing X-Hydra-Target header (format: host:port)", { status: 400 });
+  }
+
+  const deviceId = request.headers.get("X-Hydra-Device") || "anonymous";
+  const limit = defaultQuota(env);
+  const { allowed } = await checkAndUpdateQuota(env.HYDRA_QUOTAS, deviceId, 0, limit);
+  if (!allowed) {
+    return new Response("Daily quota exceeded", { status: 429 });
+  }
+
+  const [client, server] = websocketPair();
+  server.accept();
+
+  let totalBytes = 0;
+  let tcpSocket: Socket;
+  try {
+    const { hostname, port } = parseSocketTarget(target);
+    tcpSocket = connect(
+      { hostname, port },
+      { secureTransport: "off", allowHalfOpen: false },
+    );
+  } catch (error) {
+    server.close(1011, `TCP connect failed: ${String(error)}`);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  const writer = tcpSocket.writable.getWriter();
+
+  server.addEventListener("message", (event: MessageEvent) => {
+    const data = event.data;
+    let bytes: Uint8Array;
+    if (data instanceof ArrayBuffer) {
+      bytes = new Uint8Array(data);
+    } else if (data instanceof Uint8Array) {
+      bytes = data;
+    } else if (typeof data === "string") {
+      bytes = new TextEncoder().encode(data);
+    } else {
+      return;
+    }
+    totalBytes += bytes.byteLength;
+    writer.write(bytes).catch(() => {
+      try {
+        server.close(1011, "TCP write failed");
+      } catch {
+        // noop
+      }
+    });
+  });
+
+  server.addEventListener("close", () => {
+    writer.close().catch(() => {});
+  });
+
+  server.addEventListener("error", () => {
+    writer.close().catch(() => {});
+  });
+
+  const task = tcpSocket.readable
+    .pipeTo(
+      new WritableStream({
+        write(chunk: Uint8Array) {
+          totalBytes += chunk.byteLength;
+          server.send(chunk);
+        },
+        close() {
+          try {
+            server.close(1000, "TCP closed");
+          } catch {
+            // noop
+          }
+        },
+        abort() {
+          try {
+            server.close(1011, "TCP aborted");
+          } catch {
+            // noop
+          }
+        },
+      }),
+    )
+    .catch((error) => {
+      console.error(`[relay] pipe error for ${target}: ${String(error)}`);
+      try {
+        server.close(1011, "pipe error");
+      } catch {
+        // noop
+      }
+    })
+    .finally(async () => {
+      if (totalBytes > 0) {
+        await checkAndUpdateQuota(env.HYDRA_QUOTAS, deviceId, totalBytes, limit);
+      }
+    });
+
+  ctx.waitUntil(task);
+  return new Response(null, { status: 101, webSocket: client });
+}
+
+export class HydraProviderSession {
+  private provider: WebSocket | null = null;
+  private consumer: WebSocket | null = null;
+  private providerReady = false;
+  private consumerDeviceId = "anonymous";
+  private consumerLimit = 52428800;
+  private consumerBytes = 0;
+  private consumerBuffer: SocketFrame[] = [];
+
+  constructor(
+    private readonly state: DurableObjectState,
+    private readonly env: Env,
+  ) {}
+
+  async fetch(request: Request): Promise<Response> {
+    const upgradeHeader = request.headers.get("Upgrade");
+    if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
+      return new Response("WebSocket upgrade required", { status: 426 });
+    }
+
+    const mode = request.headers.get("X-Hydra-Mode");
+    if (mode === "provider") {
+      return this.acceptProvider();
+    }
+    if (mode === "consumer") {
+      return this.acceptConsumer(request);
+    }
+    return new Response("Unsupported session mode", { status: 400 });
+  }
+
+  webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+    const attachment = (ws.deserializeAttachment() || null) as WebSocketAttachment | null;
+    if (attachment?.role === "provider") {
+      this.handleProviderMessage(message);
+    } else if (attachment?.role === "consumer") {
+      this.handleConsumerMessage(message);
+    }
+  }
+
+  webSocketClose(ws: WebSocket): void {
+    const attachment = (ws.deserializeAttachment() || null) as WebSocketAttachment | null;
+    if (attachment?.role === "provider") {
+      this.provider = null;
+      this.providerReady = false;
+      this.closeConsumer(1011, "Provider offline");
+      this.resetConsumerState();
+    } else if (attachment?.role === "consumer") {
+      this.notifyProvider({ type: "close" });
+      this.flushConsumerQuota();
+      this.resetConsumerState();
+    }
+  }
+
+  webSocketError(ws: WebSocket): void {
+    this.webSocketClose(ws);
+  }
+
+  private acceptProvider(): Response {
+    const [client, server] = websocketPair();
+    server.serializeAttachment({ role: "provider" } satisfies WebSocketAttachment);
+    this.state.acceptWebSocket(server);
+
+    if (this.provider && this.provider !== server) {
+      try {
+        this.provider.close(1012, "Provider replaced");
+      } catch {
+        // noop
+      }
+    }
+
+    this.provider = server;
+    this.providerReady = false;
+    server.send(JSON.stringify({ type: "registered" } satisfies ProviderControlMessage));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private async acceptConsumer(request: Request): Promise<Response> {
+    if (!this.provider) {
+      return new Response("Provider is offline", { status: 503 });
+    }
+    if (this.consumer) {
+      return new Response("Provider is busy", { status: 409 });
+    }
+
+    const target = request.headers.get("X-Hydra-Target");
+    if (!target) {
+      return new Response("Missing X-Hydra-Target header", { status: 400 });
+    }
+
+    const deviceId = request.headers.get("X-Hydra-Device") || "anonymous";
+    const limit = defaultQuota(this.env);
+    const { allowed } = await checkAndUpdateQuota(this.env.HYDRA_QUOTAS, deviceId, 0, limit);
+    if (!allowed) {
+      return new Response("Daily quota exceeded", { status: 429 });
+    }
+
+    const [client, server] = websocketPair();
+    server.serializeAttachment({ role: "consumer" } satisfies WebSocketAttachment);
+    this.state.acceptWebSocket(server);
+    this.consumer = server;
+    this.consumerDeviceId = deviceId;
+    this.consumerLimit = limit;
+    this.consumerBytes = 0;
+    this.consumerBuffer = [];
+    this.providerReady = false;
+
+    if (!this.notifyProvider({ type: "connect", target })) {
+      this.closeConsumer(1011, "Provider registration failed");
+      this.resetConsumerState();
+      return new Response("Provider unavailable", { status: 503 });
+    }
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private handleProviderMessage(message: string | ArrayBuffer): void {
+    if (typeof message === "string") {
+      let payload: ProviderControlMessage;
+      try {
+        payload = JSON.parse(message) as ProviderControlMessage;
+      } catch {
+        return;
+      }
+
+      switch (payload.type) {
+        case "ready":
+          this.providerReady = true;
+          this.flushBufferedConsumerFrames();
+          this.consumer?.send(JSON.stringify({ type: "ready" } satisfies ProviderControlMessage));
+          return;
+        case "error":
+          this.closeConsumer(1011, payload.message || "Provider error");
+          this.flushConsumerQuota();
+          this.resetConsumerState();
+          return;
+        case "closed":
+          this.closeConsumer(1000, "Provider closed");
+          this.flushConsumerQuota();
+          this.resetConsumerState();
+          return;
+        case "ping":
+          this.notifyProvider({ type: "pong" });
+          return;
+        default:
+          return;
+      }
+    }
+
+    if (!this.providerReady || !this.consumer) {
+      return;
+    }
+
+    this.consumerBytes += socketByteLength(message);
+    this.consumer.send(message);
+  }
+
+  private handleConsumerMessage(message: string | ArrayBuffer): void {
+    if (typeof message === "string") {
+      return;
+    }
+
+    this.consumerBytes += socketByteLength(message);
+    if (this.provider && this.providerReady) {
+      this.provider.send(message);
+      return;
+    }
+
+    if (this.consumerBuffer.length >= 64) {
+      this.closeConsumer(1013, "Provider setup timeout");
+      this.flushConsumerQuota();
+      this.resetConsumerState();
+      return;
+    }
+    this.consumerBuffer.push(message);
+  }
+
+  private flushBufferedConsumerFrames(): void {
+    if (!this.provider || !this.providerReady) {
+      return;
+    }
+    for (const frame of this.consumerBuffer) {
+      this.provider.send(frame);
+    }
+    this.consumerBuffer = [];
+  }
+
+  private notifyProvider(message: ProviderControlMessage): boolean {
+    if (!this.provider) {
+      return false;
+    }
+    try {
+      this.provider.send(JSON.stringify(message));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private closeConsumer(code: number, reason: string): void {
+    if (!this.consumer) {
+      return;
+    }
+    try {
+      this.consumer.close(code, reason);
+    } catch {
+      // noop
+    }
+  }
+
+  private flushConsumerQuota(): void {
+    const bytes = this.consumerBytes;
+    const deviceId = this.consumerDeviceId;
+    const limit = this.consumerLimit;
+    if (bytes <= 0) {
+      return;
+    }
+    void checkAndUpdateQuota(this.env.HYDRA_QUOTAS, deviceId, bytes, limit);
+  }
+
+  private resetConsumerState(): void {
+    this.consumer = null;
+    this.consumerBytes = 0;
+    this.consumerBuffer = [];
+    this.providerReady = false;
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -55,108 +428,31 @@ export default {
 
     if (url.pathname === "/quota") {
       const deviceId = url.searchParams.get("device_id") || "anonymous";
-      const defaultLimit = parseInt(env.DEFAULT_DAILY_QUOTA) || 52428800;
-      const { remaining } = await checkAndUpdateQuota(env.HYDRA_QUOTAS, deviceId, 0, defaultLimit);
-      return Response.json({ remaining, limit: defaultLimit });
+      const limit = defaultQuota(env);
+      const { remaining } = await checkAndUpdateQuota(env.HYDRA_QUOTAS, deviceId, 0, limit);
+      return Response.json({ remaining, limit });
     }
 
     const upgradeHeader = request.headers.get("Upgrade");
-    if (!upgradeHeader || upgradeHeader !== "websocket") {
+    if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
       return new Response("Hydra Relay. Send WebSocket upgrade to connect.", {
         status: 426,
         headers: { "Content-Type": "text/plain" },
       });
     }
 
-    const target = request.headers.get("X-Hydra-Target");
-    if (!target) {
-      return new Response("Missing X-Hydra-Target header (format: host:port)", { status: 400 });
+    const mode = request.headers.get("X-Hydra-Mode");
+    const targetAgent =
+      request.headers.get("X-Hydra-Target-Agent") ||
+      request.headers.get("X-Hydra-Agent") ||
+      url.searchParams.get("agent");
+
+    if ((mode === "provider" || mode === "consumer" || targetAgent) && targetAgent) {
+      const id = env.HYDRA_PROVIDER_SESSIONS.idFromName(targetAgent);
+      const stub = env.HYDRA_PROVIDER_SESSIONS.get(id);
+      return stub.fetch(request);
     }
 
-    const deviceId = request.headers.get("X-Hydra-Device") || "anonymous";
-    const defaultLimit = parseInt(env.DEFAULT_DAILY_QUOTA) || 52428800;
-    const { allowed } = await checkAndUpdateQuota(env.HYDRA_QUOTAS, deviceId, 0, defaultLimit);
-    if (!allowed) {
-      return new Response("Daily quota exceeded", { status: 429 });
-    }
-
-    console.log(`[relay] new connection: device=${deviceId}, target=${target}`);
-
-    const parts = target.split(":");
-    const hostname = parts[0];
-    const port = parseInt(parts[1] || "443");
-
-    const webSocketPair = new WebSocketPair();
-    const [client, server] = Object.values(webSocketPair);
-    server.accept();
-
-    let tcpSocket: Socket;
-    try {
-      tcpSocket = connect(
-        { hostname, port },
-        { secureTransport: "off", allowHalfOpen: false },
-      );
-    } catch (e) {
-      server.close(1011, `TCP connect failed: ${e}`);
-      return new Response(null, { status: 101, webSocket: client });
-    }
-
-    let totalBytes = 0;
-    const writer = tcpSocket.writable.getWriter();
-
-    // WS -> TCP: set up listener BEFORE returning response
-    server.addEventListener("message", (event: MessageEvent) => {
-      const data = event.data;
-      let bytes: Uint8Array;
-      if (data instanceof ArrayBuffer) {
-        bytes = new Uint8Array(data);
-      } else if (typeof data === "string") {
-        bytes = new TextEncoder().encode(data);
-      } else {
-        return;
-      }
-      totalBytes += bytes.byteLength;
-      writer.write(bytes).catch(() => {
-        try { server.close(1011, "TCP write failed"); } catch { /* noop */ }
-      });
-    });
-
-    server.addEventListener("close", () => {
-      writer.close().catch(() => {});
-    });
-
-    server.addEventListener("error", () => {
-      writer.close().catch(() => {});
-    });
-
-    // TCP -> WS: pipe the readable through a WritableStream that sends to WS.
-    // Use pipeTo which is natively supported and doesn't get cancelled.
-    const tcpToWsTask = tcpSocket.readable.pipeTo(
-      new WritableStream({
-        write(chunk: Uint8Array) {
-          totalBytes += chunk.byteLength;
-          server.send(chunk);
-        },
-        close() {
-          try { server.close(1000, "TCP closed"); } catch { /* noop */ }
-        },
-        abort() {
-          try { server.close(1011, "TCP aborted"); } catch { /* noop */ }
-        },
-      })
-    ).then(() => {
-      console.log(`[relay] pipe done for ${target}, ${totalBytes} bytes`);
-    }).catch((e) => {
-      console.error(`[relay] pipe error for ${target}: ${e}`);
-      try { server.close(1011, "pipe error"); } catch { /* noop */ }
-    }).finally(async () => {
-      if (totalBytes > 0) {
-        await checkAndUpdateQuota(env.HYDRA_QUOTAS, deviceId, totalBytes, defaultLimit);
-      }
-    });
-
-    ctx.waitUntil(tcpToWsTask);
-
-    return new Response(null, { status: 101, webSocket: client });
+    return handleDirectConnection(request, env, ctx);
   },
 };

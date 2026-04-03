@@ -9,11 +9,11 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 1. **hydra-config** — Централизованная конфигурация всего проекта (TOML). Все настраиваемые параметры сети, AI, экономики, Telegram и content в одном месте.
 2. **hydra-core** — Ядро приложения. SOCKS5-сервер, координатор компонентов, multi-hop relay.
 3. **hydra-p2p** — Сетевой слой на базе `libp2p`. Управляет соединениями, телеметрией и протоколами связи между узлами.
-4. **hydra-ai** — Модуль искусственного интеллекта. Инференс локальной LLM (llama.cpp через llama-cpp-2 + GGUF) для маршрутизации и обработки контента.
+4. **hydra-ai** — Модуль искусственного интеллекта. Инференс локальной LLM (llama.cpp через llama-cpp-2 + GGUF) для маршрутизации, обработки контента и P2P deal scoring/re-ranking (`DealAgent`).
 5. **hydra-content** — Content Intelligence. Telegram-клиент (grammers MTProto), TLDR-фолдинг, суммаризация через LLM, attention tracking (хранилище по конфигу `[content]`).
 6. **hydra-econ** — Локальный экономический слой и репутационная система (на базе `sled`) для trust/debt без ончейн settlement.
-7. **hydra-exchange** — Base Sepolia HRX client. Локальный EOA wallet (BIP-39), `alloy` bindings для `HydraRouteBook`, ERC-8004 identity/reputation и чтения USDC balance.
-8. **hydra_mobile/rust** — Мост Flutter-Rust (flutter_rust_bridge). VPN-интерфейс (tun2proxy), менеджер моделей, телеметрия, API Content и FRB API Marketplace для мобильного UI.
+7. **hydra-exchange** — Base Sepolia HRX client. Локальный EOA wallet (BIP-39), `alloy` bindings для `HydraRouteBook` и `HydraDealBoard`, ERC-8004 identity/reputation, USDC balance и P2P deal escrow lifecycle (`DealBoardClient`).
+8. **hydra_mobile/rust** — Мост Flutter-Rust (flutter_rust_bridge). VPN-интерфейс (tun2proxy), менеджер моделей, телеметрия, API Content, credit-first Balance API, Share & Earn provider runtime и advanced Marketplace API для мобильного UI.
 
 ## Конфигурация
 Все параметры вынесены в `hydra.toml` (TOML-файл в рабочей директории). При отсутствии файла используются значения по умолчанию. Пример конфигурации: `hydra.toml.example`.
@@ -25,16 +25,19 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **[telegram]** — `api_id`, `api_hash`, `session_path`
 - **[content]** — `db_path`, `summarization_max_tokens`, `cache_ttl_seconds`
 - **[[transports]]** — transport list в порядке failover/приоритета: `type = "wss" | "vless"`, `mode = "telegram" | "all"`, transport-specific поля (`endpoints`, `device_id`, `url`)
-- **[crypto]** — `enabled`, `chain`, `rpc_url`, `route_book_address`, `identity_registry_address`, `reputation_registry_address`, `usdc_address`
+- **[crypto]** — `enabled`, `chain`, `rpc_url`, `route_book_address`, `deal_board_address`, `identity_registry_address`, `reputation_registry_address`, `usdc_address`
+- **[agent]** — P2P deal agent: `auto_spend_limit`, `max_rate_premium`, `preferred_payment_methods`, `min_dealer_reputation`
+- **[discovery]** — параметры опроса `HydraRouteBook`: `poll_interval_secs`, `max_offers`, `prefer_free`, `rpc_timeout_secs`
+- **[credit]** — локальная кредитная политика для premium routes: `trial_credit_usdc`, `linked_credit_usdc`, `growth_factor`, thresholds для nudge/throttle/fallback, `advanced_after_payments`
 - **[bootstrap]** — `listen_port` (для bootstrap-нод)
 
 На мобильном устройстве конфигурация загружается из `{app_documents_dir}/hydra.toml`, относительные пути автоматически разрешаются относительно `app_documents_dir`.
 
 ## Применяемые технологии и библиотеки
 - **Сеть**: `libp2p` (TCP, Noise, Yamux, Kademlia DHT, Gossipsub, mDNS).
-- **Gossipsub**: Топик `hydra/relay-endpoints/1.0` для обмена WSS relay endpoints между узлами.
+- **Gossipsub**: Топики `hydra/relay-endpoints/1.0` (relay endpoint sharing) и `hydra/services/1.0` (minimal unstaked service announcements для provider growth).
 - **Асинхронность**: `tokio` (полный асинхронный рантайм).
-- **WSS Relay**: `tokio-tungstenite` (клиент), Cloudflare Workers (сервер).
+- **WSS Relay**: `tokio-tungstenite` (клиент), Cloudflare Workers + Durable Object `HydraProviderSession` (сервер/provider pairing).
 - **Локальный AI**: `llama-cpp-2` v0.1.140 (Rust binding к llama.cpp) — инференс GGUF моделей.
 - **Модели на выбор**: Qwen 2.5 (0.5B, 1.5B), Qwen 3.5 (0.8B) — GGUF Q4_K_M квантизация.
 - **База данных**: `sled` (встраиваемая key-value СУБД для хранения репутации пиров).
@@ -90,6 +93,19 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Bindings**: `HydraRouteBook`, official ERC-8004 ABI JSON for `IdentityRegistry.register()` / `ReputationRegistry.giveFeedback(...)`, ERC-20 `balanceOf`.
 - **Read path**: `query_offers(region, protocol)` нормализует offers в мобильную view model и при наличии registry подмешивает reputation summary.
 - **Write path**: agent registration и manual feedback submission подписываются локально через mnemonic, передаваемый из Flutter только на время операции.
+- **RouteBook lifecycle**: `create_offer`, `deactivate_offer` и `withdraw_stake` подняты в `hydra-exchange` и mobile FRB; `create_offer` сам делает allowance check + `approve(route_book, stake)` перед `createOffer(...)`.
+
+### 4B. Provider Growth & Soft Safety (Phase 4A/4B + 5A/5B-soft, 2026-04-02)
+- **Mobile-first provider publication**: canonical consumer-facing mobile provider endpoint — `wss://relay.hydra-net.work?agent=<agent_id>`. Приложение публикует его через `hydra/services/1.0` как unstaked service announcement до RouteBook graduation.
+- **Worker protocol**: `hydra-relay-worker` поддерживает два WebSocket режима:
+  - provider: long-lived registration session (`X-Hydra-Mode: provider`, `X-Hydra-Agent`)
+  - consumer: адресный доступ к конкретному agent (`X-Hydra-Mode: consumer`, `X-Hydra-Target-Agent`, `X-Hydra-Target`)
+- **Transport update**: `hydra-core::transport::WssTransport` понимает `?agent=` и вместо legacy raw relay headers отправляет consumer-mode headers. Старый direct WSS relay path остаётся совместимым.
+- **Provider runtime**: `hydra_mobile/rust/src/provider_runtime.rs` держит provider relay session, публикует gossip announcements, обслуживает control frames `connect/close/ready/closed` и считает local earnings.
+- **Unstaked-first discovery**: `RouteDiscoveryService` теперь умеет объединять RouteBook offers и `hydra/services/1.0` announcements. Unstaked gossip routes score-ятся ниже staked on-chain routes и не вытесняют их при прочих равных.
+- **Local-first reputation**: `hydra-econ::provider::ProviderMetricsLedger` хранит session count, bytes relayed, latency, throughput, uptime ratio, local routing score, pending reputation delta и earnings estimate. Route selection использует local score сразу.
+- **Batched on-chain sync**: ERC-8004 feedback не пишется per-session. Ledger готовит threshold/window-based pending sync; из мобильного runtime он отправляется только в explicit secret-bearing operations, потому что mnemonic остаётся в `flutter_secure_storage` и не хранится в Rust-процессе постоянно.
+- **Soft safety penalties**: discovery уже штрафует price outliers, very fresh routes, unstaked/zero-stake routes, low-feedback offers и relay concentration. Это penalty model, не hard block.
 
 ### 5. Ядро (hydra-core)
 - **SOCKS5 Server**: Принимает соединения от локальных приложений, порт из `[network].socks5_port`.
@@ -109,18 +125,21 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Endpoints**: `/health` (healthcheck), `/quota?device_id=...` (проверка квоты), WebSocket upgrade (relay).
 
 ### 7. Мобильный слой (hydra_mobile)
-- **Flutter UI**: 7 вкладок — Connect, Network, Marketplace, AI, Content, Logs, Settings.
-- **UI Architecture**: Добавлены `screens/marketplace_screen.dart` и `exchange/` слой (`HydraExchangeRepository`, backend, models, secure mnemonic store).
-- **Rust bridge**: `flutter_rust_bridge` используется и для network/runtime API, и для Marketplace API: `get_marketplace_config_status()`, `create_wallet()`, `import_wallet()`, `get_wallet_balances()`, `list_route_offers()`, `register_agent()`, `submit_feedback()`.
+- **Flutter UI**: 7 вкладок — Connect, Network, Balance, AI, Content, Logs, Settings. Advanced Marketplace больше не является default entry-point и открывается из Balance.
+- **UI Architecture**: Добавлены `credit/` слой (`CreditRepository`, backend, models), `screens/balance_screen.dart`, `widgets/credit_status_widget.dart`; `screens/marketplace_screen.dart` сохранён как advanced surface для power users/provider flows.
+- **Rust bridge**: `flutter_rust_bridge` используется для network/runtime API, credit API (`get_credit_status()`, `get_nudge()`, `dismiss_nudge()`, `accept_trial_route()`, `get_telegram_anchor_info()`), provider API (`get_share_earn_status()`, `set_share_earn_enabled()`, `get_provider_earnings()`, `update_share_settings()`) и advanced Marketplace API (`get_marketplace_config_status()`, `create_wallet()`, `import_wallet()`, `get_wallet_balances()`, `list_route_offers()`, `register_agent()`, `create_offer()`, `deactivate_offer()`, `withdraw_stake()`, `submit_feedback()`).
+- **Share & Earn in Balance**: Level 2 provider surface встроен в `BalanceScreen`. Там живут единый toggle, sharing status, starter/staked state, local score и earnings summary; full Marketplace остаётся advanced surface.
 - **VPN**: Android VpnService → TUN FD → `tun2proxy` → локальный SOCKS5 → hydra-core. **Исправлен баг**: `vpn.rs` теперь читает `socks5_port` из загруженной конфигурации через `SOCKS5_PORT` AtomicU16, а не из `NetworkConfig::default()`.
 - **Connection Tracking** (`hydra-core/src/connections.rs`): `ConnectionRegistry` — thread-safe реестр всех соединений с tracking bytes, route type, Telegram detection, AI reasoning, force-proxy override.
-- **Selective Routing**: Telegram DC трафик (149.154.0.0/16, 91.108.0.0/16) автоматически маршрутизируется через relay. Остальной трафик — direct. Пользователь может переключить per-connection.
+- **Route Discovery**: `hydra-core/src/discovery.rs` опрашивает `HydraRouteBook`, кеширует offers через `moka` и конвертирует transport-ready `endpoint_ciphertext` (`wss://` / `vless://`) в runtime transports.
+- **Credit-first routing**: runtime сначала предпочитает free static relay, затем free discovered routes; premium discovered routes становятся доступными только после AI-assisted trial/credit approval. При перерасходе premium path мягко душится и затем fallback-ится на free route без hard disconnect.
+- **Balance UX**: `Connect` и `Balance` показывают starter balance, current route state, AI nudge “Found a faster route”, reminder про local assistant memory и placeholder CTA для будущего top-up flow. Default copy избегает слов wallet/mnemonic/blockchain/ERC.
 - **Content Intelligence**: Tap on dialog → `fetch_channel_messages()` → `MessageHandler::fetch_and_process()` → `Summarizer::process()` → `FoldableMessageCard` с 4 уровнями (Headline/Summary/KeyPoints/FullText). Attention tracking при expand/collapse.
 - **Model Manager**: Скачивание моделей с HuggingFace, горячая замена через `SHARED_AI`.
 - **Quota Manager** (`quota.rs`): Локальный трекинг потреблённого трафика с периодической синхронизацией с CF Worker KV.
-- **Marketplace**: локальный wallet onboarding, balances (ETH + USDC), ERC-8004 agent registration, filters `region/protocol` с `SharedPreferences`, offers list и manual feedback.
+- **Marketplace**: локальный wallet onboarding, balances (ETH + USDC), ERC-8004 agent registration, filters `region/protocol` с `SharedPreferences`, offers list и manual feedback. По умолчанию скрыт за advanced toggle или unlock после 3+ successful payments.
 - **Marketplace runtime states**: экран явно различает `disabled`, `incomplete config`, `no offers` и `load failed`; пустой `route_book_address` в `hydra.toml` больше не вываливает сырой backend exception в UI.
-- **Settings**: Proxy mode и краткая on-chain status card. Legacy settlement UI удалён.
+- **Settings**: Proxy mode, краткая on-chain status card и advanced tools toggle. Legacy settlement UI удалён.
 
 ---
 
@@ -168,6 +187,16 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Live deployment**: `contracts/deployments.json` заполнён реальным Base Sepolia deploy; `route_book_address` записан в корневой `hydra.toml`.
 - **Seeded acceptance data**: создан live agent `3377` и offer `#1`, так что Marketplace можно валидировать против непустого on-chain state.
 - **Docs cleanup**: legacy settlement wording удалён из активной архитектуры.
+
+### HRX Phase 3 MVP: Credit-First Route Discovery (апрель 2026) — РЕПОЗИТОРИЙ ОБНОВЛЁН
+- **Config expansion**: добавлены `[discovery]` и `[credit]` в `hydra-config`, `hydra.toml` и `hydra.toml.example`.
+- **Dynamic route discovery**: `hydra-core::discovery::RouteDiscoveryService` читает активные offers из `HydraRouteBook`, кеширует их и подмешивает discovered transports в `Socks5Server` без отказа от static transports.
+- **Credit runtime**: `hydra-econ::credit::CreditLedger` хранит локальный trial/linked credit state, usage, debt, thresholds и правила unlock-а advanced tier.
+- **Anchor strategy**: primary anchor — локально salted Telegram-derived hash, fallback — local installation id. При появлении Telegram авторизации install anchor аккуратно merge-ится в linked anchor.
+- **Balance-first UX**: вкладка Balance и `CreditStatusWidget` на Connect screen заменяют crypto-native entry flow. Advanced Marketplace остаётся в кодовой базе, но спрятан за progressive disclosure.
+- **Provider growth path**: Share & Earn больше не рассматривается как CLI/dashboard feature. Основной provider onboarding теперь mobile-first и живёт внутри Balance; отдельный CLI для VPS-операторов остаётся вторичным thin wrapper на тот же write path.
+- **Graceful degradation**: premium routes скрыты до accept trial, при превышении лимита runtime возвращается на free routes вместо hard disconnect.
+- **Verification**: локально проходят `cargo test -p hydra-econ`, `cargo test -p hydra-exchange`, `cargo test -p hydra-core`, `cargo test -p rust_lib_hydra_mobile --lib`, `npm exec tsc --noEmit` в `hydra-relay-worker`, `flutter analyze`, `flutter test`. Device validation premium/provider routing и будущий top-up flow остаются следующим шагом.
 
 ### Sprint: Mobile MVP Readiness (март 2026) — ВЫПОЛНЕНО
 - **Unit tests (64 теста)**: SOCKS5 parsing, relay logic, quota, AI routing, config loading, connection registry, integration tests (SOCKS5 end-to-end, domain connect, auth rejection, registry tracking, AI routing).
@@ -256,6 +285,18 @@ Hydra — это мульти-агентная P2P сеть, предназна�
   5. `connect_to_target` изменён на `self: &Arc<Self>` для совместимости с `tokio::spawn`.
 - **Результат**: WSS relay подключается за ~200ms (TCP ~50ms + TLS ~100ms + WS upgrade ~50ms). Все Telegram DC адреса (149.154.x.x, 91.108.x.x) проксируются через `relay.hydra-net.work`. Worker подтверждает передачу данных (1-6 KB per connection).
 - **Файлы**: `hydra-core/src/relay.rs`, `hydra-core/Cargo.toml`.
+
+### HRX Phase 4: P2P Fiat Economy (HydraDealBoard) — РЕПОЗИТОРИЙ ОБНОВЛЁН
+- **HydraDealBoard.sol**: self-contained escrow contract for P2P fiat-to-USDC deals. Dealer posts offer (currency, rate, min/max, payment methods), buyer accepts and locks USDC into escrow, lifecycle: Funded -> Sent -> Completed/Rejected/Expired. Reputation feedback via ERC-8004 ReputationRegistry on completion/rejection.
+- **Foundry tests**: 30 tests covering full deal lifecycle — offer creation/deactivation, deal acceptance, fiat marking, receipt confirmation, rejection, expired claim, edge cases.
+- **Deploy script**: `contracts/script/DeployHydraDealBoard.s.sol` for Base Sepolia with pinned addresses.
+- **Config**: `deal_board_address` added to `[crypto]` in `hydra.toml` and `CryptoConfig`/`ExchangeConfig`. New `[agent]` section with `auto_spend_limit`, `max_rate_premium`, `preferred_payment_methods`, `min_dealer_reputation`.
+- **Alloy bindings**: `HydraDealBoard` bindings in `hydra-exchange/src/bindings.rs` with selector tests.
+- **DealBoardClient** (`hydra-exchange/src/deal_client.rs`): query deals by currency, get offer, accept deal (with escrow event decoding), mark fiat sent, check escrow status, claim expired, approve USDC. 9 unit tests pass.
+- **DealAgent** (`hydra-ai/src/deal_agent.rs`): AI-powered deal scoring (reputation 40%, rate 40%, payment method 20%), LLM re-ranking of top-5 deals when model loaded, auto-approve vs confirmation decision based on `auto_spend_limit`. 5 unit tests pass (16 total in hydra-ai).
+- **Flutter UI**: `deals_screen.dart` with currency filter, deal cards, accept dialog. Wired to Balance screen "Top Up" button. FRB API functions in `exchange.rs` (7 new endpoints). Models, backend, repository layers extended.
+- **Live deployment**: `0x0c811902c990c4D330c1269cc955140d975f7035` on Base Sepolia, deploy tx `0xa2a3bce4789177f5337b1421dfa854e1ebe1a1c745cb4a71f89d9e39e2bf37e7`, block `39717554`. `deal_board_address` recorded in `hydra.toml` and `deployments.json`.
+- **Pending**: FRB codegen (`flutter_rust_bridge_codegen generate`), device validation.
 
 ### Этап 2: Attention + персонализация
 - **AttentionTracker** — полнота клиентского трекинга и политика событий.

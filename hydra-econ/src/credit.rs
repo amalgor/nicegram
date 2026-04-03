@@ -177,6 +177,51 @@ impl CreditLedger {
         self.load_or_create(anchor_id, linked_anchor)
     }
 
+    pub fn merge_accounts(
+        &self,
+        from_anchor_id: &str,
+        to_anchor_id: &str,
+        linked_anchor: bool,
+    ) -> Result<CreditAccount> {
+        if from_anchor_id == to_anchor_id {
+            return self.get_account(to_anchor_id, linked_anchor);
+        }
+
+        let from_key = credit_key(from_anchor_id);
+        let Some(from_bytes) = self.db.get(&from_key)? else {
+            return self.get_account(to_anchor_id, linked_anchor);
+        };
+        let from_account: CreditAccount = serde_json::from_slice(&from_bytes)?;
+        let mut to_account = self.load_or_create(to_anchor_id, linked_anchor)?;
+        to_account.usage_bytes = to_account.usage_bytes.saturating_add(from_account.usage_bytes);
+        to_account.usage_seconds = to_account
+            .usage_seconds
+            .saturating_add(from_account.usage_seconds);
+        to_account.debt_micro_usdc = to_account
+            .debt_micro_usdc
+            .saturating_add(from_account.debt_micro_usdc);
+        to_account.credit_limit_micro_usdc = to_account
+            .credit_limit_micro_usdc
+            .max(from_account.credit_limit_micro_usdc)
+            .max(base_limit_micro_usdc(&self.settings, linked_anchor));
+        to_account.payment_count = to_account.payment_count.max(from_account.payment_count);
+        to_account.last_payment = to_account.last_payment.max(from_account.last_payment);
+        to_account.trial_accepted |= from_account.trial_accepted;
+        to_account.advanced_unlocked |= from_account.advanced_unlocked;
+        if matches!(from_account.tier, AccountTier::Provider) {
+            to_account.tier = AccountTier::Provider;
+        } else if matches!(from_account.tier, AccountTier::Paid) {
+            to_account.tier = AccountTier::Paid;
+        } else if from_account.trial_accepted {
+            to_account.tier = AccountTier::Credit;
+        }
+
+        self.save(&to_account)?;
+        self.db.remove(from_key)?;
+        self.db.flush()?;
+        Ok(to_account)
+    }
+
     pub fn check_credit(&self, anchor_id: &str, linked_anchor: bool) -> Result<CreditStatus> {
         let mut account = self.load_or_create(anchor_id, linked_anchor)?;
         self.ensure_limit(&mut account, linked_anchor);

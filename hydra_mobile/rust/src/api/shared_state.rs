@@ -33,7 +33,7 @@ pub fn init_shared_base_dir<P: AsRef<Path>>(base_dir: P) -> Result<()> {
     Ok(())
 }
 
-pub fn shared_base_dir() -> Option<PathBuf> {
+pub(crate) fn shared_base_dir() -> Option<PathBuf> {
     SHARED_BASE_DIR.lock().ok().and_then(|guard| guard.clone())
 }
 

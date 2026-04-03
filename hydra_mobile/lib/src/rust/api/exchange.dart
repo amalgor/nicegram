@@ -35,6 +35,42 @@ Future<String> listRouteOffers({
 Future<String> registerAgent({required String mnemonic}) =>
     RustLib.instance.api.crateApiExchangeRegisterAgent(mnemonic: mnemonic);
 
+Future<String> createOffer({
+  required String mnemonic,
+  required BigInt agentId,
+  required String endpointUrl,
+  required List<String> protocols,
+  required String region,
+  required String pricePerGbRaw,
+  required String stakeAmountRaw,
+  required BigInt bandwidthMbps,
+}) => RustLib.instance.api.crateApiExchangeCreateOffer(
+  mnemonic: mnemonic,
+  agentId: agentId,
+  endpointUrl: endpointUrl,
+  protocols: protocols,
+  region: region,
+  pricePerGbRaw: pricePerGbRaw,
+  stakeAmountRaw: stakeAmountRaw,
+  bandwidthMbps: bandwidthMbps,
+);
+
+Future<String> deactivateOffer({
+  required String mnemonic,
+  required BigInt offerId,
+}) => RustLib.instance.api.crateApiExchangeDeactivateOffer(
+  mnemonic: mnemonic,
+  offerId: offerId,
+);
+
+Future<String> withdrawStake({
+  required String mnemonic,
+  required BigInt offerId,
+}) => RustLib.instance.api.crateApiExchangeWithdrawStake(
+  mnemonic: mnemonic,
+  offerId: offerId,
+);
+
 Future<String> submitFeedback({
   required String mnemonic,
   required BigInt agentId,
@@ -45,4 +81,47 @@ Future<String> submitFeedback({
   agentId: agentId,
   positive: positive,
   tag1: tag1,
+);
+
+Future<String> listDealOffers({required String currency}) =>
+    RustLib.instance.api.crateApiExchangeListDealOffers(currency: currency);
+
+Future<String> getDealOffer({required BigInt offerId}) =>
+    RustLib.instance.api.crateApiExchangeGetDealOffer(offerId: offerId);
+
+Future<String> acceptDeal({
+  required String mnemonic,
+  required BigInt offerId,
+  required String usdcAmount,
+}) => RustLib.instance.api.crateApiExchangeAcceptDeal(
+  mnemonic: mnemonic,
+  offerId: offerId,
+  usdcAmount: usdcAmount,
+);
+
+Future<String> markFiatSent({
+  required String mnemonic,
+  required BigInt escrowId,
+}) => RustLib.instance.api.crateApiExchangeMarkFiatSent(
+  mnemonic: mnemonic,
+  escrowId: escrowId,
+);
+
+Future<String> checkEscrowStatus({required BigInt escrowId}) =>
+    RustLib.instance.api.crateApiExchangeCheckEscrowStatus(escrowId: escrowId);
+
+Future<String> claimExpiredEscrow({
+  required String mnemonic,
+  required BigInt escrowId,
+}) => RustLib.instance.api.crateApiExchangeClaimExpiredEscrow(
+  mnemonic: mnemonic,
+  escrowId: escrowId,
+);
+
+Future<String> approveDealBoardUsdc({
+  required String mnemonic,
+  required String amount,
+}) => RustLib.instance.api.crateApiExchangeApproveDealBoardUsdc(
+  mnemonic: mnemonic,
+  amount: amount,
 );

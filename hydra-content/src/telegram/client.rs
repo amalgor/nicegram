@@ -26,6 +26,12 @@ pub enum AuthState {
     Error(String),
 }
 
+#[derive(Debug, Clone)]
+pub struct TelegramUserIdentity {
+    pub user_id: i64,
+    pub user_name: String,
+}
+
 /// Wraps grammers Client with session management and auth state.
 /// Owns the SenderPool runner lifecycle and provides the Client handle.
 pub struct TelegramClient {
@@ -55,6 +61,21 @@ impl TelegramClient {
 
     pub fn client(&self) -> Option<&Client> {
         self.client.as_ref()
+    }
+
+    pub async fn current_user_identity(&self) -> Result<Option<TelegramUserIdentity>> {
+        let Some(client) = &self.client else {
+            return Ok(None);
+        };
+        if !client.is_authorized().await? {
+            return Ok(None);
+        }
+
+        let me = client.get_me().await?;
+        Ok(Some(TelegramUserIdentity {
+            user_id: me.id().bare_id() as i64,
+            user_name: me.first_name().unwrap_or("User").to_string(),
+        }))
     }
 
     /// Connect to Telegram servers and spawn the sender pool runner.

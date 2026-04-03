@@ -62,6 +62,9 @@ async fn test_socks5_direct_connection() {
         econ,
         empty_transports(),
         "off".to_string(),
+        None,
+        None,
+        None,
     );
     tokio::spawn(async move {
         server.run().await.ok();
@@ -137,6 +140,9 @@ async fn test_socks5_rejects_unsupported_auth() {
         econ,
         empty_transports(),
         "off".to_string(),
+        None,
+        None,
+        None,
     );
     tokio::spawn(async move {
         server.run().await.ok();
@@ -198,6 +204,9 @@ async fn test_socks5_domain_connect() {
         econ,
         empty_transports(),
         "off".to_string(),
+        None,
+        None,
+        None,
     );
     tokio::spawn(async move {
         server.run().await.ok();
@@ -278,6 +287,9 @@ async fn test_connection_registry_tracking() {
         econ,
         empty_transports(),
         "off".to_string(),
+        None,
+        None,
+        None,
     );
     let registry = server.registry();
     tokio::spawn(async move {

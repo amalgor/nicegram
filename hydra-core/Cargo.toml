@@ -24,8 +24,11 @@ hydra-config = { path = "../hydra-config" }
 hydra-p2p = { path = "../hydra-p2p" }
 hydra-ai = { path = "../hydra-ai" }
 hydra-econ = { path = "../hydra-econ" }
+hydra-exchange = { path = "../hydra-exchange" }
 libp2p-dns = "0.44.0"
 leaf = { git = "https://github.com/eycorsican/leaf", tag = "v0.14.2", default-features = false, features = ["config-json", "outbound-chain", "outbound-reality", "outbound-vless", "outbound-ws"] }
+moka = { version = "0.12.14", features = ["future"] }
+url = "2.5"
 
 [dev-dependencies]
 tempfile = "3"

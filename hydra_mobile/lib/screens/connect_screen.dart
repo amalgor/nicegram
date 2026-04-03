@@ -2,15 +2,20 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:hydra_mobile/credit/credit_repository.dart';
+import 'package:hydra_mobile/credit/models.dart';
 import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
 import 'package:hydra_mobile/src/rust/api/simple.dart';
 import 'package:hydra_mobile/src/rust/api/vpn.dart';
+import 'package:hydra_mobile/widgets/credit_status_widget.dart';
 import 'package:hydra_mobile/widgets/quota_widget.dart';
 
 bool gIsVpnActive = false;
 
 class ConnectScreen extends StatefulWidget {
-  const ConnectScreen({super.key});
+  const ConnectScreen({super.key, this.creditRepository});
+
+  final CreditRepository? creditRepository;
 
   @override
   State<ConnectScreen> createState() => _ConnectScreenState();
@@ -29,10 +34,15 @@ class _ConnectScreenState extends State<ConnectScreen>
   String? _llmAnalysis;
   bool _llmLoading = false;
   Timer? _llmTimer;
+  Timer? _creditTimer;
+  late final CreditRepository _creditRepository;
+  CreditStatus? _creditStatus;
+  AssistantNudge? _creditNudge;
 
   @override
   void initState() {
     super.initState();
+    _creditRepository = widget.creditRepository ?? CreditRepository.instance;
     HydraPlatformGateway.instance.bindVpnFdHandler((fd) async {
       if (Platform.isAndroid && fd != -1) {
         try {
@@ -47,8 +57,13 @@ class _ConnectScreenState extends State<ConnectScreen>
       _refreshStats();
       _updateUptime();
     });
+    _creditTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => _refreshCreditState(),
+    );
     _syncVpnStatus();
     _autoStartVpn();
+    _refreshCreditState();
   }
 
   Future<void> _syncVpnStatus() async {
@@ -98,6 +113,7 @@ class _ConnectScreenState extends State<ConnectScreen>
   void dispose() {
     _statsTimer?.cancel();
     _llmTimer?.cancel();
+    _creditTimer?.cancel();
     super.dispose();
   }
 
@@ -119,6 +135,54 @@ class _ConnectScreenState extends State<ConnectScreen>
         });
       }
     } catch (_) {}
+  }
+
+  Future<void> _refreshCreditState() async {
+    try {
+      final status = await _creditRepository.loadStatus();
+      final nudge = await _creditRepository.loadNudge();
+      if (!mounted) return;
+      setState(() {
+        _creditStatus = status;
+        _creditNudge = nudge;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _handleCreditPrimaryAction() async {
+    final nudge = _creditNudge;
+    if (nudge == null) return;
+
+    try {
+      if (nudge.kind == 'trial_offer') {
+        await _creditRepository.acceptTrialRoute();
+        await _refreshCreditState();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Faster route enabled.')),
+        );
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Top up deals arrive in the next phase.')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Balance action failed: $e')));
+    }
+  }
+
+  Future<void> _dismissCreditNudge() async {
+    final nudge = _creditNudge;
+    if (nudge == null) return;
+    await _creditRepository.dismissNudge(nudge.id);
+    if (!mounted) return;
+    setState(() {
+      _creditNudge = null;
+    });
   }
 
   Future<void> _requestLlmAnalysis() async {
@@ -226,12 +290,79 @@ class _ConnectScreenState extends State<ConnectScreen>
                 _buildTrafficBar(context),
                 const SizedBox(height: 16),
                 const QuotaWidget(),
+                if (_creditStatus != null) ...[
+                  const SizedBox(height: 16),
+                  CreditStatusWidget(
+                    status: _creditStatus!,
+                    onTopUpPressed: () {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Top up deals arrive in the next phase.'),
+                        ),
+                      );
+                    },
+                    compact: true,
+                  ),
+                ],
+                if (_creditNudge != null) ...[
+                  const SizedBox(height: 16),
+                  _buildCreditNudgeCard(context),
+                ],
                 const SizedBox(height: 16),
                 _buildLlmCard(context),
               ],
               const SizedBox(height: 24),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCreditNudgeCard(BuildContext context) {
+    final nudge = _creditNudge!;
+    final primaryLabel = switch (nudge.kind) {
+      'trial_offer' => 'Try faster route',
+      'memory_guard' => 'Understood',
+      _ => 'Top up',
+    };
+
+    return Card(
+      color: Theme.of(context).colorScheme.secondaryContainer.withValues(alpha: 0.4),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.auto_awesome_outlined),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    nudge.title,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(nudge.message),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                FilledButton(
+                  onPressed: _handleCreditPrimaryAction,
+                  child: Text(primaryLabel),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: _dismissCreditNudge,
+                  child: const Text('Later'),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );

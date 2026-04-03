@@ -109,12 +109,97 @@ class _FakeBackend implements HydraExchangeBackend {
   }
 
   @override
+  Future<OfferMutationResult> createOffer({
+    required String mnemonic,
+    required int agentId,
+    required String endpointUrl,
+    required List<String> protocols,
+    required String region,
+    required String pricePerGbRaw,
+    required String stakeAmountRaw,
+    required int bandwidthMbps,
+  }) async => OfferMutationResult(offerId: 1, txHash: '0xcreate');
+
+  @override
+  Future<OfferMutationResult> deactivateOffer({
+    required String mnemonic,
+    required int offerId,
+  }) async => OfferMutationResult(offerId: offerId, txHash: '0xdeactivate');
+
+  @override
+  Future<ShareEarnStatus> getShareEarnStatus() async => ShareEarnStatus(
+    enabled: false,
+    active: false,
+    unlocked: true,
+    agentId: 11,
+    endpointUrl: 'wss://relay.hydra-net.work?agent=11',
+    region: 'US',
+    protocol: 'vless',
+    pricePerGbRaw: '1000000',
+    pricePerGbDisplay: '1.000000',
+    bandwidthMbps: 20,
+    routeBookOfferId: null,
+    onchainActive: false,
+    lastError: '',
+    lastAnnouncedAt: 0,
+    estimatedEarningsDisplay: '0.000000',
+    settledEarningsDisplay: '0.000000',
+    localRoutingScore: 50,
+    toggleMessage: 'ready',
+    settings: ShareSettings(
+      priceOverrideRaw: null,
+      maxBandwidthMbps: null,
+      wifiOnly: false,
+      scheduleStartHour: null,
+      scheduleEndHour: null,
+    ),
+  );
+
+  @override
+  Future<ProviderEarnings> getProviderEarnings() async => ProviderEarnings(
+    agentId: 11,
+    sessionCount: 0,
+    bytesRelayed: 0,
+    estimatedEarningsMicroUsdc: 0,
+    estimatedEarningsDisplay: '0.000000',
+    settledEarningsMicroUsdc: 0,
+    settledEarningsDisplay: '0.000000',
+    localRoutingScore: 50,
+    pendingReputationSyncs: 0,
+  );
+
+  @override
+  Future<ShareEarnStatus> setShareEarnEnabled({
+    required bool enabled,
+    String? mnemonic,
+  }) async {
+    return getShareEarnStatus();
+  }
+
+  @override
+  Future<ShareEarnStatus> updateShareSettings({
+    String? priceOverrideRaw,
+    int? maxBandwidthMbps,
+    required bool wifiOnly,
+    int? scheduleStartHour,
+    int? scheduleEndHour,
+  }) async {
+    return getShareEarnStatus();
+  }
+
+  @override
   Future<TxHashResult> submitFeedback({
     required String mnemonic,
     required int agentId,
     required bool positive,
     required String tag1,
   }) async => TxHashResult(txHash: '0xfeedback');
+
+  @override
+  Future<OfferMutationResult> withdrawStake({
+    required String mnemonic,
+    required int offerId,
+  }) async => OfferMutationResult(offerId: offerId, txHash: '0xwithdraw');
 }
 
 void main() {

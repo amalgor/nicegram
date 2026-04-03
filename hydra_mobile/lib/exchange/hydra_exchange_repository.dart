@@ -73,6 +73,38 @@ class HydraExchangeRepository {
     return result;
   }
 
+  Future<OfferMutationResult> createOffer({
+    required int agentId,
+    required String endpointUrl,
+    required List<String> protocols,
+    required String region,
+    required String pricePerGbRaw,
+    required String stakeAmountRaw,
+    required int bandwidthMbps,
+  }) async {
+    final mnemonic = await _requireMnemonic();
+    return _backend.createOffer(
+      mnemonic: mnemonic,
+      agentId: agentId,
+      endpointUrl: endpointUrl,
+      protocols: protocols,
+      region: region,
+      pricePerGbRaw: pricePerGbRaw,
+      stakeAmountRaw: stakeAmountRaw,
+      bandwidthMbps: bandwidthMbps,
+    );
+  }
+
+  Future<OfferMutationResult> deactivateOffer(int offerId) async {
+    final mnemonic = await _requireMnemonic();
+    return _backend.deactivateOffer(mnemonic: mnemonic, offerId: offerId);
+  }
+
+  Future<OfferMutationResult> withdrawStake(int offerId) async {
+    final mnemonic = await _requireMnemonic();
+    return _backend.withdrawStake(mnemonic: mnemonic, offerId: offerId);
+  }
+
   Future<AgentRegistrationResult?> loadAgentRegistration() async {
     final prefs = await _sharedPreferencesLoader();
     final agentId = prefs.getInt(agentIdKey);
@@ -98,6 +130,69 @@ class HydraExchangeRepository {
       tag1: tag1,
     );
   }
+
+  // ── P2P Deal Board ────────────────────────────────────────────────────
+
+  Future<List<DealOffer>> fetchDealOffers({required String currency}) =>
+      _backend.listDealOffers(currency: currency.trim().toUpperCase());
+
+  Future<DealOffer> fetchDealOffer({required int offerId}) =>
+      _backend.getDealOffer(offerId: offerId);
+
+  Future<AcceptDealResult> acceptDeal({
+    required int offerId,
+    required String usdcAmount,
+  }) async {
+    final mnemonic = await _requireMnemonic();
+    return _backend.acceptDeal(
+      mnemonic: mnemonic,
+      offerId: offerId,
+      usdcAmount: usdcAmount,
+    );
+  }
+
+  Future<TxHashResult> markFiatSent({required int escrowId}) async {
+    final mnemonic = await _requireMnemonic();
+    return _backend.markFiatSent(mnemonic: mnemonic, escrowId: escrowId);
+  }
+
+  Future<DealEscrowView> checkEscrowStatus({required int escrowId}) =>
+      _backend.checkEscrowStatus(escrowId: escrowId);
+
+  Future<TxHashResult> claimExpiredEscrow({required int escrowId}) async {
+    final mnemonic = await _requireMnemonic();
+    return _backend.claimExpiredEscrow(mnemonic: mnemonic, escrowId: escrowId);
+  }
+
+  Future<TxHashResult> approveDealBoardUsdc({required String amount}) async {
+    final mnemonic = await _requireMnemonic();
+    return _backend.approveDealBoardUsdc(mnemonic: mnemonic, amount: amount);
+  }
+
+  Future<ShareEarnStatus> loadShareEarnStatus() =>
+      _backend.getShareEarnStatus();
+
+  Future<ShareEarnStatus> setShareEarnEnabled(bool enabled) async {
+    final mnemonic = enabled ? await _mnemonicStore.readMnemonic() : null;
+    return _backend.setShareEarnEnabled(enabled: enabled, mnemonic: mnemonic);
+  }
+
+  Future<ProviderEarnings> loadProviderEarnings() =>
+      _backend.getProviderEarnings();
+
+  Future<ShareEarnStatus> updateShareSettings({
+    String? priceOverrideRaw,
+    int? maxBandwidthMbps,
+    required bool wifiOnly,
+    int? scheduleStartHour,
+    int? scheduleEndHour,
+  }) => _backend.updateShareSettings(
+    priceOverrideRaw: priceOverrideRaw,
+    maxBandwidthMbps: maxBandwidthMbps,
+    wifiOnly: wifiOnly,
+    scheduleStartHour: scheduleStartHour,
+    scheduleEndHour: scheduleEndHour,
+  );
 
   Future<void> clearWallet() async {
     await _mnemonicStore.deleteMnemonic();

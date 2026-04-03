@@ -7,9 +7,9 @@ import 'package:hydra_mobile/src/rust/api/simple.dart';
 import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
 import 'package:hydra_mobile/src/rust/api/model_manager.dart';
 import 'package:hydra_mobile/src/rust/frb_generated.dart';
+import 'package:hydra_mobile/screens/balance_screen.dart';
 import 'package:hydra_mobile/screens/connect_screen.dart';
 import 'package:hydra_mobile/screens/connections_screen.dart';
-import 'package:hydra_mobile/screens/marketplace_screen.dart';
 import 'package:hydra_mobile/screens/models_screen.dart';
 import 'package:hydra_mobile/screens/content_screen.dart';
 import 'package:hydra_mobile/screens/settings_screen.dart';
@@ -131,7 +131,7 @@ class _MainScreenState extends State<MainScreen> {
   final List<Widget> _screens = [
     const ConnectScreen(),
     const ConnectionsScreen(),
-    const MarketplaceScreen(),
+    const BalanceScreen(),
     const ModelsScreen(),
     const ContentScreen(),
     const LogsScreen(),
@@ -157,8 +157,8 @@ class _MainScreenState extends State<MainScreen> {
           ),
           NavigationDestination(icon: Icon(Icons.swap_vert), label: 'Network'),
           NavigationDestination(
-            icon: Icon(Icons.storefront_outlined),
-            label: 'Market',
+            icon: Icon(Icons.account_balance_outlined),
+            label: 'Balance',
           ),
           NavigationDestination(icon: Icon(Icons.smart_toy), label: 'AI'),
           NavigationDestination(icon: Icon(Icons.article), label: 'Content'),

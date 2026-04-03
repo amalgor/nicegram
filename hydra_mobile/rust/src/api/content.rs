@@ -236,3 +236,16 @@ fn auth_state_to_string(state: &AuthState) -> String {
         AuthState::Error(e) => format!("error:{}", e),
     }
 }
+
+pub(crate) async fn telegram_anchor_info() -> anyhow::Result<Option<(i64, String)>> {
+    let guard = CONTENT_ENGINE.lock().await;
+    let Some(engine) = guard.as_ref() else {
+        return Ok(None);
+    };
+
+    Ok(engine
+        .tg_client
+        .current_user_identity()
+        .await?
+        .map(|identity| (identity.user_id, identity.user_name)))
+}

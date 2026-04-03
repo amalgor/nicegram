@@ -1,8 +1,9 @@
 use anyhow::Result;
 use hydra_ai::AiNegotiator;
 use hydra_config::HydraConfig;
-use hydra_core::{transport, Socks5Server};
-use hydra_econ::EconLedger;
+use hydra_core::{discovery::RouteDiscoveryService, transport, Socks5Server};
+use hydra_econ::{EconLedger, provider::ProviderMetricsLedger};
+use hydra_exchange::ExchangeConfig;
 use hydra_p2p::P2PNode;
 use libp2p::identity::Keypair;
 use std::net::SocketAddr;
@@ -74,6 +75,24 @@ async fn main() -> Result<()> {
         std::future::pending::<()>().await;
     } else {
         let transports = transport::build_transports(&config.transports)?;
+        let provider_metrics = Arc::new(ProviderMetricsLedger::new(
+            config.econ.db_path.join("provider_metrics"),
+        )?);
+        let discovery = if config.crypto.enabled {
+            match ExchangeConfig::from_crypto_config(&config.crypto) {
+                Ok(exchange) => Some(Arc::new(RouteDiscoveryService::new(
+                    exchange,
+                    config.discovery.clone(),
+                    Some(provider_metrics.clone()),
+                ))),
+                Err(error) => {
+                    tracing::warn!("Discovery disabled: {}", error);
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let addr = SocketAddr::from(([127, 0, 0, 1], config.network.socks5_port));
         let server = Socks5Server::new(
             addr,
@@ -82,6 +101,9 @@ async fn main() -> Result<()> {
             econ,
             transports,
             config.network.proxy_mode.clone(),
+            discovery,
+            None,
+            Some(provider_metrics),
         );
         server.run().await?;
     }

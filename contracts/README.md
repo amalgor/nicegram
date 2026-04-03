@@ -1,6 +1,6 @@
 # Hydra Route Exchange Contracts
 
-Phase 1 contracts live here as an isolated Foundry project targeting **Base Sepolia**.
+Phase 1–4 contracts live here as an isolated Foundry project targeting **Base Sepolia**.
 
 Current live deployment:
 
@@ -8,6 +8,11 @@ Current live deployment:
 - Deploy tx: `0x258c73e8d1b85299739028e57f65399a13397c17893682d30fbea19f821f3aad`
 - Deploy block: `39671496`
 - Seeded agent / offer: `3377` / `#1`
+
+**HydraDealBoard** (P2P Fiat Economy):
+- `HydraDealBoard`: `0x0c811902c990c4D330c1269cc955140d975f7035`
+- Deploy tx: `0xa2a3bce4789177f5337b1421dfa854e1ebe1a1c745cb4a71f89d9e39e2bf37e7`
+- Deploy block: `39717554`
 - Agent registration tx: `0x869a57c910f7063ad45ff64e960538848e13aac225ed2e86b43f44be6f44506a`
 - Offer creation tx: `0xc6460e57553ffce315421110baaefe184f9aac17cec84e55a996bf191a9f7751`
 - Live seeding note: `register()` / `ownerOf()` on the live ERC-8004 proxy returned spurious `NotActivated` errors under Foundry script simulation. The acceptance seed was finalized with direct `cast send` transactions instead of `seed-base-sepolia.sh`.
@@ -21,6 +26,7 @@ Defaults:
 - Base Sepolia Identity Registry: `0x8004A818BFB912233c491871b3d84c89A494BD9e`
 - Base Sepolia Reputation Registry: `0x8004B663056A597Dffe9eCcC1965A193B7388713`
 - Withdrawal delay: `1 days`
+- Escrow timeout: `1 days`
 
 Required for live broadcast:
 
