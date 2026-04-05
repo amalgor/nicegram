@@ -14,6 +14,8 @@ abstract class HydraExchangeBackend {
     required String region,
     required String protocol,
   });
+  Future<List<RouteOffer>> listMyRouteOffers({required String address});
+  Future<RouteBookLifecycle> getRouteBookLifecycle();
   Future<AgentRegistrationResult> registerAgent(String mnemonic);
   Future<OfferMutationResult> createOffer({
     required String mnemonic,
@@ -41,7 +43,21 @@ abstract class HydraExchangeBackend {
   });
   // P2P Deal Board
   Future<List<DealOffer>> listDealOffers({required String currency});
+  Future<List<DealOffer>> listMyDealOffers({required String address});
   Future<DealOffer> getDealOffer({required int offerId});
+  Future<OfferMutationResult> createDealOffer({
+    required String mnemonic,
+    required int agentId,
+    required String currency,
+    required String rateRaw,
+    required String minAmountRaw,
+    required String maxAmountRaw,
+    required List<String> paymentMethods,
+  });
+  Future<OfferMutationResult> deactivateDealOffer({
+    required String mnemonic,
+    required int offerId,
+  });
   Future<AcceptDealResult> acceptDeal({
     required String mnemonic,
     required int offerId,
@@ -52,27 +68,52 @@ abstract class HydraExchangeBackend {
     required int escrowId,
   });
   Future<DealEscrowView> checkEscrowStatus({required int escrowId});
+  Future<List<DealEscrowView>> listMyDealEscrows({
+    required String address,
+    String? role,
+  });
+  Future<TxHashResult> confirmDealReceipt({
+    required String mnemonic,
+    required int escrowId,
+  });
+  Future<TxHashResult> rejectDeal({
+    required String mnemonic,
+    required int escrowId,
+  });
   Future<TxHashResult> claimExpiredEscrow({
     required String mnemonic,
     required int escrowId,
   });
+  Future<DealBoardAllowance> getDealBoardAllowance({required String address});
   Future<TxHashResult> approveDealBoardUsdc({
     required String mnemonic,
     required String amount,
   });
+  Future<Map<String, dynamic>> signDealerProfilePut({
+    required String mnemonic,
+    required String address,
+    required int timestampMs,
+    required String bodyJson,
+  });
 
-  Future<ShareEarnStatus> getShareEarnStatus();
+  Future<ShareEarnStatus> getShareEarnStatus({String? profileId});
   Future<ShareEarnStatus> setShareEarnEnabled({
     required bool enabled,
+    String? profileId,
     String? mnemonic,
   });
-  Future<ProviderEarnings> getProviderEarnings();
+  Future<ProviderEarnings> getProviderEarnings({String? profileId});
   Future<ShareEarnStatus> updateShareSettings({
+    String? profileId,
     String? priceOverrideRaw,
     int? maxBandwidthMbps,
     required bool wifiOnly,
     int? scheduleStartHour,
     int? scheduleEndHour,
+  });
+  Future<ShareEarnStatus> syncProviderReputation({
+    String? profileId,
+    required String mnemonic,
   });
 }
 
@@ -130,6 +171,25 @@ class FrbHydraExchangeBackend implements HydraExchangeBackend {
         .whereType<Map<String, dynamic>>()
         .map(RouteOffer.fromJson)
         .toList();
+  }
+
+  @override
+  Future<List<RouteOffer>> listMyRouteOffers({required String address}) async {
+    final json = jsonDecode(
+      await exchange_api.listMyRouteOffers(address: address),
+    ) as List<dynamic>;
+    return json
+        .whereType<Map<String, dynamic>>()
+        .map(RouteOffer.fromJson)
+        .toList();
+  }
+
+  @override
+  Future<RouteBookLifecycle> getRouteBookLifecycle() async {
+    final json = jsonDecode(
+      await exchange_api.getRouteBookLifecycle(),
+    ) as Map<String, dynamic>;
+    return RouteBookLifecycle.fromJson(json);
   }
 
   @override
@@ -226,11 +286,60 @@ class FrbHydraExchangeBackend implements HydraExchangeBackend {
   }
 
   @override
+  Future<List<DealOffer>> listMyDealOffers({required String address}) async {
+    final json = jsonDecode(
+      await exchange_api.listMyDealOffers(address: address),
+    ) as List<dynamic>;
+    return json
+        .whereType<Map<String, dynamic>>()
+        .map(DealOffer.fromJson)
+        .toList();
+  }
+
+  @override
   Future<DealOffer> getDealOffer({required int offerId}) async {
     final json = jsonDecode(
       await exchange_api.getDealOffer(offerId: BigInt.from(offerId)),
     ) as Map<String, dynamic>;
     return DealOffer.fromJson(json);
+  }
+
+  @override
+  Future<OfferMutationResult> createDealOffer({
+    required String mnemonic,
+    required int agentId,
+    required String currency,
+    required String rateRaw,
+    required String minAmountRaw,
+    required String maxAmountRaw,
+    required List<String> paymentMethods,
+  }) async {
+    final json = jsonDecode(
+      await exchange_api.createDealOffer(
+        mnemonic: mnemonic,
+        agentId: BigInt.from(agentId),
+        currency: currency,
+        rateRaw: rateRaw,
+        minAmountRaw: minAmountRaw,
+        maxAmountRaw: maxAmountRaw,
+        paymentMethods: paymentMethods,
+      ),
+    ) as Map<String, dynamic>;
+    return OfferMutationResult.fromJson(json);
+  }
+
+  @override
+  Future<OfferMutationResult> deactivateDealOffer({
+    required String mnemonic,
+    required int offerId,
+  }) async {
+    final json = jsonDecode(
+      await exchange_api.deactivateDealOffer(
+        mnemonic: mnemonic,
+        offerId: BigInt.from(offerId),
+      ),
+    ) as Map<String, dynamic>;
+    return OfferMutationResult.fromJson(json);
   }
 
   @override
@@ -272,6 +381,48 @@ class FrbHydraExchangeBackend implements HydraExchangeBackend {
   }
 
   @override
+  Future<List<DealEscrowView>> listMyDealEscrows({
+    required String address,
+    String? role,
+  }) async {
+    final json = jsonDecode(
+      await exchange_api.listMyDealEscrows(address: address, role: role),
+    ) as List<dynamic>;
+    return json
+        .whereType<Map<String, dynamic>>()
+        .map(DealEscrowView.fromJson)
+        .toList();
+  }
+
+  @override
+  Future<TxHashResult> confirmDealReceipt({
+    required String mnemonic,
+    required int escrowId,
+  }) async {
+    final json = jsonDecode(
+      await exchange_api.confirmDealReceipt(
+        mnemonic: mnemonic,
+        escrowId: BigInt.from(escrowId),
+      ),
+    ) as Map<String, dynamic>;
+    return TxHashResult.fromJson(json);
+  }
+
+  @override
+  Future<TxHashResult> rejectDeal({
+    required String mnemonic,
+    required int escrowId,
+  }) async {
+    final json = jsonDecode(
+      await exchange_api.rejectDeal(
+        mnemonic: mnemonic,
+        escrowId: BigInt.from(escrowId),
+      ),
+    ) as Map<String, dynamic>;
+    return TxHashResult.fromJson(json);
+  }
+
+  @override
   Future<TxHashResult> claimExpiredEscrow({
     required String mnemonic,
     required int escrowId,
@@ -283,6 +434,16 @@ class FrbHydraExchangeBackend implements HydraExchangeBackend {
       ),
     ) as Map<String, dynamic>;
     return TxHashResult.fromJson(json);
+  }
+
+  @override
+  Future<DealBoardAllowance> getDealBoardAllowance({
+    required String address,
+  }) async {
+    final json = jsonDecode(
+      await exchange_api.getDealBoardAllowance(address: address),
+    ) as Map<String, dynamic>;
+    return DealBoardAllowance.fromJson(json);
   }
 
   @override
@@ -300,9 +461,27 @@ class FrbHydraExchangeBackend implements HydraExchangeBackend {
   }
 
   @override
-  Future<ShareEarnStatus> getShareEarnStatus() async {
+  Future<Map<String, dynamic>> signDealerProfilePut({
+    required String mnemonic,
+    required String address,
+    required int timestampMs,
+    required String bodyJson,
+  }) async {
+    return jsonDecode(
+          exchange_api.signDealerProfilePut(
+            mnemonic: mnemonic,
+            address: address,
+            timestampMs: BigInt.from(timestampMs),
+            bodyJson: bodyJson,
+          ),
+        )
+        as Map<String, dynamic>;
+  }
+
+  @override
+  Future<ShareEarnStatus> getShareEarnStatus({String? profileId}) async {
     final json = jsonDecode(
-      await provider_api.getShareEarnStatus(),
+      await provider_api.getShareEarnStatus(profileId: profileId),
     ) as Map<String, dynamic>;
     return ShareEarnStatus.fromJson(json);
   }
@@ -310,11 +489,13 @@ class FrbHydraExchangeBackend implements HydraExchangeBackend {
   @override
   Future<ShareEarnStatus> setShareEarnEnabled({
     required bool enabled,
+    String? profileId,
     String? mnemonic,
   }) async {
     final json = jsonDecode(
       await provider_api.setShareEarnEnabled(
         enabled: enabled,
+        profileId: profileId,
         mnemonic: mnemonic,
       ),
     ) as Map<String, dynamic>;
@@ -322,15 +503,16 @@ class FrbHydraExchangeBackend implements HydraExchangeBackend {
   }
 
   @override
-  Future<ProviderEarnings> getProviderEarnings() async {
+  Future<ProviderEarnings> getProviderEarnings({String? profileId}) async {
     final json = jsonDecode(
-      await provider_api.getProviderEarnings(),
+      await provider_api.getProviderEarnings(profileId: profileId),
     ) as Map<String, dynamic>;
     return ProviderEarnings.fromJson(json);
   }
 
   @override
   Future<ShareEarnStatus> updateShareSettings({
+    String? profileId,
     String? priceOverrideRaw,
     int? maxBandwidthMbps,
     required bool wifiOnly,
@@ -339,6 +521,7 @@ class FrbHydraExchangeBackend implements HydraExchangeBackend {
   }) async {
     final json = jsonDecode(
       await provider_api.updateShareSettings(
+        profileId: profileId,
         priceOverrideRaw: priceOverrideRaw,
         maxBandwidthMbps: maxBandwidthMbps == null
             ? null
@@ -346,6 +529,20 @@ class FrbHydraExchangeBackend implements HydraExchangeBackend {
         wifiOnly: wifiOnly,
         scheduleStartHour: scheduleStartHour,
         scheduleEndHour: scheduleEndHour,
+      ),
+    ) as Map<String, dynamic>;
+    return ShareEarnStatus.fromJson(json);
+  }
+
+  @override
+  Future<ShareEarnStatus> syncProviderReputation({
+    String? profileId,
+    required String mnemonic,
+  }) async {
+    final json = jsonDecode(
+      await provider_api.syncProviderReputation(
+        profileId: profileId,
+        mnemonic: mnemonic,
       ),
     ) as Map<String, dynamic>;
     return ShareEarnStatus.fromJson(json);

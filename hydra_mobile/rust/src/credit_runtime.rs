@@ -25,7 +25,8 @@ lazy_static! {
     static ref SHARED_CREDIT_CONTROLLER: Mutex<Option<Arc<MobileCreditController>>> =
         Mutex::new(None);
     static ref SHARED_DISCOVERY: Mutex<Option<Arc<RouteDiscoveryService>>> = Mutex::new(None);
-    static ref SHARED_PROVIDER_METRICS: Mutex<Option<Arc<ProviderMetricsLedger>>> = Mutex::new(None);
+    static ref SHARED_PROVIDER_METRICS: Mutex<Option<Arc<ProviderMetricsLedger>>> =
+        Mutex::new(None);
 }
 
 #[derive(Debug, Clone)]
@@ -134,7 +135,10 @@ pub(crate) async fn init_credit_services(
     let provider_metrics = Arc::new(ProviderMetricsLedger::new(
         config.econ.db_path.join("provider_metrics"),
     )?);
-    let controller = Arc::new(MobileCreditController::new(ledger.clone(), base_dir.clone()));
+    let controller = Arc::new(MobileCreditController::new(
+        ledger.clone(),
+        base_dir.clone(),
+    ));
 
     let discovery = if config.crypto.enabled {
         match ExchangeConfig::from_crypto_config(&config.crypto) {
@@ -217,8 +221,9 @@ pub(crate) async fn get_credit_status() -> Result<String> {
         advanced_unlocked: status.advanced_unlocked,
         tier: format!("{:?}", status.tier).to_lowercase(),
         premium_routes_available,
-        premium_trial_available:
-            premium_routes_available && premium_materially_better && !status.trial_accepted,
+        premium_trial_available: premium_routes_available
+            && premium_materially_better
+            && !status.trial_accepted,
         premium_materially_better,
         route_state: route_state(&status, premium_routes_available),
         route_message: route_message(&status, premium_routes_available),
@@ -405,7 +410,12 @@ fn random_token(label: &str, base_dir: &Path) -> String {
     format!(
         "{:x}",
         keccak256(
-            format!("{label}:{}:{now}:{}", std::process::id(), base_dir.display()).as_bytes()
+            format!(
+                "{label}:{}:{now}:{}",
+                std::process::id(),
+                base_dir.display()
+            )
+            .as_bytes()
         )
     )
 }

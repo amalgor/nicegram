@@ -3,9 +3,10 @@ import 'package:hydra_mobile/exchange/hydra_exchange_repository.dart';
 import 'package:hydra_mobile/exchange/models.dart';
 
 class MarketplaceScreen extends StatefulWidget {
-  const MarketplaceScreen({super.key, this.repository});
+  const MarketplaceScreen({super.key, this.repository, this.embedded = false});
 
   final HydraExchangeRepository? repository;
+  final bool embedded;
 
   @override
   State<MarketplaceScreen> createState() => _MarketplaceScreenState();
@@ -376,6 +377,14 @@ class _MarketplaceScreenState extends State<MarketplaceScreen>
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (!widget.embedded) ...[
+            Text('Marketplace', style: Theme.of(context).textTheme.headlineSmall),
+            const SizedBox(height: 8),
+            const Text(
+              'Raw route-marketplace tools for manual testing, direct on-chain actions, and feedback.',
+            ),
+            const SizedBox(height: 16),
+          ],
           _buildWalletCard(context),
           const SizedBox(height: 16),
           _buildAgentCard(context),

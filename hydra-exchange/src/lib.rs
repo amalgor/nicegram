@@ -12,8 +12,9 @@ pub use config::{
 };
 pub use deal_client::DealBoardClient;
 pub use models::{
-    AcceptDealResult, AgentRegistrationResult, CreateOfferInput, DealEscrowStatus, DealEscrowView,
-    DealOfferView, GeneratedWallet, OfferMutationResult, ReputationSummary, RouteOfferView,
-    TxHashResult, WalletBalances, WalletIdentity,
+    AcceptDealResult, AgentRegistrationResult, CreateDealOfferInput, CreateOfferInput,
+    DealBoardAllowanceView, DealEscrowStatus, DealEscrowView, DealOfferView, GeneratedWallet,
+    OfferMutationResult, ReputationSummary, RouteBookLifecycleView, RouteOfferView, TxHashResult,
+    WalletBalances, WalletIdentity, WalletSignature,
 };
 pub use wallet::{LocalWallet, normalize_mnemonic};

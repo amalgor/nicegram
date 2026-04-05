@@ -8,7 +8,7 @@ use crate::bindings::{HydraRouteBook, IdentityRegistry, ReputationRegistry, Usdc
 use crate::config::{BASE_SEPOLIA_CHAIN, ExchangeConfig, http_client};
 use crate::models::{
     AgentRegistrationResult, CreateOfferInput, OfferMutationResult, ReputationSummary,
-    RouteOfferView, TxHashResult, WalletBalances,
+    RouteBookLifecycleView, RouteOfferView, TxHashResult, WalletBalances, WalletSignature,
 };
 use crate::wallet::LocalWallet;
 
@@ -113,6 +113,43 @@ impl RouteExchangeClient {
             deactivated_at: offer.deactivatedAt,
             active: offer.active,
             reputation: None,
+        })
+    }
+
+    pub async fn list_my_offers(
+        &self,
+        provider_address: Option<Address>,
+        agent_id: Option<u64>,
+    ) -> Result<Vec<RouteOfferView>> {
+        let mut offers = Vec::new();
+        for offer_id in 1..=self.total_offers().await? {
+            let offer = self.get_offer(offer_id).await?;
+            if let Some(provider_address) = provider_address {
+                let offer_provider = offer
+                    .provider
+                    .parse::<Address>()
+                    .map_err(|error| anyhow::anyhow!("Invalid provider address '{}': {error}", offer.provider))?;
+                if offer_provider != provider_address {
+                    continue;
+                }
+            }
+            if let Some(agent_id) = agent_id
+                && offer.agent_id != agent_id
+            {
+                continue;
+            }
+            offers.push(offer);
+        }
+        Ok(offers)
+    }
+
+    pub async fn lifecycle(&self) -> Result<RouteBookLifecycleView> {
+        let provider = ProviderBuilder::new()
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
+        let withdrawal_delay = route_book.withdrawalDelay().call().await?;
+        Ok(RouteBookLifecycleView {
+            withdrawal_delay_secs: withdrawal_delay.to(),
         })
     }
 
@@ -234,6 +271,15 @@ impl RouteExchangeClient {
         Ok(OfferMutationResult {
             offer_id: Some(offer_id),
             tx_hash,
+        })
+    }
+
+    pub fn sign_message(&self, mnemonic: &str, message: &str) -> Result<WalletSignature> {
+        let signer = LocalWallet::signer_from_phrase(mnemonic)?;
+        Ok(WalletSignature {
+            address: format!("{:#x}", signer.address()),
+            message: message.to_string(),
+            signature: LocalWallet::sign_message(mnemonic, message.as_bytes())?,
         })
     }
 }

@@ -51,6 +51,7 @@ sol! {
         function getOffer(uint256 offerId) external view returns (RouteOffer memory);
         function totalOffers() external view returns (uint256);
         function withdrawStake(uint256 offerId) external;
+        function withdrawalDelay() external view returns (uint256);
     }
 
     #[sol(rpc)]
@@ -114,6 +115,7 @@ sol! {
         function totalOffers() external view returns (uint256);
         function totalEscrows() external view returns (uint256);
         function getActiveDeals(string currency) external view returns (DealOffer[] memory);
+        function escrowTimeout() external view returns (uint256);
     }
 
     #[sol(rpc)]
@@ -166,6 +168,10 @@ mod tests {
             keccak256("withdrawStake(uint256)".as_bytes())[0..4]
         );
         assert_eq!(
+            HydraRouteBook::withdrawalDelayCall::SELECTOR,
+            keccak256("withdrawalDelay()".as_bytes())[0..4]
+        );
+        assert_eq!(
             UsdcToken::allowanceCall::SELECTOR,
             keccak256("allowance(address,address)".as_bytes())[0..4]
         );
@@ -201,6 +207,10 @@ mod tests {
         assert_eq!(
             HydraDealBoard::getActiveDealsCall::SELECTOR,
             keccak256("getActiveDeals(string)".as_bytes())[0..4]
+        );
+        assert_eq!(
+            HydraDealBoard::escrowTimeoutCall::SELECTOR,
+            keccak256("escrowTimeout()".as_bytes())[0..4]
         );
     }
 }

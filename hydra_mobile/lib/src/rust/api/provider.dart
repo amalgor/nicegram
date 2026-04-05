@@ -6,28 +6,42 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-Future<String> getShareEarnStatus() =>
-    RustLib.instance.api.crateApiProviderGetShareEarnStatus();
+Future<String> getShareEarnStatus({String? profileId}) => RustLib.instance.api
+    .crateApiProviderGetShareEarnStatus(profileId: profileId);
 
-Future<String> setShareEarnEnabled({required bool enabled, String? mnemonic}) =>
-    RustLib.instance.api.crateApiProviderSetShareEarnEnabled(
-      enabled: enabled,
-      mnemonic: mnemonic,
-    );
+Future<String> setShareEarnEnabled({
+  required bool enabled,
+  String? profileId,
+  String? mnemonic,
+}) => RustLib.instance.api.crateApiProviderSetShareEarnEnabled(
+  enabled: enabled,
+  profileId: profileId,
+  mnemonic: mnemonic,
+);
 
-Future<String> getProviderEarnings() =>
-    RustLib.instance.api.crateApiProviderGetProviderEarnings();
+Future<String> getProviderEarnings({String? profileId}) => RustLib.instance.api
+    .crateApiProviderGetProviderEarnings(profileId: profileId);
 
 Future<String> updateShareSettings({
+  String? profileId,
   String? priceOverrideRaw,
   BigInt? maxBandwidthMbps,
   required bool wifiOnly,
   int? scheduleStartHour,
   int? scheduleEndHour,
 }) => RustLib.instance.api.crateApiProviderUpdateShareSettings(
+  profileId: profileId,
   priceOverrideRaw: priceOverrideRaw,
   maxBandwidthMbps: maxBandwidthMbps,
   wifiOnly: wifiOnly,
   scheduleStartHour: scheduleStartHour,
   scheduleEndHour: scheduleEndHour,
+);
+
+Future<String> syncProviderReputation({
+  String? profileId,
+  required String mnemonic,
+}) => RustLib.instance.api.crateApiProviderSyncProviderReputation(
+  profileId: profileId,
+  mnemonic: mnemonic,
 );

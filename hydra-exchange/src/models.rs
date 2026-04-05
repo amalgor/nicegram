@@ -61,6 +61,11 @@ pub struct CreateOfferInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteBookLifecycleView {
+    pub withdrawal_delay_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRegistrationResult {
     pub agent_id: u64,
     pub tx_hash: String,
@@ -75,6 +80,13 @@ pub struct OfferMutationResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TxHashResult {
     pub tx_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WalletSignature {
+    pub address: String,
+    pub message: String,
+    pub signature: String,
 }
 
 // ── P2P Deal Board models ──────────────────────────────────────────────
@@ -117,6 +129,16 @@ pub struct DealOfferView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateDealOfferInput {
+    pub agent_id: u64,
+    pub currency: String,
+    pub rate_raw: String,
+    pub min_amount_raw: String,
+    pub max_amount_raw: String,
+    pub payment_methods: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DealEscrowView {
     pub escrow_id: u64,
     pub offer_id: u64,
@@ -127,6 +149,14 @@ pub struct DealEscrowView {
     pub status: DealEscrowStatus,
     pub created_at: u64,
     pub expires_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DealBoardAllowanceView {
+    pub owner: String,
+    pub spender: String,
+    pub allowance_raw: String,
+    pub allowance: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use hydra_config::HydraConfig;
+use hydra_core::transport::wss::connect_relay_websocket;
 use hydra_econ::provider::{PendingReputationSync, ProviderMetrics};
 use hydra_exchange::{AgentRegistrar, ExchangeConfig, ReputationClient, RouteExchangeClient};
 use hydra_p2p::ServiceAnnouncement;
@@ -11,13 +12,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
-use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
 use zeroize::Zeroize;
 
-const PROVIDER_STATE_FILE: &str = "provider_state.json";
+const DEFAULT_PROFILE_ID: &str = "default";
+const PROVIDER_STATE_PREFIX: &str = "provider_state";
 const PROVIDER_RELAY_ENDPOINT: &str = "wss://relay.hydra-net.work";
 const DEFAULT_PROTOCOL: &str = "vless";
 const DEFAULT_REGION: &str = "US";
@@ -79,10 +80,14 @@ impl Default for ProviderState {
 
 #[derive(Debug, Serialize)]
 struct ShareEarnStatusPayload {
+    profile_id: String,
+    runtime_profile_id: Option<String>,
+    sharing_active_under_other_profile: bool,
     enabled: bool,
     active: bool,
     unlocked: bool,
     agent_id: Option<u64>,
+    agent_tx_hash: String,
     endpoint_url: String,
     region: String,
     protocol: String,
@@ -96,21 +101,37 @@ struct ShareEarnStatusPayload {
     estimated_earnings_display: String,
     settled_earnings_display: String,
     local_routing_score: f64,
+    pending_reputation_delta: f64,
+    pending_reputation_syncs: usize,
+    average_latency_ms: f64,
+    average_throughput_mbps: f64,
+    uptime_ratio: f64,
+    recent_failures: u32,
+    last_onchain_sync_time: u64,
     toggle_message: String,
     settings: ShareSettings,
 }
 
 #[derive(Debug, Serialize)]
 struct ProviderEarningsPayload {
+    profile_id: String,
     agent_id: Option<u64>,
+    agent_tx_hash: String,
     session_count: u64,
+    successful_sessions: u64,
     bytes_relayed: u64,
     estimated_earnings_micro_usdc: i64,
     estimated_earnings_display: String,
     settled_earnings_micro_usdc: i64,
     settled_earnings_display: String,
     local_routing_score: f64,
+    pending_reputation_delta: f64,
     pending_reputation_syncs: usize,
+    average_latency_ms: f64,
+    average_throughput_mbps: f64,
+    uptime_ratio: f64,
+    recent_failures: u32,
+    last_onchain_sync_time: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,19 +142,29 @@ struct ProviderControlMessage {
 }
 
 struct ShareRuntimeHandle {
+    profile_id: String,
     stop_tx: watch::Sender<bool>,
     task: JoinHandle<()>,
 }
 
-pub(crate) async fn get_share_earn_status() -> Result<String> {
+pub(crate) async fn get_share_earn_status(profile_id: Option<String>) -> Result<String> {
+    let profile_id = normalized_profile_id(profile_id.as_deref());
     let base_dir = shared_base_dir()?;
-    let state = load_state(&base_dir)?;
+    let state = load_state(&base_dir, &profile_id)?;
     let metrics = provider_metrics_snapshot(state.agent_id).await?;
+    let runtime_profile_id = current_runtime_profile_id().await;
+    let sharing_active_under_other_profile = runtime_profile_id
+        .as_ref()
+        .is_some_and(|active_profile| active_profile != &profile_id);
     let payload = ShareEarnStatusPayload {
+        profile_id: profile_id.clone(),
+        runtime_profile_id: runtime_profile_id.clone(),
+        sharing_active_under_other_profile,
         enabled: state.enabled,
         active: state.active,
         unlocked: true,
         agent_id: state.agent_id,
+        agent_tx_hash: state.agent_tx_hash.clone(),
         endpoint_url: state.endpoint_url.clone(),
         region: state.region.clone(),
         protocol: state.protocol.clone(),
@@ -147,7 +178,19 @@ pub(crate) async fn get_share_earn_status() -> Result<String> {
         estimated_earnings_display: format_micro_usdc(metrics.estimated_earnings_micro_usdc),
         settled_earnings_display: format_micro_usdc(metrics.settled_earnings_micro_usdc),
         local_routing_score: metrics.local_routing_score,
-        toggle_message: toggle_message(&state, &metrics),
+        pending_reputation_delta: metrics.pending_reputation_delta,
+        pending_reputation_syncs: pending_reputation_syncs().await?.len(),
+        average_latency_ms: metrics.average_latency_ms,
+        average_throughput_mbps: metrics.average_throughput_mbps,
+        uptime_ratio: metrics.uptime_ratio,
+        recent_failures: metrics.recent_failures,
+        last_onchain_sync_time: metrics.last_onchain_sync_time,
+        toggle_message: toggle_message(
+            &state,
+            &metrics,
+            sharing_active_under_other_profile,
+            runtime_profile_id.as_deref(),
+        ),
         settings: state.settings.clone(),
     };
     Ok(serde_json::to_string(&payload)?)
@@ -155,10 +198,12 @@ pub(crate) async fn get_share_earn_status() -> Result<String> {
 
 pub(crate) async fn set_share_earn_enabled(
     enabled: bool,
+    profile_id: Option<String>,
     mnemonic: Option<String>,
 ) -> Result<String> {
+    let profile_id = normalized_profile_id(profile_id.as_deref());
     let base_dir = shared_base_dir()?;
-    let mut state = load_state(&base_dir)?;
+    let mut state = load_state(&base_dir, &profile_id)?;
     let exchange = load_exchange_config()?;
 
     if enabled {
@@ -167,7 +212,9 @@ pub(crate) async fn set_share_earn_enabled(
             if mnemonic.trim().is_empty() {
                 anyhow::bail!("Share & Earn setup needs account access the first time.");
             }
-            let registration = AgentRegistrar::new(exchange.clone()).register(&mnemonic).await?;
+            let registration = AgentRegistrar::new(exchange.clone())
+                .register(&mnemonic)
+                .await?;
             state.agent_id = Some(registration.agent_id);
             state.agent_tx_hash = registration.tx_hash;
         }
@@ -183,50 +230,62 @@ pub(crate) async fn set_share_earn_enabled(
         state.enabled = true;
         state.endpoint_url = format!("{PROVIDER_RELAY_ENDPOINT}?agent={agent_id}");
         state.last_error.clear();
-        save_state(&base_dir, &state)?;
-        ensure_runtime(base_dir.clone(), state.clone()).await?;
+        save_state(&base_dir, &profile_id, &state)?;
+        ensure_runtime(base_dir.clone(), profile_id.clone(), state.clone()).await?;
         if !mnemonic.trim().is_empty() {
             let _ = sync_pending_reputation_internal(&exchange, &mut mnemonic).await;
-            maybe_graduate_to_route_book(&exchange, &state, &mut mnemonic).await?;
+            maybe_graduate_to_route_book(&exchange, &profile_id, &state, &mut mnemonic).await?;
         }
         mnemonic.zeroize();
     } else {
-        disable_runtime().await?;
+        disable_runtime(Some(profile_id.clone())).await?;
         state.enabled = false;
         state.active = false;
-        save_state(&base_dir, &state)?;
+        save_state(&base_dir, &profile_id, &state)?;
     }
 
-    get_share_earn_status().await
+    get_share_earn_status(Some(profile_id)).await
 }
 
-pub(crate) async fn get_provider_earnings() -> Result<String> {
+pub(crate) async fn get_provider_earnings(profile_id: Option<String>) -> Result<String> {
+    let profile_id = normalized_profile_id(profile_id.as_deref());
     let base_dir = shared_base_dir()?;
-    let state = load_state(&base_dir)?;
+    let state = load_state(&base_dir, &profile_id)?;
     let metrics = provider_metrics_snapshot(state.agent_id).await?;
     let payload = ProviderEarningsPayload {
+        profile_id,
         agent_id: state.agent_id,
+        agent_tx_hash: state.agent_tx_hash,
         session_count: metrics.session_count,
+        successful_sessions: metrics.successful_sessions,
         bytes_relayed: metrics.bytes_relayed,
         estimated_earnings_micro_usdc: metrics.estimated_earnings_micro_usdc,
         estimated_earnings_display: format_micro_usdc(metrics.estimated_earnings_micro_usdc),
         settled_earnings_micro_usdc: metrics.settled_earnings_micro_usdc,
         settled_earnings_display: format_micro_usdc(metrics.settled_earnings_micro_usdc),
         local_routing_score: metrics.local_routing_score,
+        pending_reputation_delta: metrics.pending_reputation_delta,
         pending_reputation_syncs: pending_reputation_syncs().await?.len(),
+        average_latency_ms: metrics.average_latency_ms,
+        average_throughput_mbps: metrics.average_throughput_mbps,
+        uptime_ratio: metrics.uptime_ratio,
+        recent_failures: metrics.recent_failures,
+        last_onchain_sync_time: metrics.last_onchain_sync_time,
     };
     Ok(serde_json::to_string(&payload)?)
 }
 
 pub(crate) async fn update_share_settings(
+    profile_id: Option<String>,
     price_override_raw: Option<String>,
     max_bandwidth_mbps: Option<u64>,
     wifi_only: bool,
     schedule_start_hour: Option<u8>,
     schedule_end_hour: Option<u8>,
 ) -> Result<String> {
+    let profile_id = normalized_profile_id(profile_id.as_deref());
     let base_dir = shared_base_dir()?;
-    let mut state = load_state(&base_dir)?;
+    let mut state = load_state(&base_dir, &profile_id)?;
     state.settings = ShareSettings {
         price_override_raw: price_override_raw.filter(|value| !value.trim().is_empty()),
         max_bandwidth_mbps,
@@ -238,31 +297,60 @@ pub(crate) async fn update_share_settings(
         state.price_per_gb_raw = price.trim().to_string();
     }
     state.bandwidth_mbps = default_bandwidth(&state.settings);
-    save_state(&base_dir, &state)?;
-    get_share_earn_status().await
+    save_state(&base_dir, &profile_id, &state)?;
+    get_share_earn_status(Some(profile_id)).await
 }
 
-async fn ensure_runtime(base_dir: PathBuf, state: ProviderState) -> Result<()> {
+async fn ensure_runtime(base_dir: PathBuf, profile_id: String, state: ProviderState) -> Result<()> {
     let mut guard = SHARE_RUNTIME.lock().await;
-    if guard.as_ref().is_some_and(|runtime| !runtime.task.is_finished()) {
-        return Ok(());
+    if let Some(runtime) = guard.as_ref() {
+        if !runtime.task.is_finished() {
+            if runtime.profile_id == profile_id {
+                return Ok(());
+            }
+            anyhow::bail!(
+                "Share & Earn is already active under profile '{}'. Disable it there before switching.",
+                runtime.profile_id
+            );
+        }
     }
 
     let (stop_tx, stop_rx) = watch::channel(false);
+    let runtime_profile_id = profile_id.clone();
     let task = tokio::spawn(async move {
-        if let Err(error) = run_provider_runtime(base_dir.clone(), state.clone(), stop_rx).await {
-            let _ = update_state(&base_dir, |current| {
+        if let Err(error) = run_provider_runtime(
+            base_dir.clone(),
+            runtime_profile_id.clone(),
+            state.clone(),
+            stop_rx,
+        )
+        .await
+        {
+            let _ = update_state(&base_dir, &runtime_profile_id, |current| {
                 current.active = false;
                 current.last_error = error.to_string();
             });
         }
     });
-    *guard = Some(ShareRuntimeHandle { stop_tx, task });
+    *guard = Some(ShareRuntimeHandle {
+        profile_id,
+        stop_tx,
+        task,
+    });
     Ok(())
 }
 
-async fn disable_runtime() -> Result<()> {
+async fn disable_runtime(profile_id: Option<String>) -> Result<()> {
+    let profile_id = profile_id
+        .as_deref()
+        .map(|value| normalized_profile_id(Some(value)))
+        .unwrap_or_else(|| DEFAULT_PROFILE_ID.to_string());
     let mut guard = SHARE_RUNTIME.lock().await;
+    if let Some(runtime) = guard.as_ref() {
+        if runtime.profile_id != profile_id && !runtime.task.is_finished() {
+            return Ok(());
+        }
+    }
     if let Some(runtime) = guard.take() {
         let _ = runtime.stop_tx.send(true);
         let _ = runtime.task.await;
@@ -272,6 +360,7 @@ async fn disable_runtime() -> Result<()> {
 
 async fn run_provider_runtime(
     base_dir: PathBuf,
+    profile_id: String,
     initial_state: ProviderState,
     mut stop_rx: watch::Receiver<bool>,
 ) -> Result<()> {
@@ -281,7 +370,7 @@ async fn run_provider_runtime(
 
     loop {
         if *stop_rx.borrow() {
-            let _ = update_state(&base_dir, |state| {
+            let _ = update_state(&base_dir, &profile_id, |state| {
                 state.active = false;
             });
             return Ok(());
@@ -295,35 +384,46 @@ async fn run_provider_runtime(
             .headers_mut()
             .insert("X-Hydra-Agent", agent_id.to_string().parse()?);
 
-        match connect_async(request).await {
-            Ok((mut ws, _)) => {
-                update_state(&base_dir, |state| {
+        match connect_relay_websocket(
+            PROVIDER_RELAY_ENDPOINT,
+            request,
+            &format!("provider:{agent_id}"),
+        )
+        .await
+        {
+            Ok((mut ws, tls_report)) => {
+                tracing::info!(
+                    "Provider relay session for agent {} connected using {}",
+                    agent_id,
+                    tls_report.summary()
+                );
+                update_state(&base_dir, &profile_id, |state| {
                     state.active = true;
                     state.last_error.clear();
                 })?;
 
                 let mut announcement_ticker = tokio::time::interval(Duration::from_secs(60));
-                publish_announcement(agent_id).await?;
+                publish_announcement(agent_id, &profile_id).await?;
 
                 loop {
                     tokio::select! {
                         _ = stop_rx.changed() => {
                             if *stop_rx.borrow() {
                                 let _ = ws.close(None).await;
-                                update_state(&base_dir, |state| {
+                                update_state(&base_dir, &profile_id, |state| {
                                     state.active = false;
                                 })?;
                                 return Ok(());
                             }
                         }
                         _ = announcement_ticker.tick() => {
-                            publish_announcement(agent_id).await?;
+                            publish_announcement(agent_id, &profile_id).await?;
                         }
                         message = ws.next() => {
                             match message {
                                 Some(Ok(tungstenite::Message::Text(text))) => {
                                     if let Some(target) = parse_connect_target(&text) {
-                                        handle_provider_session(&mut ws, agent_id, target).await?;
+                                        handle_provider_session(&mut ws, &profile_id, agent_id, target).await?;
                                     } else if text.contains("\"type\":\"ping\"") {
                                         ws.send(tungstenite::Message::Text("{\"type\":\"pong\"}".into())).await?;
                                     }
@@ -332,21 +432,21 @@ async fn run_provider_runtime(
                                     ws.send(tungstenite::Message::Pong(payload)).await?;
                                 }
                                 Some(Ok(tungstenite::Message::Close(_))) => {
-                                    update_state(&base_dir, |state| {
+                                    update_state(&base_dir, &profile_id, |state| {
                                         state.active = false;
                                         state.last_error = "Relay session closed.".to_string();
                                     })?;
                                     break;
                                 }
                                 Some(Err(error)) => {
-                                    update_state(&base_dir, |state| {
+                                    update_state(&base_dir, &profile_id, |state| {
                                         state.active = false;
                                         state.last_error = error.to_string();
                                     })?;
                                     break;
                                 }
                                 None => {
-                                    update_state(&base_dir, |state| {
+                                    update_state(&base_dir, &profile_id, |state| {
                                         state.active = false;
                                         state.last_error = "Relay session ended.".to_string();
                                     })?;
@@ -359,7 +459,7 @@ async fn run_provider_runtime(
                 }
             }
             Err(error) => {
-                update_state(&base_dir, |state| {
+                update_state(&base_dir, &profile_id, |state| {
                     state.active = false;
                     state.last_error = format!("Relay connection failed: {error}");
                 })?;
@@ -378,6 +478,7 @@ async fn run_provider_runtime(
 
 async fn handle_provider_session<S>(
     ws: &mut tokio_tungstenite::WebSocketStream<S>,
+    profile_id: &str,
     agent_id: u64,
     target: String,
 ) -> Result<()>
@@ -459,7 +560,7 @@ where
     .await?;
 
     if let Some(metrics) = crate::credit_runtime::shared_provider_metrics().await {
-        let price = load_state(&shared_base_dir()?)?
+        let price = load_state(&shared_base_dir()?, profile_id)?
             .price_per_gb_raw
             .parse::<u64>()
             .unwrap_or_default();
@@ -474,12 +575,12 @@ where
     Ok(())
 }
 
-async fn publish_announcement(agent_id: u64) -> Result<()> {
+async fn publish_announcement(agent_id: u64, profile_id: &str) -> Result<()> {
     let Some(handle) = crate::api::simple::shared_p2p_handle().await else {
         return Ok(());
     };
     let base_dir = shared_base_dir()?;
-    let mut state = load_state(&base_dir)?;
+    let mut state = load_state(&base_dir, profile_id)?;
     if !state.enabled {
         return Ok(());
     }
@@ -503,13 +604,16 @@ async fn publish_announcement(agent_id: u64) -> Result<()> {
     };
     handle.publish_service_announcement(announcement).await?;
     state.last_announced_at = now_epoch_secs();
-    save_state(&base_dir, &state)?;
+    save_state(&base_dir, profile_id, &state)?;
     Ok(())
 }
 
 async fn market_median_price(exchange: &ExchangeConfig, region: &str) -> Result<String> {
     let client = RouteExchangeClient::new(exchange.clone());
-    let offers = client.query_offers(region, DEFAULT_PROTOCOL).await.unwrap_or_default();
+    let offers = client
+        .query_offers(region, DEFAULT_PROTOCOL)
+        .await
+        .unwrap_or_default();
     let mut prices: Vec<u64> = offers
         .iter()
         .filter_map(|offer| offer.price_per_gb_raw.parse::<u64>().ok())
@@ -525,6 +629,7 @@ async fn market_median_price(exchange: &ExchangeConfig, region: &str) -> Result<
 
 async fn maybe_graduate_to_route_book(
     exchange: &ExchangeConfig,
+    profile_id: &str,
     state: &ProviderState,
     mnemonic: &mut String,
 ) -> Result<()> {
@@ -535,7 +640,8 @@ async fn maybe_graduate_to_route_book(
         return Ok(());
     };
     let snapshot = metrics.get(agent_id)?;
-    if snapshot.settled_earnings_micro_usdc < DEFAULT_STAKE_AMOUNT_RAW.parse::<i64>().unwrap_or(1_000_000)
+    if snapshot.settled_earnings_micro_usdc
+        < DEFAULT_STAKE_AMOUNT_RAW.parse::<i64>().unwrap_or(1_000_000)
         || state.onchain_active
     {
         return Ok(());
@@ -557,11 +663,23 @@ async fn maybe_graduate_to_route_book(
         )
         .await?;
     let base_dir = shared_base_dir()?;
-    update_state(&base_dir, |current| {
+    update_state(&base_dir, profile_id, |current| {
         current.route_book_offer_id = result.offer_id;
         current.onchain_active = result.offer_id.is_some();
     })?;
     Ok(())
+}
+
+pub(crate) async fn sync_provider_reputation(
+    profile_id: Option<String>,
+    mnemonic: String,
+) -> Result<String> {
+    let profile_id = normalized_profile_id(profile_id.as_deref());
+    let exchange = load_exchange_config()?;
+    let mut mnemonic = mnemonic;
+    sync_pending_reputation_internal(&exchange, &mut mnemonic).await?;
+    mnemonic.zeroize();
+    get_share_earn_status(Some(profile_id)).await
 }
 
 async fn sync_pending_reputation_internal(
@@ -622,7 +740,18 @@ fn empty_metrics() -> ProviderMetrics {
     }
 }
 
-fn toggle_message(state: &ProviderState, metrics: &ProviderMetrics) -> String {
+fn toggle_message(
+    state: &ProviderState,
+    metrics: &ProviderMetrics,
+    sharing_active_under_other_profile: bool,
+    runtime_profile_id: Option<&str>,
+) -> String {
+    if sharing_active_under_other_profile {
+        return format!(
+            "Share & Earn is active under profile '{}'. Switch back there to manage the live session.",
+            runtime_profile_id.unwrap_or(DEFAULT_PROFILE_ID)
+        );
+    }
     if !state.enabled {
         return "Share & Earn is ready when you want to help other users.".to_string();
     }
@@ -656,30 +785,66 @@ fn shared_base_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("Shared base dir not initialized"))
 }
 
-fn state_path(base_dir: &Path) -> PathBuf {
-    base_dir.join(PROVIDER_STATE_FILE)
+fn state_path(base_dir: &Path, profile_id: &str) -> PathBuf {
+    base_dir.join(format!("{PROVIDER_STATE_PREFIX}_{profile_id}.json"))
 }
 
-fn load_state(base_dir: &Path) -> Result<ProviderState> {
-    let path = state_path(base_dir);
+fn load_state(base_dir: &Path, profile_id: &str) -> Result<ProviderState> {
+    let path = state_path(base_dir, profile_id);
     if !path.exists() {
         let state = ProviderState::default();
-        save_state(base_dir, &state)?;
+        save_state(base_dir, profile_id, &state)?;
         return Ok(state);
     }
     let bytes = fs::read(path)?;
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn save_state(base_dir: &Path, state: &ProviderState) -> Result<()> {
-    fs::write(state_path(base_dir), serde_json::to_vec_pretty(state)?)?;
+fn save_state(base_dir: &Path, profile_id: &str, state: &ProviderState) -> Result<()> {
+    fs::write(
+        state_path(base_dir, profile_id),
+        serde_json::to_vec_pretty(state)?,
+    )?;
     Ok(())
 }
 
-fn update_state(base_dir: &Path, update: impl FnOnce(&mut ProviderState)) -> Result<()> {
-    let mut state = load_state(base_dir)?;
+fn update_state(
+    base_dir: &Path,
+    profile_id: &str,
+    update: impl FnOnce(&mut ProviderState),
+) -> Result<()> {
+    let mut state = load_state(base_dir, profile_id)?;
     update(&mut state);
-    save_state(base_dir, &state)
+    save_state(base_dir, profile_id, &state)
+}
+
+fn normalized_profile_id(profile_id: Option<&str>) -> String {
+    let normalized = profile_id
+        .unwrap_or(DEFAULT_PROFILE_ID)
+        .trim()
+        .to_ascii_lowercase();
+    if normalized.is_empty() {
+        DEFAULT_PROFILE_ID.to_string()
+    } else {
+        normalized
+            .chars()
+            .map(|item| {
+                if item.is_ascii_alphanumeric() || item == '-' || item == '_' {
+                    item
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+}
+
+async fn current_runtime_profile_id() -> Option<String> {
+    let guard = SHARE_RUNTIME.lock().await;
+    guard
+        .as_ref()
+        .filter(|runtime| !runtime.task.is_finished())
+        .map(|runtime| runtime.profile_id.clone())
 }
 
 fn parse_connect_target(text: &str) -> Option<String> {
@@ -711,7 +876,10 @@ fn format_micro_usdc(value: i64) -> String {
 }
 
 fn format_micro_usdc_string(value: &str) -> String {
-    value.parse::<i64>().map(format_micro_usdc).unwrap_or_else(|_| "0.000000".to_string())
+    value
+        .parse::<i64>()
+        .map(format_micro_usdc)
+        .unwrap_or_else(|_| "0.000000".to_string())
 }
 
 fn now_epoch_secs() -> u64 {

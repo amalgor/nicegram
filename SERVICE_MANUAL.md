@@ -38,7 +38,7 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Сеть**: `libp2p` (TCP, Noise, Yamux, Kademlia DHT, Gossipsub, mDNS).
 - **Gossipsub**: Топики `hydra/relay-endpoints/1.0` (relay endpoint sharing) и `hydra/services/1.0` (minimal unstaked service announcements для provider growth).
 - **Асинхронность**: `tokio` (полный асинхронный рантайм).
-- **WSS Relay**: `tokio-tungstenite` (клиент), Cloudflare Workers + Durable Object `HydraProviderSession` (сервер/provider pairing).
+- **WSS Relay**: `tokio-tungstenite` (клиент), `rustls` 0.23 с ECH support, Cloudflare DoH (`hickory-resolver`) для HTTPS/A/AAAA lookup и Cloudflare Workers + Durable Object `HydraProviderSession` (сервер/provider pairing). При недоступности ECH-конфига или при неуспешном ECH TLS handshake relay-клиент откатывается на обычный TLS.
 - **Локальный AI**: `llama-cpp-2` v0.1.140 (Rust binding к llama.cpp) — инференс GGUF моделей.
 - **Модели на выбор**: Qwen 2.5 (0.5B, 1.5B), Qwen 3.5 (0.8B) — GGUF Q4_K_M квантизация.
 - **База данных**: `sled` (встраиваемая key-value СУБД для хранения репутации пиров).
@@ -49,6 +49,24 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Мобильный мост**: `flutter_rust_bridge` 2.11.1.
 - **VPN перехват**: `tun2proxy` (SOCKS5 bridge через TUN-интерфейс Android).
 - **Flutter UI**: Material 3, `shared_preferences` для runtime/filter state, `flutter_secure_storage` для хранения mnemonic в Android Keystore / iOS Keychain.
+
+---
+
+## HRX Protocol — Open Route Exchange Protocol
+
+Архитектурный pivot: Hydra App отделена от VPN-клиента. Hydra App = marketplace + AI agent + wallet, а VPN-функциональность делегируется существующим клиентам (v2rayNG, Shadowrocket, Clash, sing-box) через стандартные subscription URL.
+
+Полная спецификация: [`HRX_PROTOCOL.md`](HRX_PROTOCOL.md)
+
+Суб-протоколы:
+- **HRX Subscribe** (`GET /sub/{token}`) — персонализированные маршруты в форматах v2ray, Clash, sing-box, JSON. Credit tier фильтрация.
+- **HRX Provider** (`POST /provider/register`, `/heartbeat`) — REST API для провайдеров. Stake modes: deferred/immediate/relay_backed.
+- **HRX Pay** — free trial → in-app top-up (P2P/fiat/USDC) → WalletConnect → x402 micropayments.
+- **HRX Discovery** (`GET /api/v1/offers`) — публичный каталог без раскрытия endpoint URIs.
+
+App Store implications: без VpnService и без встроенного кошелька (WalletConnect для внешних) Organization account не требуется.
+
+Текущий статус: спецификация v0.1, Phase A (MVP Subscribe endpoint) запланирован в `hydra-relay-worker`.
 
 ---
 
@@ -122,20 +140,27 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **URL (fallback):** `https://hydra-relay.hydra-net.workers.dev`
 - **Домен:** `hydra-net.work` (Cloudflare Registrar, zone active, SSL auto-provisioned)
 - **KV namespace:** `HYDRA_QUOTAS` (id: `82ed22205d834b94b87f42502823a59e`)
-- **Durable Object namespace:** `HydraProviderSession` via `HYDRA_PROVIDER_SESSIONS` (current live worker version `93b673f4-6ccc-4e94-9256-72c9bdafc5f4`, deployed `2026-04-03T09:07:31Z`).
+- **Durable Object namespace:** `HydraProviderSession` via `HYDRA_PROVIDER_SESSIONS` (current live worker version `4cc786c7-3d70-456f-9a47-b3410add395c`, latest diagnostic deploy `2026-04-04`).
 - **WSS-to-TCP relay**: Принимает WebSocket-соединения с заголовком `X-Hydra-Target: host:port`, открывает TCP-соединение к цели через `connect()` API.
+- **Relay privacy**: mobile/core relay clients теперь сначала резолвят `relay.hydra-net.work` через Cloudflare DoH, вытаскивают HTTPS/SVCB `ech=` config и пытаются поднять `rustls` ECH для client->relay leg. Если DoH/ECH lookup не удался, config несовместим или сам ECH handshake timeout-ится/падает, клиент логирует причину, ретраит тот же relay через standard TLS и временно отключает ECH на 10 минут, чтобы не штрафовать каждый новый сокет повторным 5-секундным timeout.
 - **Quota tracking**: KV namespace `HYDRA_QUOTAS` для учёта трафика по device_id с дневным лимитом (50 MB free tier).
 - **Безопасность**: Whitelist Telegram DC IP-диапазонов (149.154.*, 91.108.*).
 - **Endpoints**: `/health` (healthcheck), `/quota?device_id=...` (проверка квоты), WebSocket upgrade (relay).
 - **Migration note**: в `wrangler.toml` используется `new_classes = ["HydraProviderSession"]`, а не `new_sqlite_classes`, потому что DO хранит только hibernated WebSocket session state и не использует persistent storage/SQLite API. Это осознанный KV-backed выбор; если позже понадобится durable storage или free-plan portability под новые DO defaults, схему миграции нужно пересмотреть.
 - **Live verification (2026-04-03)**: `/health` возвращает `ok`; legacy direct relay проверен через `X-Hydra-Target` на `httpbin.org:80` с реальным HTTP payload и quota decrement (`codex-httpbin-org`); consumer без провайдера получает HTTP `503 Provider is offline`; provider registration через `X-Hydra-Mode: provider` успешно открывает WebSocket и получает `{"type":"registered"}`.
+- **Dealer profile API (2026-04-04)**: Worker теперь также обслуживает `GET /api/dealer-profiles/:address` и `PUT /api/dealer-profiles/:address`. Профили дилеров хранятся в KV `HYDRA_DEALER_PROFILES`, публично читаются по адресу кошелька и подписываются EIP-191 personal-sign сообщением с `address + timestamp + body keccak256`. Это нужно для mobile Payments hub и ручного QA без отдельного backend.
 - **Ops report**: точные deploy/verification outputs сохранены в `reports/2026-04-03-ops-validation.md`.
 
 ### 7. Мобильный слой (hydra_mobile)
-- **Flutter UI**: 7 вкладок — Connect, Network, Balance, AI, Content, Logs, Settings. Advanced Marketplace больше не является default entry-point и открывается из Balance.
+- **Flutter UI**: 7 вкладок — Connect, Network, Balance, AI, Content, Logs, Settings. Для provider/payment batch текущий embedded-wallet mobile app остаётся канонической shipping surface; forward-looking protocol-only docs не отменяют этот runtime.
 - **UI Architecture**: Добавлены `credit/` слой (`CreditRepository`, backend, models), `screens/balance_screen.dart`, `widgets/credit_status_widget.dart`; `screens/marketplace_screen.dart` сохранён как advanced surface для power users/provider flows.
+- **Balance hub**: `BalanceScreen` теперь содержит внутренние вкладки `Overview`, `Payments`, `Providers`, `Advanced`. `Overview` оставляет credit-first UX, `Payments` ведёт buyer/dealer/escrow flows, `Providers` — Share & Earn и route lifecycle, `Advanced` — raw Marketplace и recovery/debug actions.
+- **Wallet profiles**: embedded wallet больше не singleton. Добавлены локальные `WalletProfile`-профили с profile switcher в header Balance, profile-scoped mnemonic keys в `flutter_secure_storage`, migration legacy single-wallet state в `default` profile и profile-scoped provider/agent/filter state.
+- **Wallet utilities**: reusable `AddressTile`, `TxHashTile`, `EndpointTile` и `ReceiveSheet` дают copy/share/QR/BaseScan primitives для ручного тестирования платежей и provider endpoints.
 - **Rust bridge**: `flutter_rust_bridge` используется для network/runtime API, credit API (`get_credit_status()`, `get_nudge()`, `dismiss_nudge()`, `accept_trial_route()`, `get_telegram_anchor_info()`), provider API (`get_share_earn_status()`, `set_share_earn_enabled()`, `get_provider_earnings()`, `update_share_settings()`) и advanced Marketplace API (`get_marketplace_config_status()`, `create_wallet()`, `import_wallet()`, `get_wallet_balances()`, `list_route_offers()`, `register_agent()`, `create_offer()`, `deactivate_offer()`, `withdraw_stake()`, `submit_feedback()`).
+- **Payment hub**: `PaymentsHub` покрывает `Buy`, `Sell`, `Escrows`. Там живут deal browse/accept, escrow detail timeline, seller readiness, allowance approve, dealer-profile editor (off-chain KV), offer creation/deactivation и incoming/outgoing escrows.
 - **Share & Earn in Balance**: Level 2 provider surface встроен в `BalanceScreen`. Там живут единый toggle, sharing status, starter/staked state, local score и earnings summary; full Marketplace остаётся advanced surface.
+- **Providers hub**: `ProvidersHub` разделён на `Share & Earn`, `Route Offers`, `Metrics`. Он показывает relay-backed endpoint с copy/share/QR, provider settings, batched reputation sync, route publish/deactivate/withdraw и локальные метрики (latency/throughput/uptime/failures).
 - **VPN**: Android VpnService → TUN FD → `tun2proxy` → локальный SOCKS5 → hydra-core. **Исправлен баг**: `vpn.rs` теперь читает `socks5_port` из загруженной конфигурации через `SOCKS5_PORT` AtomicU16, а не из `NetworkConfig::default()`.
 - **Connection Tracking** (`hydra-core/src/connections.rs`): `ConnectionRegistry` — thread-safe реестр всех соединений с tracking bytes, route type, Telegram detection, AI reasoning, force-proxy override.
 - **Route Discovery**: `hydra-core/src/discovery.rs` опрашивает `HydraRouteBook`, кеширует offers через `moka` и конвертирует transport-ready `endpoint_ciphertext` (`wss://` / `vless://`) в runtime transports.
@@ -146,6 +171,7 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Quota Manager** (`quota.rs`): Локальный трекинг потреблённого трафика с периодической синхронизацией с CF Worker KV.
 - **Marketplace**: локальный wallet onboarding, balances (ETH + USDC), ERC-8004 agent registration, filters `region/protocol` с `SharedPreferences`, offers list и manual feedback. По умолчанию скрыт за advanced toggle или unlock после 3+ successful payments.
 - **Marketplace runtime states**: экран явно различает `disabled`, `incomplete config`, `no offers` и `load failed`; пустой `route_book_address` в `hydra.toml` больше не вываливает сырой backend exception в UI.
+- **Manual QA runbook**: последовательность ручного тестирования multi-profile payment/provider flows зафиксирована в `reports/2026-04-04-provider-payment-qa-runbook.md`.
 - **Settings**: Proxy mode, краткая on-chain status card и advanced tools toggle. Legacy settlement UI удалён.
 
 ---
@@ -204,6 +230,14 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Provider growth path**: Share & Earn больше не рассматривается как CLI/dashboard feature. Основной provider onboarding теперь mobile-first и живёт внутри Balance; отдельный CLI для VPS-операторов остаётся вторичным thin wrapper на тот же write path.
 - **Graceful degradation**: premium routes скрыты до accept trial, при превышении лимита runtime возвращается на free routes вместо hard disconnect.
 - **Verification**: локально проходят `cargo test -p hydra-econ`, `cargo test -p hydra-exchange`, `cargo test -p hydra-core`, `cargo test -p rust_lib_hydra_mobile --lib`, `npm exec tsc --noEmit` в `hydra-relay-worker`, `flutter analyze`, `flutter test`. Device validation premium/provider routing и будущий top-up flow остаются следующим шагом.
+
+### HRX UI Completion: Payments + Providers Manual Testing (апрель 2026) — ВЫПОЛНЕНО
+- **Balance hub reshape**: `Balance` стал хабом `Overview / Payments / Providers / Advanced`, без раздувания global bottom nav.
+- **Multi-wallet profiles**: embedded wallets теперь profile-scoped и переключаются внутри приложения; legacy single-wallet state автоматически мигрирует в default profile.
+- **Payments flows**: buy/sell/escrow lifecycle закрыты в приложении, включая allowance preflight, off-chain dealer profile, create/deactivate deal offer, escrow detail actions и receive/copy/share/QR utilities.
+- **Providers flows**: Share & Earn, route publish/deactivate/withdraw, metrics, endpoint QR/copy/share и profile-scoped provider runtime теперь доступны из UI без raw CLI tooling.
+- **Cloudflare update**: deployed worker version `21494878-ad8b-4732-a865-623724c246ee` обслуживает `HYDRA_DEALER_PROFILES` KV API для dealer profile reads/writes alongside relay/runtime endpoints.
+- **Verification**: `cargo test -p hydra-exchange`, `cargo check -p rust_lib_hydra_mobile`, `npm exec tsc --noEmit` in `hydra-relay-worker`, `flutter analyze`, `flutter test` all green after FRB regen.
 
 ### Sprint: Mobile MVP Readiness (март 2026) — ВЫПОЛНЕНО
 - **Unit tests (64 теста)**: SOCKS5 parsing, relay logic, quota, AI routing, config loading, connection registry, integration tests (SOCKS5 end-to-end, domain connect, auth rejection, registry tracking, AI routing).
@@ -305,8 +339,11 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **Live deployment**: `0x0c811902c990c4D330c1269cc955140d975f7035` on Base Sepolia, deploy tx `0xa2a3bce4789177f5337b1421dfa854e1ebe1a1c745cb4a71f89d9e39e2bf37e7`, block `39717554`. `deal_board_address` recorded in `hydra.toml` and `deployments.json`.
 - **Operational follow-up (2026-04-03)**: FRB codegen выполнен, `flutter analyze`/`flutter test` зелёные, release APK собран в `hydra_mobile/build/app/outputs/flutter-apk/app-release.apk`, DealBoard `totalOffers()` теперь `1` после live seeding offer `#1`.
 - **Physical Android validation (2026-04-03)**: release APK проверен на устройстве `M2101K7BNY` (Android 13). Подтверждены `VpnService`/`tun0`, Balance UX, Share & Earn toggle, live `P2P Deals` offer `#1` и live RouteBook offer `#1` через advanced Marketplace. Runtime blockers тоже закрыты: `hydra.toml` теперь materialize-ится из bundled asset на first launch, `Full VPN` больше не упирается в missing transports, а `ParcelFileDescriptor` double-close исправлен через `detachFd()` в Android `HydraVpnService`. После фикса non-Telegram traffic в `full` режиме реально пошёл через `wss://relay.hydra-net.work`, а 3 stop/start VPN cycles подряд прошли без `fdsan` и без смены PID. Подробности: `reports/2026-04-03-ops-validation.md`.
+- **Android relay deep dive (2026-04-04)**: live byte accounting в connections UI исправлен. `ConnectionRegistry` теперь получает chunk-level byte updates во время copy loop, поэтому relay/direct counters перестали зависать на `0/0`. Telegram target matching расширен до официальных IPv4/IPv6 CIDR Telegram, а Worker научился корректно разбирать IPv6 targets. Дополнительно в `hydra-relay-worker` включена transport telemetry (`tcp opened`, first client frame, first tcp frame, close/finalize`) и `allowHalfOpen: true`; финальный diagnostic redeploy с worker version `4cc786c7-3d70-456f-9a47-b3410add395c` подтвердил, что production tail снова видит live relay traces. Результат важный: общий WSS relay путь и non-Telegram TCP traffic работают, live counters на Android видны сразу, но Telegram app на этом carrier path всё ещё остаётся в `Connecting...`. Trace-ы показывают, что часть Telegram DC соединений закрывается без ответа, а часть успевает обменяться байтами, но не доходят до устойчивой сессии. Это уже не Android config bug, а ограничение текущего Cloudflare Worker relay для Telegram MTProto under DPI. Детали и сырые trace-ы: `reports/2026-04-03-ops-validation.md`.
+- **ECH relay client (2026-04-04)**: `hydra-core/src/transport/wss.rs` и mobile `provider_runtime` больше не делают обычный `connect_async()` к `relay.hydra-net.work`. Теперь client side строит custom `rustls` config с `aws_lc_rs`, делает HTTPS/SVCB lookup через Cloudflare DoH, включает ECH при наличии совместимого `ech=` config и отдельно резолвит relay A/AAAA через тот же DoH path. Это закрывает вопрос plaintext SNI на leg `Hydra -> relay.hydra-net.work`; при невозможности получить ECH клиент остаётся работоспособным через standard TLS fallback.
+- **Carrier-specific ECH behavior (2026-04-04)**: на физическом Android устройстве `M2101K7BNY` под реальным mobile carrier path живых `ECH accepted` не наблюдалось. Логи показывают повторяемый `TLS handshake timeout` именно на ECH-enabled handshake к `relay.hydra-net.work`, после чего standard TLS успешно поднимает тот же WSS relay для `mtalk.google.com:5228`, `149.154.167.51:443`, `149.154.167.51:5222` и других targets. Чтобы не тратить по ~5 секунд на каждый новый relay socket, клиент теперь после первого такого timeout включает 10-минутный cooldown и пишет `ECH temporarily disabled ... using standard TLS`.
 - **TLS fix (Android)**: `rustls-platform-verifier` паникует на Android без JNI-инициализации. Исправлено: `hydra-exchange/src/config.rs` — синглтон `http_client()` строит `reqwest::Client` с явным `ring` CryptoProvider + `webpki-roots` корневыми сертификатами. Все `ProviderBuilder::new().connect_http(url)` заменены на `connect_reqwest(http_client(), url)` в `client.rs` и `deal_client.rs` (18 call sites). Зависимости `rustls`, `webpki-roots`, `reqwest` добавлены в `hydra-exchange/Cargo.toml`. 13 тестов проходят.
-- **Pending**: iOS device validation, real mobile provider session against deployed Worker, и end-to-end user validation именно Telegram censorship path / premium trial UX, уже поверх исправленного Android runtime.
+- **Pending**: iOS device validation, real mobile provider session (телефон в режиме Share & Earn provider) against deployed Worker, и перенос Telegram censorship bypass на более подходящий transport path (`vless/reality`, provider routes, later DPI hardening), потому что plain Cloudflare Worker TCP relay под реальным carrier DPI пока недостаточен для устойчивой Telegram session.
 
 ### Этап 2: Attention + персонализация
 - **AttentionTracker** — полнота клиентского трекинга и политика событий.

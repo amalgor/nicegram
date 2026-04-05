@@ -15,6 +15,11 @@ binding = "HYDRA_QUOTAS"
 id = "82ed22205d834b94b87f42502823a59e"
 preview_id = "cd0d9e4e110241c3bcabcc831551c84f"
 
+[[kv_namespaces]]
+binding = "HYDRA_DEALER_PROFILES"
+id = "9088189b6d6248e1a5f5b414688fd718"
+preview_id = "36114bdf6b8a4596ada6242747b9e3b7"
+
 [vars]
 # Default daily quota in bytes (50 MB)
 DEFAULT_DAILY_QUOTA = "52428800"

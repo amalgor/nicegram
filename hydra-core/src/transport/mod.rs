@@ -87,7 +87,9 @@ pub struct ConfiguredTransport {
 impl ConfiguredTransport {
     pub fn mode_matches_target(&self, is_telegram: bool, proxy_mode: &str) -> bool {
         match proxy_mode {
-            "telegram" => is_telegram && matches!(self.mode, TransportMode::Telegram | TransportMode::All),
+            "telegram" => {
+                is_telegram && matches!(self.mode, TransportMode::Telegram | TransportMode::All)
+            }
             "full" => {
                 if is_telegram {
                     matches!(self.mode, TransportMode::Telegram | TransportMode::All)

@@ -289,3 +289,153 @@ I HydraVpnService: VPN established with detached FD: 177
 - `No crash within 5 minutes of usage` -> passed
 - `Telegram works through relay` -> no longer blocked by missing transport config
 - `Non-Telegram traffic in full mode` -> passed through WSS relay
+
+## Android relay deep dive — 2026-04-04
+
+### Scope
+- Fix live byte accounting in the connections list
+- Re-test Telegram-over-Worker on a physical Android device under real carrier blocking / DPI
+- Add enough client/server telemetry to decide whether the remaining Telegram failure is a code bug or a transport limitation
+
+### Live byte accounting
+- `hydra-core/src/lib.rs`
+  - `copy_with_rate_limit(...)` now reports progress per copied chunk instead of updating `ConnectionRegistry` only after the connection closes.
+  - Both proxied and direct paths now call `registry.update_bytes(...)` live during the copy loop.
+- Release-device proof:
+  - Network screen no longer stays at `0 / 0`
+  - Example live state observed on device:
+    - `166.121 / RELAY / TG / 50 conn / 144.0 KB`
+    - `195.2 / RELAY / 37 conn / 45.7 KB`
+    - top counters showed non-zero `Up` and `Down`
+
+### Telegram target classification hardening
+- `hydra-core/src/socks.rs`
+  - Telegram detection now uses the official Telegram CIDR snapshot from `core.telegram.org/resources/cidr.txt`, including IPv6 ranges.
+  - IPv6 target parsing was normalized for `[addr]:port` form.
+- `hydra-relay-worker/src/index.ts`
+  - Target parsing now correctly handles bracketed IPv6 targets instead of naive `split(":")`.
+
+### Direct relay telemetry added
+- `hydra-relay-worker/src/index.ts`
+  - Added per-connection trace ids and logs for:
+    - relay start
+    - TCP `opened`
+    - first client frame
+    - first TCP response frame
+    - readable close
+    - socket close/error
+    - final byte/frame totals
+  - Socket mode changed to `allowHalfOpen: true`.
+  - Eager WebSocket close on `tcp.readable.close()` was removed; close now follows `socket.closed`.
+- `hydra-core/src/transport/wss.rs`
+  - Added warnings for worker close frames, websocket receive errors, bridge read errors, and clearer end-of-task logging.
+
+### Device result after deep dive
+- Telegram app still shows `Connecting...` after repeated cold starts in both `telegram` and `full` modes.
+- This is no longer explained by:
+  - missing `hydra.toml`
+  - wrong `proxy_mode`
+  - zero live counters
+  - Android `ParcelFileDescriptor` crash
+  - incomplete Telegram CIDR matching
+  - IPv6 target parse bugs
+
+### Key traces
+- Client-side:
+  - Hydra repeatedly routes Telegram DC traffic through Worker, for example:
+    - `149.154.166.121:443`
+    - `149.154.166.121:5222`
+    - `149.154.165.111:5222`
+    - `149.154.167.151:443`
+    - `149.154.175.52:443`
+  - `WSS relay connected ... via wss://relay.hydra-net.work` is repeatedly observed.
+- Worker-side:
+  - One failed trace showed the remote side closing immediately after the first client bytes and before any response:
+
+```text
+[relay:cfd49a23] connect start target=149.154.165.111:443 device=anonymous
+[relay:cfd49a23] tcp opened target=149.154.165.111:443 remote=149.154.165.111:443 local=unknown
+[relay:cfd49a23] first client frame target=149.154.165.111:443 bytes=146
+[relay:cfd49a23] tcp readable closed target=149.154.165.111:443 frames=0
+[relay:cfd49a23] finalize target=149.154.165.111:443 bytes=146 c2t_frames=1 t2c_frames=0
+[relay:cfd49a23] websocket closed target=149.154.165.111:443 bytes=146 duration_ms=187
+```
+
+  - Another trace showed partial bidirectional exchange, but Telegram still abandoned the session:
+
+```text
+[relay:de21c2b8] connect start target=149.154.166.121:443 device=anonymous
+[relay:de21c2b8] tcp opened target=149.154.166.121:443 remote=149.154.166.121:443 local=unknown
+[relay:de21c2b8] first client frame target=149.154.166.121:443 bytes=418
+[relay:de21c2b8] first tcp frame target=149.154.166.121:443 bytes=178
+[relay:de21c2b8] websocket closed target=149.154.166.121:443 bytes=596 duration_ms=9464
+[relay:de21c2b8] tcp readable closed target=149.154.166.121:443 frames=1
+[relay:de21c2b8] finalize target=149.154.166.121:443 bytes=596 c2t_frames=1 t2c_frames=1
+```
+
+### Conclusion
+- **Live byte accounting is fixed.**
+- **Telegram-over-Worker is still not operational in this real blocked-network scenario.**
+- The remaining blocker is now classified as a **transport / interoperability problem on the Telegram path itself**, not an Android runtime misconfiguration:
+  - some Telegram DC connections are accepted and then closed without a response
+  - others exchange some bytes but still do not complete into a usable Telegram session
+- With the current architecture, Cloudflare Worker WSS relay is good enough for general TCP relay testing and non-Telegram traffic, but it is **not yet sufficient as a reliable Telegram MTProto censorship bypass** on this carrier path.
+
+### Diagnostic redeploy follow-up
+- Worker redeployed again after the long-lived socket diagnostics cleanup.
+- Current production worker version: `4cc786c7-3d70-456f-9a47-b3410add395c`
+- `/health` remained green after the redeploy and `wrangler tail` resumed showing production relay traces.
+- Fresh device proof after this redeploy:
+  - Hydra returned to `Connected`
+  - Connect screen showed non-zero live counters (`17.0 KB` relayed, `6.8 KB` total at the sampled moment)
+  - Telegram UI still rendered `Connecting...`
+- Fresh Android-side trace after reconnect:
+  - `WSS relay connected to 149.154.166.121:5222`
+  - `WSS relay connected to 149.154.167.151:5222`
+  - `WSS relay connected to 149.154.166.121:443`
+  - `WSS relay connected to 149.154.167.151:443`
+  - `WSS relay connected to 5.28.195.2:443`
+- Fresh worker-side trace after redeploy again showed live direct-relay telemetry, including explicit upstream refusal on `mozilla.cloudflare-dns.com:443` and normal lifecycle logs for other targets. This confirms the diagnostic logging path is live in production; it did not change the Telegram outcome.
+
+### Next logical step
+- Move Telegram censorship bypass off the plain Cloudflare Worker TCP relay path and onto a transport that is designed for this threat model:
+  - premium/provider routes (`vless://` / Reality)
+  - relay-backed provider sessions once real mobile providers are validated
+  - later DPI hardening / camouflage work
+
+## Android relay ECH follow-up — 2026-04-04 (late)
+
+### Context
+- Relay client was upgraded to use `rustls` ECH with Cloudflare DoH against `relay.hydra-net.work`.
+- Physical Android device `M2101K7BNY` remained connected on the same carrier path for live validation.
+
+### What the logs showed
+- TCP connect to Cloudflare edge succeeds immediately through DoH-resolved IPs such as `104.21.95.158:443`.
+- No live `ECH accepted` was observed on this carrier path.
+- ECH-enabled TLS handshake repeatedly timed out after 5s for relay targets such as:
+  - `mtalk.google.com:5228`
+  - `149.154.167.51:443`
+  - `149.154.167.51:5222`
+- Standard TLS fallback to the same `relay.hydra-net.work` endpoint then succeeded and completed WSS upgrade for those same targets.
+
+### Representative log lines
+```text
+[WARN] Relay: [mtalk.google.com:5228] ECH-enabled TLS handshake failed for relay.hydra-net.work:443: TLS handshake timeout. Retrying with standard TLS.
+[DEBUG] Relay: [mtalk.google.com:5228] TLS handshake completed for relay.hydra-net.work with standard TLS
+[INFO] WSS relay connected to mtalk.google.com:5228 via wss://relay.hydra-net.work using standard TLS
+```
+
+### Follow-up fix
+- Added an ECH cooldown/circuit breaker in `hydra-core/src/transport/wss.rs`.
+- After the first ECH handshake failure, the client disables ECH for 10 minutes and logs:
+```text
+Relay: ECH temporarily disabled for relay.hydra-net.work:443 after recent handshake failures; using standard TLS.
+```
+- Fresh Android logs confirmed that after the first failures, subsequent relay sockets no longer paid the repeated 5-second ECH timeout penalty and connected directly with standard TLS.
+
+### Outcome
+- `Hydra -> relay.hydra-net.work` now behaves correctly on this carrier path:
+  - tries ECH once
+  - falls back safely to standard TLS
+  - avoids repeated per-socket latency with a temporary cooldown
+- This improves relay usability, but it does **not** by itself fix Telegram session establishment under DPI. The remaining censorship-bypass gap is now downstream of the client->relay TLS leg.

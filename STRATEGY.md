@@ -2,6 +2,8 @@
 
 **Last updated:** 2026-04-02
 
+> Этот файл описывает продуктовую стратегию и forward-looking direction. Текущая shipping implementation в репозитории всё ещё embedded-wallet mobile app; актуальный runtime/UI status фиксируется в `SERVICE_MANUAL.md`.
+
 ---
 
 ## 1. Product Positioning

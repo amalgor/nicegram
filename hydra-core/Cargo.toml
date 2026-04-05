@@ -16,8 +16,9 @@ futures = "0.3"
 futures-util = "0.3"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 tokio-rustls = "0.26"
-rustls = { version = "0.23", features = ["ring"] }
+rustls = { version = "0.23", features = ["ring", "aws_lc_rs"] }
 webpki-roots = "0.26"
+hickory-resolver = { version = "0.25.2", default-features = false, features = ["tokio", "https-aws-lc-rs", "webpki-roots"] }
 protobuf = "3.6"
 vpn-link-serde = "0.1.5"
 hydra-config = { path = "../hydra-config" }
@@ -29,6 +30,8 @@ libp2p-dns = "0.44.0"
 leaf = { git = "https://github.com/eycorsican/leaf", tag = "v0.14.2", default-features = false, features = ["config-json", "outbound-chain", "outbound-reality", "outbound-vless", "outbound-ws"] }
 moka = { version = "0.12.14", features = ["future"] }
 url = "2.5"
+ipnet = "2.10"
 
 [dev-dependencies]
 tempfile = "3"
+base64 = "0.22"

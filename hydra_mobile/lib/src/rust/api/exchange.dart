@@ -6,9 +6,9 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `disabled`, `incomplete`, `load_exchange_config`, `ready`, `to_json`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `MarketplaceConfigStatus`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `fmt`
+// These functions are ignored because they are not marked as `pub`: `dealer_profile_message`, `dealer_profile_path`, `disabled`, `incomplete`, `load_exchange_config`, `parse_address`, `ready`, `to_json`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `DealerProfileAuthPayload`, `MarketplaceConfigStatus`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `fmt`, `fmt`
 
 String getMarketplaceConfigStatus() =>
     RustLib.instance.api.crateApiExchangeGetMarketplaceConfigStatus();
@@ -31,6 +31,12 @@ Future<String> listRouteOffers({
   region: region,
   protocol: protocol,
 );
+
+Future<String> listMyRouteOffers({required String address}) =>
+    RustLib.instance.api.crateApiExchangeListMyRouteOffers(address: address);
+
+Future<String> getRouteBookLifecycle() =>
+    RustLib.instance.api.crateApiExchangeGetRouteBookLifecycle();
 
 Future<String> registerAgent({required String mnemonic}) =>
     RustLib.instance.api.crateApiExchangeRegisterAgent(mnemonic: mnemonic);
@@ -124,4 +130,72 @@ Future<String> approveDealBoardUsdc({
 }) => RustLib.instance.api.crateApiExchangeApproveDealBoardUsdc(
   mnemonic: mnemonic,
   amount: amount,
+);
+
+Future<String> createDealOffer({
+  required String mnemonic,
+  required BigInt agentId,
+  required String currency,
+  required String rateRaw,
+  required String minAmountRaw,
+  required String maxAmountRaw,
+  required List<String> paymentMethods,
+}) => RustLib.instance.api.crateApiExchangeCreateDealOffer(
+  mnemonic: mnemonic,
+  agentId: agentId,
+  currency: currency,
+  rateRaw: rateRaw,
+  minAmountRaw: minAmountRaw,
+  maxAmountRaw: maxAmountRaw,
+  paymentMethods: paymentMethods,
+);
+
+Future<String> deactivateDealOffer({
+  required String mnemonic,
+  required BigInt offerId,
+}) => RustLib.instance.api.crateApiExchangeDeactivateDealOffer(
+  mnemonic: mnemonic,
+  offerId: offerId,
+);
+
+Future<String> confirmDealReceipt({
+  required String mnemonic,
+  required BigInt escrowId,
+}) => RustLib.instance.api.crateApiExchangeConfirmDealReceipt(
+  mnemonic: mnemonic,
+  escrowId: escrowId,
+);
+
+Future<String> rejectDeal({
+  required String mnemonic,
+  required BigInt escrowId,
+}) => RustLib.instance.api.crateApiExchangeRejectDeal(
+  mnemonic: mnemonic,
+  escrowId: escrowId,
+);
+
+Future<String> listMyDealOffers({required String address}) =>
+    RustLib.instance.api.crateApiExchangeListMyDealOffers(address: address);
+
+Future<String> listMyDealEscrows({required String address, String? role}) =>
+    RustLib.instance.api.crateApiExchangeListMyDealEscrows(
+      address: address,
+      role: role,
+    );
+
+Future<String> getDealBoardAllowance({required String address}) => RustLib
+    .instance
+    .api
+    .crateApiExchangeGetDealBoardAllowance(address: address);
+
+String signDealerProfilePut({
+  required String mnemonic,
+  required String address,
+  required BigInt timestampMs,
+  required String bodyJson,
+}) => RustLib.instance.api.crateApiExchangeSignDealerProfilePut(
+  mnemonic: mnemonic,
+  address: address,
+  timestampMs: timestampMs,
+  bodyJson: bodyJson,
 );

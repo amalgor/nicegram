@@ -1,4 +1,6 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
+use ipnet::IpNet;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::OnceLock;
 
 /// SOCKS5 address type constants
 pub const ATYP_IPV4: u8 = 0x01;
@@ -20,10 +22,23 @@ pub const AUTH_NONE: u8 = 0x00;
 /// No acceptable method
 pub const AUTH_NO_ACCEPTABLE: u8 = 0xFF;
 
-/// Telegram DC IP subnets (used for auto-proxy detection)
-pub const TELEGRAM_SUBNETS: &[(u8, u8)] = &[
-    (149, 154), // 149.154.0.0/16
-    (91, 108),  // 91.108.0.0/16
+/// Telegram DC ranges from the official `core.telegram.org/resources/cidr.txt`
+/// snapshot used by this repo.
+const TELEGRAM_CIDRS: &[&str] = &[
+    "91.108.56.0/22",
+    "91.108.4.0/22",
+    "91.108.8.0/22",
+    "91.108.16.0/22",
+    "91.108.12.0/22",
+    "149.154.160.0/20",
+    "91.105.192.0/23",
+    "91.108.20.0/22",
+    "185.76.151.0/24",
+    "2001:b28:f23d::/48",
+    "2001:b28:f23f::/48",
+    "2001:67c:4e8::/48",
+    "2001:b28:f23c::/48",
+    "2a0a:f280::/32",
 ];
 
 /// Validate SOCKS5 version byte. Returns error message if invalid.
@@ -78,12 +93,34 @@ pub fn parse_ipv6_target(addr_bytes: &[u8; 16], port: u16) -> String {
 
 /// Build a SOCKS5 success reply (CONNECT granted, bound to 0.0.0.0:0).
 pub fn success_reply() -> [u8; 10] {
-    [SOCKS_VERSION, REPLY_SUCCESS, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0]
+    [
+        SOCKS_VERSION,
+        REPLY_SUCCESS,
+        0x00,
+        ATYP_IPV4,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ]
 }
 
 /// Build a SOCKS5 failure reply (general SOCKS server failure).
 pub fn failure_reply() -> [u8; 10] {
-    [SOCKS_VERSION, REPLY_GENERAL_FAILURE, 0x00, ATYP_IPV4, 0, 0, 0, 0, 0, 0]
+    [
+        SOCKS_VERSION,
+        REPLY_GENERAL_FAILURE,
+        0x00,
+        ATYP_IPV4,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ]
 }
 
 /// Hydra relay infrastructure domains — connections to these must always be direct
@@ -94,25 +131,53 @@ const RELAY_DOMAINS: &[&str] = &[
     "boot.ze1.org",
 ];
 
+fn telegram_networks() -> &'static [IpNet] {
+    static NETWORKS: OnceLock<Vec<IpNet>> = OnceLock::new();
+    NETWORKS
+        .get_or_init(|| {
+            TELEGRAM_CIDRS
+                .iter()
+                .map(|cidr| {
+                    cidr.parse::<IpNet>()
+                        .unwrap_or_else(|error| panic!("Invalid Telegram CIDR {cidr}: {error}"))
+                })
+                .collect()
+        })
+        .as_slice()
+}
+
+fn normalized_target_host(target: &str) -> &str {
+    split_target(target)
+        .map(|(host, _)| host)
+        .unwrap_or(target)
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+}
+
 /// Check if a target address points to Hydra relay infrastructure.
 /// These must never be proxied to avoid routing loops.
 pub fn is_relay_infrastructure(target: &str) -> bool {
-    let host = target.split(':').next().unwrap_or("");
-    RELAY_DOMAINS.iter().any(|d| host == *d || host.ends_with(*d))
+    let host = normalized_target_host(target);
+    RELAY_DOMAINS
+        .iter()
+        .any(|d| host == *d || host.ends_with(*d))
 }
 
 /// Check if a target address (as "ip:port" string) points to a Telegram DC.
 pub fn is_telegram_target(target: &str) -> bool {
-    let host = target.split(':').next().unwrap_or("");
+    let host = normalized_target_host(target);
     if let Ok(ip) = host.parse::<Ipv4Addr>() {
-        let octets = ip.octets();
-        TELEGRAM_SUBNETS
+        let addr = IpAddr::V4(ip);
+        telegram_networks()
             .iter()
-            .any(|(a, b)| octets[0] == *a && octets[1] == *b)
+            .any(|network| network.contains(&addr))
+    } else if let Ok(ip) = host.parse::<Ipv6Addr>() {
+        let addr = IpAddr::V6(ip);
+        telegram_networks()
+            .iter()
+            .any(|network| network.contains(&addr))
     } else {
-        host.contains("telegram.org")
-            || host.contains("t.me")
-            || host.contains("telegram-cdn.org")
+        host.contains("telegram.org") || host.contains("t.me") || host.contains("telegram-cdn.org")
     }
 }
 
@@ -184,14 +249,8 @@ mod tests {
             parse_ipv4_target(&[149, 154, 167, 50], 443),
             "149.154.167.50:443"
         );
-        assert_eq!(
-            parse_ipv4_target(&[127, 0, 0, 1], 1080),
-            "127.0.0.1:1080"
-        );
-        assert_eq!(
-            parse_ipv4_target(&[0, 0, 0, 0], 0),
-            "0.0.0.0:0"
-        );
+        assert_eq!(parse_ipv4_target(&[127, 0, 0, 1], 1080), "127.0.0.1:1080");
+        assert_eq!(parse_ipv4_target(&[0, 0, 0, 0], 0), "0.0.0.0:0");
     }
 
     #[test]
@@ -200,10 +259,7 @@ mod tests {
             parse_domain_target(b"telegram.org", 443),
             "telegram.org:443"
         );
-        assert_eq!(
-            parse_domain_target(b"example.com", 80),
-            "example.com:80"
-        );
+        assert_eq!(parse_domain_target(b"example.com", 80), "example.com:80");
     }
 
     #[test]
@@ -241,12 +297,20 @@ mod tests {
     #[test]
     fn test_is_telegram_target_ipv4() {
         assert!(is_telegram_target("149.154.167.50:443"));
-        assert!(is_telegram_target("149.154.0.1:80"));
+        assert!(is_telegram_target("149.154.160.1:80"));
         assert!(is_telegram_target("91.108.56.100:443"));
         assert!(is_telegram_target("91.108.4.1:443"));
+        assert!(is_telegram_target("185.76.151.1:443"));
         assert!(!is_telegram_target("8.8.8.8:53"));
         assert!(!is_telegram_target("1.1.1.1:443"));
         assert!(!is_telegram_target("192.168.1.1:80"));
+    }
+
+    #[test]
+    fn test_is_telegram_target_ipv6() {
+        assert!(is_telegram_target("[2001:b28:f23d:f001::a]:443"));
+        assert!(is_telegram_target("[2a0a:f280:0203::1]:443"));
+        assert!(!is_telegram_target("[2001:db8::1]:443"));
     }
 
     #[test]
@@ -291,7 +355,9 @@ mod tests {
     #[test]
     fn test_is_relay_infrastructure() {
         assert!(is_relay_infrastructure("relay.hydra-net.work:443"));
-        assert!(is_relay_infrastructure("hydra-relay.hydra-net.workers.dev:443"));
+        assert!(is_relay_infrastructure(
+            "hydra-relay.hydra-net.workers.dev:443"
+        ));
         assert!(is_relay_infrastructure("boot.ze1.org:22"));
         assert!(!is_relay_infrastructure("google.com:443"));
         assert!(!is_relay_infrastructure("149.154.167.50:443"));

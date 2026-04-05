@@ -1,7 +1,7 @@
 use super::{Transport, TransportStream};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use leaf::app::{dns_client::DnsClient, SyncDnsClient};
+use leaf::app::{SyncDnsClient, dns_client::DnsClient};
 use leaf::proxy::outbound::HandlerBuilder;
 use leaf::proxy::{self, AnyOutboundHandler};
 use leaf::session::{Network, Session, SocksAddr};

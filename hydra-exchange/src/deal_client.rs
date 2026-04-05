@@ -1,4 +1,4 @@
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
 use alloy::providers::ProviderBuilder;
 use alloy::sol_types::SolEvent;
 use anyhow::{Context, Result, bail};
@@ -6,8 +6,8 @@ use anyhow::{Context, Result, bail};
 use crate::bindings::{HydraDealBoard, UsdcToken};
 use crate::config::{ExchangeConfig, http_client};
 use crate::models::{
-    AcceptDealResult, DealEscrowStatus, DealEscrowView, DealOfferView, ReputationSummary,
-    TxHashResult,
+    AcceptDealResult, CreateDealOfferInput, DealBoardAllowanceView, DealEscrowStatus,
+    DealEscrowView, DealOfferView, OfferMutationResult, ReputationSummary, TxHashResult,
 };
 use crate::wallet::LocalWallet;
 
@@ -104,6 +104,139 @@ impl DealBoardClient {
         })
     }
 
+    pub async fn list_my_offers(
+        &self,
+        dealer: Address,
+        currency: Option<&str>,
+    ) -> Result<Vec<DealOfferView>> {
+        let currency_filter = match currency {
+            Some(value) if !value.trim().is_empty() => Some(normalize_currency(value)?),
+            _ => None,
+        };
+        let mut offers = Vec::new();
+        for offer_id in 1..=self.total_offers().await? {
+            let offer = self.get_offer(offer_id).await?;
+            let offer_dealer = offer
+                .dealer
+                .parse::<Address>()
+                .with_context(|| format!("Invalid dealer address '{}'", offer.dealer))?;
+            if offer_dealer != dealer {
+                continue;
+            }
+            if let Some(currency_filter) = &currency_filter
+                && offer.currency.to_uppercase() != *currency_filter
+            {
+                continue;
+            }
+            offers.push(offer);
+        }
+        Ok(offers)
+    }
+
+    pub async fn list_my_escrows(
+        &self,
+        address: Address,
+        role: Option<&str>,
+    ) -> Result<Vec<DealEscrowView>> {
+        let normalized_role = normalize_escrow_role(role)?;
+        let mut escrows = Vec::new();
+        for escrow_id in 1..=self.total_escrows().await? {
+            let escrow = self.check_status(escrow_id).await?;
+            let buyer = escrow
+                .buyer
+                .parse::<Address>()
+                .with_context(|| format!("Invalid buyer address '{}'", escrow.buyer))?;
+            let dealer = escrow
+                .dealer
+                .parse::<Address>()
+                .with_context(|| format!("Invalid dealer address '{}'", escrow.dealer))?;
+            let matches = match normalized_role.as_deref() {
+                Some("buyer") => buyer == address,
+                Some("dealer") => dealer == address,
+                _ => buyer == address || dealer == address,
+            };
+            if matches {
+                escrows.push(escrow);
+            }
+        }
+        Ok(escrows)
+    }
+
+    pub async fn create_deal_offer(
+        &self,
+        mnemonic: &str,
+        input: CreateDealOfferInput,
+    ) -> Result<OfferMutationResult> {
+        let address = self.deal_board_address()?;
+        let signer = LocalWallet::signer_from_phrase(mnemonic)?;
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let board = HydraDealBoard::new(address, &provider);
+
+        let payment_methods = normalize_payment_methods(&input.payment_methods)?;
+        let currency = normalize_currency(&input.currency)?;
+        let rate = parse_usdc_amount(&input.rate_raw)?;
+        let min_amount = parse_usdc_amount(&input.min_amount_raw)?;
+        let max_amount = parse_usdc_amount(&input.max_amount_raw)?;
+        if min_amount > max_amount {
+            bail!("Minimum amount must be less than or equal to maximum amount.");
+        }
+
+        let pending = board
+            .createDealOffer(
+                U256::from(input.agent_id),
+                currency,
+                rate,
+                min_amount,
+                max_amount,
+                payment_methods,
+            )
+            .send()
+            .await
+            .context("Failed to send createDealOffer transaction")?;
+
+        let tx_hash = format!("{:#x}", pending.tx_hash());
+        let receipt = pending
+            .get_receipt()
+            .await
+            .context("Failed to get createDealOffer receipt")?;
+
+        Ok(OfferMutationResult {
+            offer_id: decode_deal_offer_created_id(&receipt),
+            tx_hash,
+        })
+    }
+
+    pub async fn deactivate_deal_offer(
+        &self,
+        offer_id: u64,
+        mnemonic: &str,
+    ) -> Result<OfferMutationResult> {
+        let address = self.deal_board_address()?;
+        let signer = LocalWallet::signer_from_phrase(mnemonic)?;
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let board = HydraDealBoard::new(address, &provider);
+
+        let pending = board
+            .deactivateDealOffer(U256::from(offer_id))
+            .send()
+            .await
+            .context("Failed to send deactivateDealOffer transaction")?;
+        let tx_hash = format!("{:#x}", pending.tx_hash());
+        pending
+            .get_receipt()
+            .await
+            .context("Failed to get deactivateDealOffer receipt")?;
+
+        Ok(OfferMutationResult {
+            offer_id: Some(offer_id),
+            tx_hash,
+        })
+    }
+
     /// Accept a deal offer. Locks the dealer's USDC in escrow.
     /// The buyer calls this — the dealer must have pre-approved the DealBoard contract.
     pub async fn accept_deal(
@@ -187,6 +320,50 @@ impl DealBoardClient {
         })
     }
 
+    pub async fn confirm_receipt(&self, escrow_id: u64, mnemonic: &str) -> Result<TxHashResult> {
+        let address = self.deal_board_address()?;
+        let signer = LocalWallet::signer_from_phrase(mnemonic)?;
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let board = HydraDealBoard::new(address, &provider);
+
+        let pending = board
+            .confirmReceipt(U256::from(escrow_id))
+            .send()
+            .await
+            .context("Failed to send confirmReceipt transaction")?;
+        let tx_hash = format!("{:#x}", pending.tx_hash());
+        pending
+            .get_receipt()
+            .await
+            .context("Failed to get confirmReceipt receipt")?;
+
+        Ok(TxHashResult { tx_hash })
+    }
+
+    pub async fn reject_deal(&self, escrow_id: u64, mnemonic: &str) -> Result<TxHashResult> {
+        let address = self.deal_board_address()?;
+        let signer = LocalWallet::signer_from_phrase(mnemonic)?;
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let board = HydraDealBoard::new(address, &provider);
+
+        let pending = board
+            .rejectDeal(U256::from(escrow_id))
+            .send()
+            .await
+            .context("Failed to send rejectDeal transaction")?;
+        let tx_hash = format!("{:#x}", pending.tx_hash());
+        pending
+            .get_receipt()
+            .await
+            .context("Failed to get rejectDeal receipt")?;
+
+        Ok(TxHashResult { tx_hash })
+    }
+
     /// Claim expired escrow. Anyone can call, but USDC goes to buyer.
     pub async fn claim_expired(&self, escrow_id: u64, mnemonic: &str) -> Result<TxHashResult> {
         let address = self.deal_board_address()?;
@@ -234,6 +411,24 @@ impl DealBoardClient {
         Ok(TxHashResult { tx_hash })
     }
 
+    pub async fn allowance(&self, owner: Address) -> Result<DealBoardAllowanceView> {
+        let spender = self.deal_board_address()?;
+        let provider = ProviderBuilder::new()
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let usdc = UsdcToken::new(self.config.usdc_address, &provider);
+        let allowance = usdc
+            .allowance(owner, spender)
+            .call()
+            .await
+            .context("Failed to load DealBoard USDC allowance")?;
+        Ok(DealBoardAllowanceView {
+            owner: format!("{:#x}", owner),
+            spender: format!("{:#x}", spender),
+            allowance_raw: allowance.to_string(),
+            allowance: format_usdc(allowance),
+        })
+    }
+
     // ── Private helpers ────────────────────────────────────────────────
 
     async fn fetch_reputation(&self, agent_id: u64) -> Option<ReputationSummary> {
@@ -265,6 +460,32 @@ impl DealBoardClient {
             value_decimals: summary.summaryValueDecimals,
             formatted_value: summary.summaryValue.to_string(),
         })
+    }
+
+    async fn total_offers(&self) -> Result<u64> {
+        let address = self.deal_board_address()?;
+        let provider = ProviderBuilder::new()
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let board = HydraDealBoard::new(address, &provider);
+        let total = board
+            .totalOffers()
+            .call()
+            .await
+            .context("Failed to get HydraDealBoard totalOffers")?;
+        Ok(total.to())
+    }
+
+    async fn total_escrows(&self) -> Result<u64> {
+        let address = self.deal_board_address()?;
+        let provider = ProviderBuilder::new()
+            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let board = HydraDealBoard::new(address, &provider);
+        let total = board
+            .totalEscrows()
+            .call()
+            .await
+            .context("Failed to get HydraDealBoard totalEscrows")?;
+        Ok(total.to())
     }
 
 }
@@ -317,6 +538,51 @@ fn decode_escrow_created_id(
     None
 }
 
+fn decode_deal_offer_created_id(
+    receipt: &alloy::rpc::types::TransactionReceipt,
+) -> Option<u64> {
+    for log in receipt.inner.logs() {
+        if let Ok(event) = HydraDealBoard::DealOfferCreated::decode_log(log.as_ref()) {
+            return Some(event.data.offerId.to::<u64>());
+        }
+    }
+    None
+}
+
+fn normalize_currency(currency: &str) -> Result<String> {
+    let normalized = currency.trim().to_uppercase();
+    if normalized.len() != 3 || !normalized.chars().all(|item| item.is_ascii_uppercase()) {
+        bail!("Currency must be a 3-letter ISO 4217 uppercase code.");
+    }
+    Ok(normalized)
+}
+
+fn normalize_payment_methods(methods: &[String]) -> Result<Vec<String>> {
+    let normalized: Vec<String> = methods
+        .iter()
+        .map(|item| item.trim().to_ascii_lowercase())
+        .filter(|item| !item.is_empty())
+        .collect();
+    if normalized.is_empty() {
+        bail!("At least one payment method is required.");
+    }
+    Ok(normalized)
+}
+
+fn normalize_escrow_role(role: Option<&str>) -> Result<Option<String>> {
+    let Some(role) = role else {
+        return Ok(None);
+    };
+    let normalized = role.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    match normalized.as_str() {
+        "buyer" | "dealer" => Ok(Some(normalized)),
+        _ => bail!("Unsupported escrow role '{role}'."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +603,20 @@ mod tests {
         assert_eq!(parse_usdc_amount("0.000001").unwrap(), U256::from(1_u64));
         assert!(parse_usdc_amount("").is_err());
         assert!(parse_usdc_amount("1.1234567").is_err());
+    }
+
+    #[test]
+    fn normalizers_validate_currency_methods_and_role() {
+        assert_eq!(normalize_currency("rub").unwrap(), "RUB");
+        assert!(normalize_currency("ru").is_err());
+        assert_eq!(
+            normalize_payment_methods(&[" Bank_Transfer ".to_string(), "SBP".to_string()])
+                .unwrap(),
+            vec!["bank_transfer".to_string(), "sbp".to_string()]
+        );
+        assert!(normalize_payment_methods(&[]).is_err());
+        assert_eq!(normalize_escrow_role(Some("buyer")).unwrap(), Some("buyer".to_string()));
+        assert_eq!(normalize_escrow_role(Some("")).unwrap(), None);
+        assert!(normalize_escrow_role(Some("unknown")).is_err());
     }
 }

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use hydra_ai::AiNegotiator;
 use hydra_config::HydraConfig;
-use hydra_core::{discovery::RouteDiscoveryService, transport, Socks5Server};
+use hydra_core::{Socks5Server, discovery::RouteDiscoveryService, transport};
 use hydra_econ::{EconLedger, provider::ProviderMetricsLedger};
 use hydra_exchange::ExchangeConfig;
 use hydra_p2p::P2PNode;
@@ -20,7 +20,7 @@ async fn main() -> Result<()> {
 
     // Check if we are running as a bootstrap node
     let is_bootstrap = std::env::args().any(|arg| arg == "--bootstrap");
-    
+
     // Load or create identity
     let id_path = PathBuf::from("hydra_identity.bin");
     let keypair = if id_path.exists() {
@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
         std::fs::write(&id_path, kp.to_protobuf_encoding()?)?;
         kp
     };
-    
+
     tracing::info!("Using PeerID: {}", keypair.public().to_peer_id());
 
     // Initialize Economic Ledger

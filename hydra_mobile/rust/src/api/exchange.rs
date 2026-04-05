@@ -1,9 +1,9 @@
-use alloy::primitives::Address;
+use alloy::primitives::{keccak256, Address};
 use anyhow::{Context, Result};
 use hydra_config::HydraConfig;
 use hydra_exchange::{
-    AgentRegistrar, CreateOfferInput, ExchangeConfig, LocalWallet, ReputationClient,
-    RouteExchangeClient,
+    AgentRegistrar, CreateDealOfferInput, CreateOfferInput, DealBoardClient, ExchangeConfig,
+    LocalWallet, ReputationClient, RouteExchangeClient,
 };
 use serde::Serialize;
 
@@ -83,6 +83,39 @@ fn load_exchange_config() -> Result<ExchangeConfig> {
 
 fn to_json<T: Serialize>(value: &T) -> Result<String> {
     Ok(serde_json::to_string(value)?)
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DealerProfileAuthPayload {
+    address: String,
+    timestamp_ms: u64,
+    path: String,
+    body_hash: String,
+    message: String,
+    signature: String,
+}
+
+fn parse_address(address: &str, label: &str) -> Result<Address> {
+    address
+        .trim()
+        .parse::<Address>()
+        .with_context(|| format!("Invalid {label} address '{address}'"))
+}
+
+fn dealer_profile_path(address: Address) -> String {
+    format!("/api/dealer-profiles/{address:#x}")
+}
+
+fn dealer_profile_message(
+    address: Address,
+    timestamp_ms: u64,
+    path: &str,
+    body_json: &str,
+) -> String {
+    let body_hash = keccak256(body_json.as_bytes());
+    format!(
+        "Hydra Dealer Profile Update\nAddress: {address:#x}\nTimestamp: {timestamp_ms}\nMethod: PUT\nPath: {path}\nBody-Keccak256: {body_hash:#x}"
+    )
 }
 
 #[flutter_rust_bridge::frb(sync)]
@@ -169,6 +202,17 @@ pub async fn list_route_offers(region: String, protocol: String) -> Result<Strin
     to_json(&client.query_offers(&region, &protocol).await?)
 }
 
+pub async fn list_my_route_offers(address: String) -> Result<String> {
+    let client = RouteExchangeClient::new(load_exchange_config()?);
+    let address = parse_address(&address, "wallet")?;
+    to_json(&client.list_my_offers(Some(address), None).await?)
+}
+
+pub async fn get_route_book_lifecycle() -> Result<String> {
+    let client = RouteExchangeClient::new(load_exchange_config()?);
+    to_json(&client.lifecycle().await?)
+}
+
 pub async fn register_agent(mnemonic: String) -> Result<String> {
     let registrar = AgentRegistrar::new(load_exchange_config()?);
     to_json(&registrar.register(&mnemonic).await?)
@@ -220,44 +264,140 @@ pub async fn submit_feedback(
     tag1: String,
 ) -> Result<String> {
     let client = ReputationClient::new(load_exchange_config()?);
-    to_json(&client.give_feedback(&mnemonic, agent_id, positive, &tag1).await?)
+    to_json(
+        &client
+            .give_feedback(&mnemonic, agent_id, positive, &tag1)
+            .await?,
+    )
 }
 
 // ── P2P Deal Board API ─────────────────────────────────────────────────
 
 pub async fn list_deal_offers(currency: String) -> Result<String> {
-    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    let client = DealBoardClient::new(load_exchange_config()?);
     to_json(&client.query_deals(&currency).await?)
 }
 
 pub async fn get_deal_offer(offer_id: u64) -> Result<String> {
-    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    let client = DealBoardClient::new(load_exchange_config()?);
     to_json(&client.get_offer(offer_id).await?)
 }
 
 pub async fn accept_deal(mnemonic: String, offer_id: u64, usdc_amount: String) -> Result<String> {
-    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
-    to_json(&client.accept_deal(offer_id, &usdc_amount, &mnemonic).await?)
+    let client = DealBoardClient::new(load_exchange_config()?);
+    to_json(
+        &client
+            .accept_deal(offer_id, &usdc_amount, &mnemonic)
+            .await?,
+    )
 }
 
 pub async fn mark_fiat_sent(mnemonic: String, escrow_id: u64) -> Result<String> {
-    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    let client = DealBoardClient::new(load_exchange_config()?);
     to_json(&client.mark_sent(escrow_id, &mnemonic).await?)
 }
 
 pub async fn check_escrow_status(escrow_id: u64) -> Result<String> {
-    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    let client = DealBoardClient::new(load_exchange_config()?);
     to_json(&client.check_status(escrow_id).await?)
 }
 
 pub async fn claim_expired_escrow(mnemonic: String, escrow_id: u64) -> Result<String> {
-    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    let client = DealBoardClient::new(load_exchange_config()?);
     to_json(&client.claim_expired(escrow_id, &mnemonic).await?)
 }
 
 pub async fn approve_deal_board_usdc(mnemonic: String, amount: String) -> Result<String> {
-    let client = hydra_exchange::DealBoardClient::new(load_exchange_config()?);
+    let client = DealBoardClient::new(load_exchange_config()?);
     to_json(&client.approve_usdc(&amount, &mnemonic).await?)
+}
+
+pub async fn create_deal_offer(
+    mnemonic: String,
+    agent_id: u64,
+    currency: String,
+    rate_raw: String,
+    min_amount_raw: String,
+    max_amount_raw: String,
+    payment_methods: Vec<String>,
+) -> Result<String> {
+    let client = DealBoardClient::new(load_exchange_config()?);
+    to_json(
+        &client
+            .create_deal_offer(
+                &mnemonic,
+                CreateDealOfferInput {
+                    agent_id,
+                    currency,
+                    rate_raw,
+                    min_amount_raw,
+                    max_amount_raw,
+                    payment_methods,
+                },
+            )
+            .await?,
+    )
+}
+
+pub async fn deactivate_deal_offer(mnemonic: String, offer_id: u64) -> Result<String> {
+    let client = DealBoardClient::new(load_exchange_config()?);
+    to_json(&client.deactivate_deal_offer(offer_id, &mnemonic).await?)
+}
+
+pub async fn confirm_deal_receipt(mnemonic: String, escrow_id: u64) -> Result<String> {
+    let client = DealBoardClient::new(load_exchange_config()?);
+    to_json(&client.confirm_receipt(escrow_id, &mnemonic).await?)
+}
+
+pub async fn reject_deal(mnemonic: String, escrow_id: u64) -> Result<String> {
+    let client = DealBoardClient::new(load_exchange_config()?);
+    to_json(&client.reject_deal(escrow_id, &mnemonic).await?)
+}
+
+pub async fn list_my_deal_offers(address: String) -> Result<String> {
+    let client = DealBoardClient::new(load_exchange_config()?);
+    to_json(
+        &client
+            .list_my_offers(parse_address(&address, "wallet")?, None)
+            .await?,
+    )
+}
+
+pub async fn list_my_deal_escrows(address: String, role: Option<String>) -> Result<String> {
+    let client = DealBoardClient::new(load_exchange_config()?);
+    to_json(
+        &client
+            .list_my_escrows(parse_address(&address, "wallet")?, role.as_deref())
+            .await?,
+    )
+}
+
+pub async fn get_deal_board_allowance(address: String) -> Result<String> {
+    let client = DealBoardClient::new(load_exchange_config()?);
+    to_json(&client.allowance(parse_address(&address, "wallet")?).await?)
+}
+
+#[flutter_rust_bridge::frb(sync)]
+pub fn sign_dealer_profile_put(
+    mnemonic: String,
+    address: String,
+    timestamp_ms: u64,
+    body_json: String,
+) -> Result<String> {
+    let client = RouteExchangeClient::new(load_exchange_config()?);
+    let address = parse_address(&address, "wallet")?;
+    let path = dealer_profile_path(address);
+    let message = dealer_profile_message(address, timestamp_ms, &path, &body_json);
+    let signature = client.sign_message(&mnemonic, &message)?;
+    let payload = DealerProfileAuthPayload {
+        address: signature.address,
+        timestamp_ms,
+        path,
+        body_hash: format!("{:#x}", keccak256(body_json.as_bytes())),
+        message,
+        signature: signature.signature,
+    };
+    to_json(&payload)
 }
 
 #[cfg(test)]
@@ -298,7 +438,11 @@ mod tests {
     fn load_exchange_config_requires_initialized_crypto_section() {
         let _guard = crate::test_support::GLOBAL_TEST_GUARD.lock().unwrap();
         let base_dir = init_test_base_dir();
-        fs::write(base_dir.join("hydra.toml"), "[network]\nsocks5_port = 1080\n").unwrap();
+        fs::write(
+            base_dir.join("hydra.toml"),
+            "[network]\nsocks5_port = 1080\n",
+        )
+        .unwrap();
 
         let err = load_exchange_config().expect_err("config should be incomplete");
         assert!(err.to_string().contains("Marketplace is disabled"));
@@ -342,11 +486,9 @@ usdc_address = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
             serde_json::from_str(&get_marketplace_config_status().unwrap()).unwrap();
         assert_eq!(incomplete["state"], "incomplete");
         assert_eq!(incomplete["ready"], false);
-        assert!(
-            incomplete["message"]
-                .as_str()
-                .unwrap()
-                .contains("route_book_address")
-        );
+        assert!(incomplete["message"]
+            .as_str()
+            .unwrap()
+            .contains("route_book_address"));
     }
 }

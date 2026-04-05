@@ -121,18 +121,17 @@ impl Socks5Server {
             let provider_metrics = self.provider_metrics.clone();
 
             tokio::spawn(async move {
-                if let Err(e) =
-                    handle_connection(
-                        stream,
-                        transports,
-                        proxy_mode,
-                        registry,
-                        discovery,
-                        credit,
-                        p2p,
-                        provider_metrics,
-                    )
-                        .await
+                if let Err(e) = handle_connection(
+                    stream,
+                    transports,
+                    proxy_mode,
+                    registry,
+                    discovery,
+                    credit,
+                    p2p,
+                    provider_metrics,
+                )
+                .await
                 {
                     error!("Error handling connection from {}: {}", peer_addr, e);
                 }
@@ -180,7 +179,10 @@ async fn handle_connection(
     if header[0] != 0x05 || header[1] != 0x01 {
         // SOCKS5 CMD: 0x01=CONNECT, 0x02=BIND, 0x03=UDP ASSOCIATE
         // We only support CONNECT. UDP ASSOCIATE requests from tun2proxy (DNS) are expected noise.
-        debug!("Ignoring non-CONNECT SOCKS5 request (cmd=0x{:02x})", header[1]);
+        debug!(
+            "Ignoring non-CONNECT SOCKS5 request (cmd=0x{:02x})",
+            header[1]
+        );
         return Ok(());
     }
 
@@ -243,7 +245,10 @@ async fn handle_connection(
         match controller.current_status().await {
             Ok(status) => status,
             Err(error) => {
-                warn!("Failed to load credit status, using safe defaults: {}", error);
+                warn!(
+                    "Failed to load credit status, using safe defaults: {}",
+                    error
+                );
                 CreditRuntimeStatus::default()
             }
         }
@@ -336,13 +341,18 @@ async fn handle_connection(
                 let connect_latency_ms = connect_started.elapsed().as_millis() as u64;
                 let limit_bps =
                     rate_limit_bytes_per_sec(&configured, credit_status.throttle_factor);
-                let c2t = copy_with_rate_limit(&mut ri, &mut wo, limit_bps);
-                let t2c = copy_with_rate_limit(&mut ro, &mut wi, limit_bps);
+                let c2t_registry = registry.clone();
+                let c2t = copy_with_rate_limit(&mut ri, &mut wo, limit_bps, move |bytes| {
+                    c2t_registry.update_bytes(conn_id, bytes, 0);
+                });
+                let t2c_registry = registry.clone();
+                let t2c = copy_with_rate_limit(&mut ro, &mut wi, limit_bps, move |bytes| {
+                    t2c_registry.update_bytes(conn_id, 0, bytes);
+                });
                 let (res_up, res_down) = tokio::join!(c2t, t2c);
                 let up = res_up.unwrap_or(0);
                 let down = res_down.unwrap_or(0);
                 let duration = started_at.elapsed();
-                registry.update_bytes(conn_id, up, down);
                 if let Some(controller) = &credit {
                     if let Err(error) = controller
                         .record_usage(&configured, up.saturating_add(down), duration)
@@ -404,36 +414,36 @@ async fn copy_with_rate_limit<R, W>(
     reader: &mut R,
     writer: &mut W,
     limit_bps: Option<u64>,
+    mut on_progress: impl FnMut(u64),
 ) -> std::io::Result<u64>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    if let Some(limit_bps) = limit_bps {
-        let mut total = 0u64;
-        let mut buf = [0u8; 16 * 1024];
-        loop {
-            let n = tokio::io::AsyncReadExt::read(reader, &mut buf).await?;
-            if n == 0 {
-                tokio::io::AsyncWriteExt::shutdown(writer).await?;
-                return Ok(total);
-            }
-            tokio::io::AsyncWriteExt::write_all(writer, &buf[..n]).await?;
-            total = total.saturating_add(n as u64);
+    let mut total = 0u64;
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        let n = tokio::io::AsyncReadExt::read(reader, &mut buf).await?;
+        if n == 0 {
+            tokio::io::AsyncWriteExt::shutdown(writer).await?;
+            return Ok(total);
+        }
+
+        tokio::io::AsyncWriteExt::write_all(writer, &buf[..n]).await?;
+        let copied = n as u64;
+        total = total.saturating_add(copied);
+        on_progress(copied);
+
+        if let Some(limit_bps) = limit_bps {
             let delay_secs = (n as f64 / limit_bps as f64).max(0.0);
             if delay_secs > 0.0 {
                 tokio::time::sleep(Duration::from_secs_f64(delay_secs)).await;
             }
         }
     }
-
-    tokio::io::copy(reader, writer).await
 }
 
-fn rate_limit_bytes_per_sec(
-    transport: &ConfiguredTransport,
-    throttle_factor: f64,
-) -> Option<u64> {
+fn rate_limit_bytes_per_sec(transport: &ConfiguredTransport, throttle_factor: f64) -> Option<u64> {
     if !transport.metadata.is_premium() || throttle_factor >= 0.999 {
         return None;
     }
@@ -509,15 +519,24 @@ async fn do_direct(
             stream.write_all(&socks::success_reply()).await?;
             let (mut ri, mut wi) = stream.into_split();
             let (mut ro, mut wo) = outbound.into_split();
-            let c2t = tokio::io::copy(&mut ri, &mut wo);
-            let t2c = tokio::io::copy(&mut ro, &mut wi);
+            let c2t_registry = registry.clone();
+            let c2t = copy_with_rate_limit(&mut ri, &mut wo, None, move |bytes| {
+                c2t_registry.update_bytes(conn_id, bytes, 0);
+            });
+            let t2c_registry = registry.clone();
+            let t2c = copy_with_rate_limit(&mut ro, &mut wi, None, move |bytes| {
+                t2c_registry.update_bytes(conn_id, 0, bytes);
+            });
             let (res_up, res_down) = tokio::join!(c2t, t2c);
-            registry.update_bytes(conn_id, res_up.unwrap_or(0), res_down.unwrap_or(0));
+            let _ = (res_up.unwrap_or(0), res_down.unwrap_or(0));
             registry.close(conn_id);
             Ok(())
         }
         Err(e) => {
-            error!("Connection #{}: direct connect to {} failed: {}", conn_id, target_addr, e);
+            error!(
+                "Connection #{}: direct connect to {} failed: {}",
+                conn_id, target_addr, e
+            );
             stream.write_all(&socks::failure_reply()).await?;
             registry.close(conn_id);
             Ok(())
@@ -593,6 +612,7 @@ mod tests {
     };
     use async_trait::async_trait;
     use hydra_config::TransportMode;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     struct DummyTransport;
 
@@ -730,7 +750,36 @@ mod tests {
             },
             false,
         );
-        assert_eq!(ordered.first().unwrap().metadata.source, TransportSource::StaticConfig);
+        assert_eq!(
+            ordered.first().unwrap().metadata.source,
+            TransportSource::StaticConfig
+        );
         assert!(ordered.last().unwrap().metadata.is_premium());
+    }
+
+    #[tokio::test]
+    async fn copy_with_rate_limit_reports_progress_before_close() {
+        let payload = b"hello over live accounting";
+        let (mut writer, mut reader) = tokio::io::duplex(128);
+        let (mut sink_reader, mut sink_writer) = tokio::io::duplex(128);
+
+        tokio::spawn(async move {
+            writer.write_all(payload).await.unwrap();
+            writer.shutdown().await.unwrap();
+        });
+
+        let mut seen = 0u64;
+        let copied = copy_with_rate_limit(&mut reader, &mut sink_writer, None, |bytes| {
+            seen += bytes;
+        })
+        .await
+        .unwrap();
+
+        let mut received = Vec::new();
+        sink_reader.read_to_end(&mut received).await.unwrap();
+
+        assert_eq!(copied, payload.len() as u64);
+        assert_eq!(seen, payload.len() as u64);
+        assert_eq!(received, payload);
     }
 }

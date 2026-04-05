@@ -1,5 +1,5 @@
 use crate::transport::{
-    build_transports, ConfiguredTransport, TransportKind, TransportMetadata, TransportSource,
+    ConfiguredTransport, TransportKind, TransportMetadata, TransportSource, build_transports,
 };
 use anyhow::Result;
 use hydra_config::{DiscoveryConfig, TransportConfig, TransportMode};
@@ -39,8 +39,16 @@ impl DiscoveredRoute {
             source: self.source.clone(),
             offer_id: (self.offer.offer_id > 0).then_some(self.offer.offer_id),
             agent_id: Some(self.offer.agent_id),
-            price_per_gb_micro_usdc: self.offer.price_per_gb_raw.parse::<u64>().unwrap_or_default(),
-            stake_amount_micro_usdc: self.offer.stake_amount_raw.parse::<u64>().unwrap_or_default(),
+            price_per_gb_micro_usdc: self
+                .offer
+                .price_per_gb_raw
+                .parse::<u64>()
+                .unwrap_or_default(),
+            stake_amount_micro_usdc: self
+                .offer
+                .stake_amount_raw
+                .parse::<u64>()
+                .unwrap_or_default(),
             bandwidth_mbps: Some(self.offer.bandwidth_mbps),
             reputation_score: self.reputation_score,
             feedback_count: self
@@ -107,7 +115,9 @@ impl RouteDiscoveryService {
     }
 
     pub async fn refresh(&self) -> Result<Vec<DiscoveredRoute>> {
-        let future = self.client.list_active_offers(self.config.max_offers as usize);
+        let future = self
+            .client
+            .list_active_offers(self.config.max_offers as usize);
         let offers = tokio::time::timeout(
             Duration::from_secs(self.config.rpc_timeout_secs.max(1)),
             future,
@@ -150,7 +160,10 @@ impl RouteDiscoveryService {
     }
 
     pub async fn premium_route_available(&self) -> bool {
-        self.current_routes().await.iter().any(|route| route.is_premium)
+        self.current_routes()
+            .await
+            .iter()
+            .any(|route| route.is_premium)
     }
 
     pub async fn premium_is_materially_better(&self) -> bool {
@@ -209,8 +222,11 @@ impl RouteDiscoveryService {
         let transport_config = parse_transport_config(&offer.endpoint_ciphertext)?;
         let price_per_gb_micro_usdc = offer.price_per_gb_raw.parse::<u64>().unwrap_or_default();
         let reputation_score = reputation_score(offer.reputation.as_ref());
-        let route_score =
-            base_route_score(offer.bandwidth_mbps, reputation_score, price_per_gb_micro_usdc);
+        let route_score = base_route_score(
+            offer.bandwidth_mbps,
+            reputation_score,
+            price_per_gb_micro_usdc,
+        );
 
         Some(DiscoveredRoute {
             offer,
@@ -332,7 +348,11 @@ fn apply_risk_penalties(
     }
 
     for route in routes.iter_mut() {
-        let price = route.offer.price_per_gb_raw.parse::<u64>().unwrap_or_default();
+        let price = route
+            .offer
+            .price_per_gb_raw
+            .parse::<u64>()
+            .unwrap_or_default();
         let feedback_count = route
             .offer
             .reputation
@@ -397,13 +417,21 @@ fn reputation_score(summary: Option<&ReputationSummary>) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn base_route_score(bandwidth_mbps: u64, reputation_score: f64, price_per_gb_micro_usdc: u64) -> f64 {
+fn base_route_score(
+    bandwidth_mbps: u64,
+    reputation_score: f64,
+    price_per_gb_micro_usdc: u64,
+) -> f64 {
     let price_penalty = if price_per_gb_micro_usdc == 0 {
         0.0
     } else {
         (price_per_gb_micro_usdc as f64 / 1_000_000.0) * 15.0
     };
-    let free_bonus = if price_per_gb_micro_usdc == 0 { 10.0 } else { 0.0 };
+    let free_bonus = if price_per_gb_micro_usdc == 0 {
+        10.0
+    } else {
+        0.0
+    };
     bandwidth_mbps as f64 + (reputation_score * 20.0) + free_bonus - price_penalty
 }
 
@@ -485,6 +513,7 @@ mod tests {
                 route_book_address: "0x70594C7C33544fc0F22592005004B219dfbb012E"
                     .parse()
                     .unwrap(),
+                deal_board_address: None,
                 identity_registry_address: "0x8004A818BFB912233c491871b3d84c89A494BD9e"
                     .parse()
                     .unwrap(),
@@ -500,9 +529,21 @@ mod tests {
             DiscoveryConfig::default(),
             None,
         );
-        assert!(service.parse_offer(offer("wss://relay.hydra-net.work?agent=4", "0")).is_some());
-        assert!(service.parse_offer(offer("vless://user@example.com:443", "0")).is_some());
-        assert!(service.parse_offer(offer("https://not-supported", "0")).is_none());
+        assert!(
+            service
+                .parse_offer(offer("wss://relay.hydra-net.work?agent=4", "0"))
+                .is_some()
+        );
+        assert!(
+            service
+                .parse_offer(offer("vless://user@example.com:443", "0"))
+                .is_some()
+        );
+        assert!(
+            service
+                .parse_offer(offer("https://not-supported", "0"))
+                .is_none()
+        );
     }
 
     #[test]

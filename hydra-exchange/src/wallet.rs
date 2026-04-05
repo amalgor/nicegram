@@ -2,6 +2,7 @@ use alloy::signers::local::{
     MnemonicBuilder, PrivateKeySigner,
     coins_bip39::{English, Mnemonic},
 };
+use alloy::signers::SignerSync;
 use anyhow::{Context, Result};
 use rand::thread_rng;
 use zeroize::Zeroizing;
@@ -46,6 +47,14 @@ impl LocalWallet {
             .context("Failed to derive Ethereum wallet path")?
             .build()
             .context("Failed to build local wallet signer from mnemonic")
+    }
+
+    pub fn sign_message(mnemonic: &str, message: &[u8]) -> Result<String> {
+        let signer = Self::signer_from_phrase(mnemonic)?;
+        let signature = signer
+            .sign_message_sync(message)
+            .context("Failed to sign message")?;
+        Ok(signature.to_string())
     }
 }
 

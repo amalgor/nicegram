@@ -8,6 +8,67 @@ class WalletIdentity {
   }
 }
 
+class WalletProfile extends WalletIdentity {
+  WalletProfile({
+    required this.id,
+    required this.name,
+    required super.address,
+    required this.roleHint,
+    required this.createdAt,
+    required this.source,
+    required this.isBackedUp,
+  });
+
+  final String id;
+  final String name;
+  final String roleHint;
+  final int createdAt;
+  final String source;
+  final bool isBackedUp;
+
+  factory WalletProfile.fromJson(Map<String, dynamic> json) {
+    return WalletProfile(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? 'Wallet',
+      address: json['address'] as String? ?? '',
+      roleHint: json['role_hint'] as String? ?? 'general',
+      createdAt: (json['created_at'] as num?)?.toInt() ?? 0,
+      source: json['source'] as String? ?? 'imported',
+      isBackedUp: json['is_backed_up'] as bool? ?? false,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'address': address,
+    'role_hint': roleHint,
+    'created_at': createdAt,
+    'source': source,
+    'is_backed_up': isBackedUp,
+  };
+
+  WalletProfile copyWith({
+    String? id,
+    String? name,
+    String? address,
+    String? roleHint,
+    int? createdAt,
+    String? source,
+    bool? isBackedUp,
+  }) {
+    return WalletProfile(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      address: address ?? this.address,
+      roleHint: roleHint ?? this.roleHint,
+      createdAt: createdAt ?? this.createdAt,
+      source: source ?? this.source,
+      isBackedUp: isBackedUp ?? this.isBackedUp,
+    );
+  }
+}
+
 class MarketplaceConfigStatus {
   MarketplaceConfigStatus({
     required this.state,
@@ -99,6 +160,19 @@ class WalletBalances {
       usdcAddress: json['usdc_address'] as String? ?? '',
       usdcBalanceRaw: json['usdc_balance_raw'] as String? ?? '0',
       usdcBalance: json['usdc_balance'] as String? ?? '0',
+    );
+  }
+}
+
+class RouteBookLifecycle {
+  RouteBookLifecycle({required this.withdrawalDelaySecs});
+
+  final int withdrawalDelaySecs;
+
+  factory RouteBookLifecycle.fromJson(Map<String, dynamic> json) {
+    return RouteBookLifecycle(
+      withdrawalDelaySecs:
+          (json['withdrawal_delay_secs'] as num?)?.toInt() ?? 0,
     );
   }
 }
@@ -274,6 +348,103 @@ class DealOffer {
   }
 }
 
+class DealBoardAllowance {
+  DealBoardAllowance({
+    required this.owner,
+    required this.spender,
+    required this.allowanceRaw,
+    required this.allowance,
+  });
+
+  final String owner;
+  final String spender;
+  final String allowanceRaw;
+  final String allowance;
+
+  factory DealBoardAllowance.fromJson(Map<String, dynamic> json) {
+    return DealBoardAllowance(
+      owner: json['owner'] as String? ?? '',
+      spender: json['spender'] as String? ?? '',
+      allowanceRaw: json['allowance_raw'] as String? ?? '0',
+      allowance: json['allowance'] as String? ?? '0',
+    );
+  }
+}
+
+class DealerProfile {
+  DealerProfile({
+    required this.address,
+    required this.displayName,
+    required this.contactHandle,
+    required this.instructionsByMethod,
+    required this.generalNotes,
+    required this.updatedAt,
+  });
+
+  final String address;
+  final String displayName;
+  final String contactHandle;
+  final Map<String, String> instructionsByMethod;
+  final String generalNotes;
+  final int updatedAt;
+
+  bool get isComplete =>
+      displayName.trim().isNotEmpty &&
+      contactHandle.trim().isNotEmpty &&
+      instructionsByMethod.values.any((value) => value.trim().isNotEmpty);
+
+  factory DealerProfile.empty(String address) {
+    return DealerProfile(
+      address: address,
+      displayName: '',
+      contactHandle: '',
+      instructionsByMethod: const {},
+      generalNotes: '',
+      updatedAt: 0,
+    );
+  }
+
+  factory DealerProfile.fromJson(Map<String, dynamic> json) {
+    return DealerProfile(
+      address: json['address'] as String? ?? '',
+      displayName: json['display_name'] as String? ?? '',
+      contactHandle: json['contact_handle'] as String? ?? '',
+      instructionsByMethod:
+          (json['instructions_by_method'] as Map<String, dynamic>? ?? const {})
+              .map((key, value) => MapEntry(key, value.toString())),
+      generalNotes: json['general_notes'] as String? ?? '',
+      updatedAt: (json['updated_at'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'address': address,
+    'display_name': displayName,
+    'contact_handle': contactHandle,
+    'instructions_by_method': instructionsByMethod,
+    'general_notes': generalNotes,
+    'updated_at': updatedAt,
+  };
+
+  DealerProfile copyWith({
+    String? address,
+    String? displayName,
+    String? contactHandle,
+    Map<String, String>? instructionsByMethod,
+    String? generalNotes,
+    int? updatedAt,
+  }) {
+    return DealerProfile(
+      address: address ?? this.address,
+      displayName: displayName ?? this.displayName,
+      contactHandle: contactHandle ?? this.contactHandle,
+      instructionsByMethod: instructionsByMethod ?? this.instructionsByMethod,
+      generalNotes: generalNotes ?? this.generalNotes,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+}
+
 class DealEscrowView {
   DealEscrowView({
     required this.escrowId,
@@ -354,10 +525,14 @@ class ShareSettings {
 
 class ShareEarnStatus {
   ShareEarnStatus({
+    required this.profileId,
+    required this.runtimeProfileId,
+    required this.sharingActiveUnderOtherProfile,
     required this.enabled,
     required this.active,
     required this.unlocked,
     required this.agentId,
+    required this.agentTxHash,
     required this.endpointUrl,
     required this.region,
     required this.protocol,
@@ -371,14 +546,25 @@ class ShareEarnStatus {
     required this.estimatedEarningsDisplay,
     required this.settledEarningsDisplay,
     required this.localRoutingScore,
+    required this.pendingReputationDelta,
+    required this.pendingReputationSyncs,
+    required this.averageLatencyMs,
+    required this.averageThroughputMbps,
+    required this.uptimeRatio,
+    required this.recentFailures,
+    required this.lastOnchainSyncTime,
     required this.toggleMessage,
     required this.settings,
   });
 
+  final String profileId;
+  final String? runtimeProfileId;
+  final bool sharingActiveUnderOtherProfile;
   final bool enabled;
   final bool active;
   final bool unlocked;
   final int? agentId;
+  final String agentTxHash;
   final String endpointUrl;
   final String region;
   final String protocol;
@@ -392,15 +578,27 @@ class ShareEarnStatus {
   final String estimatedEarningsDisplay;
   final String settledEarningsDisplay;
   final double localRoutingScore;
+  final double pendingReputationDelta;
+  final int pendingReputationSyncs;
+  final double averageLatencyMs;
+  final double averageThroughputMbps;
+  final double uptimeRatio;
+  final int recentFailures;
+  final int lastOnchainSyncTime;
   final String toggleMessage;
   final ShareSettings settings;
 
   factory ShareEarnStatus.fromJson(Map<String, dynamic> json) {
     return ShareEarnStatus(
+      profileId: json['profile_id'] as String? ?? 'default',
+      runtimeProfileId: json['runtime_profile_id'] as String?,
+      sharingActiveUnderOtherProfile:
+          json['sharing_active_under_other_profile'] as bool? ?? false,
       enabled: json['enabled'] as bool? ?? false,
       active: json['active'] as bool? ?? false,
       unlocked: json['unlocked'] as bool? ?? false,
       agentId: (json['agent_id'] as num?)?.toInt(),
+      agentTxHash: json['agent_tx_hash'] as String? ?? '',
       endpointUrl: json['endpoint_url'] as String? ?? '',
       region: json['region'] as String? ?? 'US',
       protocol: json['protocol'] as String? ?? 'vless',
@@ -417,6 +615,18 @@ class ShareEarnStatus {
           json['settled_earnings_display'] as String? ?? '0',
       localRoutingScore:
           (json['local_routing_score'] as num?)?.toDouble() ?? 0,
+      pendingReputationDelta:
+          (json['pending_reputation_delta'] as num?)?.toDouble() ?? 0,
+      pendingReputationSyncs:
+          (json['pending_reputation_syncs'] as num?)?.toInt() ?? 0,
+      averageLatencyMs:
+          (json['average_latency_ms'] as num?)?.toDouble() ?? 0,
+      averageThroughputMbps:
+          (json['average_throughput_mbps'] as num?)?.toDouble() ?? 0,
+      uptimeRatio: (json['uptime_ratio'] as num?)?.toDouble() ?? 1,
+      recentFailures: (json['recent_failures'] as num?)?.toInt() ?? 0,
+      lastOnchainSyncTime:
+          (json['last_onchain_sync_time'] as num?)?.toInt() ?? 0,
       toggleMessage: json['toggle_message'] as String? ?? '',
       settings: json['settings'] is Map<String, dynamic>
           ? ShareSettings.fromJson(json['settings'] as Map<String, dynamic>)
@@ -433,31 +643,53 @@ class ShareEarnStatus {
 
 class ProviderEarnings {
   ProviderEarnings({
+    required this.profileId,
     required this.agentId,
+    required this.agentTxHash,
     required this.sessionCount,
+    required this.successfulSessions,
     required this.bytesRelayed,
     required this.estimatedEarningsMicroUsdc,
     required this.estimatedEarningsDisplay,
     required this.settledEarningsMicroUsdc,
     required this.settledEarningsDisplay,
     required this.localRoutingScore,
+    required this.pendingReputationDelta,
     required this.pendingReputationSyncs,
+    required this.averageLatencyMs,
+    required this.averageThroughputMbps,
+    required this.uptimeRatio,
+    required this.recentFailures,
+    required this.lastOnchainSyncTime,
   });
 
+  final String profileId;
   final int? agentId;
+  final String agentTxHash;
   final int sessionCount;
+  final int successfulSessions;
   final int bytesRelayed;
   final int estimatedEarningsMicroUsdc;
   final String estimatedEarningsDisplay;
   final int settledEarningsMicroUsdc;
   final String settledEarningsDisplay;
   final double localRoutingScore;
+  final double pendingReputationDelta;
   final int pendingReputationSyncs;
+  final double averageLatencyMs;
+  final double averageThroughputMbps;
+  final double uptimeRatio;
+  final int recentFailures;
+  final int lastOnchainSyncTime;
 
   factory ProviderEarnings.fromJson(Map<String, dynamic> json) {
     return ProviderEarnings(
+      profileId: json['profile_id'] as String? ?? 'default',
       agentId: (json['agent_id'] as num?)?.toInt(),
+      agentTxHash: json['agent_tx_hash'] as String? ?? '',
       sessionCount: (json['session_count'] as num?)?.toInt() ?? 0,
+      successfulSessions:
+          (json['successful_sessions'] as num?)?.toInt() ?? 0,
       bytesRelayed: (json['bytes_relayed'] as num?)?.toInt() ?? 0,
       estimatedEarningsMicroUsdc:
           (json['estimated_earnings_micro_usdc'] as num?)?.toInt() ?? 0,
@@ -469,8 +701,18 @@ class ProviderEarnings {
           json['settled_earnings_display'] as String? ?? '0',
       localRoutingScore:
           (json['local_routing_score'] as num?)?.toDouble() ?? 0,
+      pendingReputationDelta:
+          (json['pending_reputation_delta'] as num?)?.toDouble() ?? 0,
       pendingReputationSyncs:
           (json['pending_reputation_syncs'] as num?)?.toInt() ?? 0,
+      averageLatencyMs:
+          (json['average_latency_ms'] as num?)?.toDouble() ?? 0,
+      averageThroughputMbps:
+          (json['average_throughput_mbps'] as num?)?.toDouble() ?? 0,
+      uptimeRatio: (json['uptime_ratio'] as num?)?.toDouble() ?? 1,
+      recentFailures: (json['recent_failures'] as num?)?.toInt() ?? 0,
+      lastOnchainSyncTime:
+          (json['last_onchain_sync_time'] as num?)?.toInt() ?? 0,
     );
   }
 }

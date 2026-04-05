@@ -146,7 +146,11 @@ impl ConnectionRegistry {
     }
 
     pub fn get_force_proxy(&self, id: u64) -> Option<bool> {
-        self.inner.read().unwrap().get(&id).and_then(|c| c.force_proxy)
+        self.inner
+            .read()
+            .unwrap()
+            .get(&id)
+            .and_then(|c| c.force_proxy)
     }
 
     pub fn should_proxy(&self, target: &str) -> bool {
