@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:hydra_mobile/credit/credit_repository.dart';
+import 'package:hydra_mobile/mvp/mobile_state_repository.dart';
 import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
+import 'package:hydra_mobile/screens/models_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -15,8 +16,11 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   bool get wantKeepAlive => true;
 
-  String _proxyMode = 'telegram';
-  bool _advancedMode = false;
+  static const _repository = MobileStateRepository();
+
+  final TextEditingController _relayCostController = TextEditingController();
+  String _proxyMode = 'full';
+  bool _savingRelayCost = false;
 
   @override
   void initState() {
@@ -24,11 +28,21 @@ class _SettingsScreenState extends State<SettingsScreen>
     _loadSettings();
   }
 
+  @override
+  void dispose() {
+    _relayCostController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
+    final costPerGb = await _repository.loadRelayCostPerGb();
+    if (!mounted) {
+      return;
+    }
     setState(() {
-      _proxyMode = prefs.getString('proxy_mode') ?? 'telegram';
-      _advancedMode = prefs.getBool(CreditRepository.advancedModeKey) ?? false;
+      _proxyMode = prefs.getString('proxy_mode') ?? 'full';
+      _relayCostController.text = costPerGb.toStringAsFixed(2);
     });
   }
 
@@ -41,16 +55,32 @@ class _SettingsScreenState extends State<SettingsScreen>
     try {
       await HydraPlatformGateway.instance.setProxyMode(mode: mode);
     } catch (e) {
-      debugPrint("Failed to set proxy mode in Rust: $e");
+      debugPrint('Failed to set proxy mode in Rust: $e');
     }
   }
 
-  Future<void> _saveAdvancedMode(bool enabled) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(CreditRepository.advancedModeKey, enabled);
+  Future<void> _saveRelayCost() async {
+    final value = double.tryParse(_relayCostController.text.trim());
+    if (value == null || value < 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a valid USD/GB rate.')),
+      );
+      return;
+    }
+
     setState(() {
-      _advancedMode = enabled;
+      _savingRelayCost = true;
     });
+    await _repository.saveRelayCostPerGb(value);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _savingRelayCost = false;
+    });
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Relay rate saved.')));
   }
 
   @override
@@ -59,74 +89,108 @@ class _SettingsScreenState extends State<SettingsScreen>
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Text('Proxy Mode', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 8),
-        RadioGroup<String>(
-          groupValue: _proxyMode,
-          onChanged: (v) {
-            if (v != null) _saveProxyMode(v);
-          },
-          child: Column(
-            children: [
-              _buildProxyModeRadio(
-                'off',
-                'Off',
-                'No proxying, direct connections only',
+        Text('Runtime Mode', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 10),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: RadioGroup<String>(
+              groupValue: _proxyMode,
+              onChanged: (selected) {
+                if (selected != null) {
+                  _saveProxyMode(selected);
+                }
+              },
+              child: Column(
+                children: [
+                  _modeTile(
+                    value: 'off',
+                    title: 'Off',
+                    subtitle: 'Keep Hydra running but do not proxy traffic.',
+                  ),
+                  _modeTile(
+                    value: 'telegram',
+                    title: 'Telegram Only',
+                    subtitle:
+                        'Route Telegram app traffic through enabled transports.',
+                  ),
+                  _modeTile(
+                    value: 'full',
+                    title: 'Full VPN',
+                    subtitle:
+                        'Route all traffic through policy-selected transports.',
+                  ),
+                ],
               ),
-              _buildProxyModeRadio(
-                'telegram',
-                'Telegram Only',
-                'Route only Telegram traffic through configured transports',
-              ),
-              _buildProxyModeRadio(
-                'full',
-                'Full VPN',
-                'Route all traffic through Hydra network',
-              ),
-            ],
+            ),
           ),
         ),
-        const Divider(height: 32),
-        Text(
-          'Balance',
-          style: Theme.of(context).textTheme.titleLarge,
-        ),
-        const SizedBox(height: 8),
-        const Card(
+        const SizedBox(height: 24),
+        Text('Relay Estimate', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 10),
+        Card(
           child: Padding(
-            padding: EdgeInsets.all(16),
+            padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Starter balance',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+                const Text(
+                  'Cloudflare billing is not pulled from the API in v1. Set a local USD per GB rate to turn relay usage into an estimate.',
                 ),
-                SizedBox(height: 8),
-                Text(
-                  'Hydra starts with free routes and introduces faster paths only when they help. The default flow stays simple and does not require a separate sign-up.',
-                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _relayCostController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'Estimated USD / GB',
+                    hintText: '0.12',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: _savingRelayCost ? null : _saveRelayCost,
+                  icon: _savingRelayCost
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.save_outlined),
+                  label: const Text('Save Estimate'),
                 ),
               ],
             ),
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 24),
+        Text('Optional AI', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 10),
         Card(
-          child: SwitchListTile(
-            value: _advancedMode,
-            onChanged: _saveAdvancedMode,
-            title: const Text('Show advanced tools'),
+          child: ListTile(
+            leading: const Icon(Icons.smart_toy_outlined),
+            title: const Text('Manage local models'),
             subtitle: const Text(
-              'Reveals provider and power-user tools such as the full route exchange screen.',
-              style: TextStyle(fontSize: 12),
+              'No LLM model is bundled in the APK. Download one later if you want on-device analysis.',
             ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => Scaffold(
+                    appBar: AppBar(title: const Text('Optional AI')),
+                    body: const ModelsScreen(),
+                  ),
+                ),
+              );
+            },
           ),
         ),
-
-        const Divider(height: 32),
+        const SizedBox(height: 24),
         Text('About', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 8),
+        const SizedBox(height: 10),
         const Card(
           child: Padding(
             padding: EdgeInsets.all(16),
@@ -135,14 +199,16 @@ class _SettingsScreenState extends State<SettingsScreen>
               children: [
                 Text(
                   'Hydra Network',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+                  style: TextStyle(fontWeight: FontWeight.w700),
                 ),
-                SizedBox(height: 4),
-                Text('Personal AI Agent with resilient connectivity'),
-                SizedBox(height: 8),
+                SizedBox(height: 6),
                 Text(
-                  'Version: 0.2.0-mvp',
-                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                  'Android MVP focused on WSS relay and imported VLESS routing.',
+                ),
+                SizedBox(height: 10),
+                Text(
+                  'Marketplace, payments, providers, and content surfaces remain in the repository but are intentionally hidden from the primary release UI.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
               ],
             ),
@@ -152,11 +218,15 @@ class _SettingsScreenState extends State<SettingsScreen>
     );
   }
 
-  Widget _buildProxyModeRadio(String value, String title, String subtitle) {
+  Widget _modeTile({
+    required String value,
+    required String title,
+    required String subtitle,
+  }) {
     return ListTile(
       leading: Radio<String>(value: value),
       title: Text(title),
-      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+      subtitle: Text(subtitle),
       onTap: () => _saveProxyMode(value),
     );
   }

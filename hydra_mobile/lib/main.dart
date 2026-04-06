@@ -1,19 +1,18 @@
 import 'dart:async';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:hydra_mobile/src/rust/api/simple.dart';
 import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
-import 'package:hydra_mobile/src/rust/api/model_manager.dart';
-import 'package:hydra_mobile/src/rust/frb_generated.dart';
-import 'package:hydra_mobile/screens/balance_screen.dart';
 import 'package:hydra_mobile/screens/connect_screen.dart';
 import 'package:hydra_mobile/screens/connections_screen.dart';
-import 'package:hydra_mobile/screens/models_screen.dart';
-import 'package:hydra_mobile/screens/content_screen.dart';
+import 'package:hydra_mobile/screens/relay_usage_screen.dart';
+import 'package:hydra_mobile/screens/routes_screen.dart';
 import 'package:hydra_mobile/screens/settings_screen.dart';
-import 'package:hydra_mobile/screens/logs_screen.dart';
+import 'package:hydra_mobile/src/rust/api/model_manager.dart';
+import 'package:hydra_mobile/src/rust/api/simple.dart';
+import 'package:hydra_mobile/src/rust/frb_generated.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 final List<String> gNetworkLogs = [];
 final StreamController<List<String>> gLogStreamController =
@@ -28,10 +27,8 @@ String _ts() {
 }
 
 void _initGlobalLogStream() async {
-  debugPrint("Starting global log stream initialization...");
   try {
     await HydraPlatformGateway.instance.bindLogs((log) {
-      debugPrint("Received log from rust: $log");
       gNetworkLogs.add('${_ts()} $log');
       if (gNetworkLogs.length > 10000) {
         gNetworkLogs.removeAt(0);
@@ -39,7 +36,7 @@ void _initGlobalLogStream() async {
       gLogStreamController.add(gNetworkLogs);
     });
   } catch (e) {
-    debugPrint("Log stream init error: $e");
+    debugPrint('Log stream init error: $e');
   }
 }
 
@@ -51,7 +48,6 @@ Future<void> _materializeBundledConfigIfNeeded(String baseDir) async {
 
   final content = await rootBundle.loadString('assets/hydra.toml');
   await configFile.writeAsString(content);
-  debugPrint('Materialized bundled hydra.toml to ${configFile.path}');
 }
 
 Future<void> main() async {
@@ -68,43 +64,20 @@ Future<void> main() async {
     await prepareLocalRuntime(baseDir: baseDir);
     initModelManager(baseDir: baseDir);
 
-    final modelsDir = Directory('$baseDir/models');
-    if (!await modelsDir.exists()) {
-      await modelsDir.create(recursive: true);
-    }
-    final modelPath = '${modelsDir.path}/qwen2.5-0.5b.gguf';
-    final modelFile = File(modelPath);
-
-    if (!await modelFile.exists() || await modelFile.length() < 1024) {
-      debugPrint("Extracting bundled Qwen 2.5 0.5B model from assets...");
-      final byteData = await rootBundle.load('assets/models/qwen2.5-0.5b.gguf');
-      await modelFile.writeAsBytes(
-        byteData.buffer.asUint8List(
-          byteData.offsetInBytes,
-          byteData.lengthInBytes,
-        ),
-      );
-      debugPrint("Model extracted successfully.");
-    }
-
-    HydraPlatformGateway.instance
-        .startNetworkRuntime(baseDir: baseDir)
-        .then((_) async {
-          debugPrint("Hydra network runtime prepared successfully.");
-          try {
+    unawaited(
+      HydraPlatformGateway.instance
+          .startNetworkRuntime(baseDir: baseDir)
+          .then((_) async {
             final prefs = await SharedPreferences.getInstance();
-            final mode = prefs.getString('proxy_mode') ?? 'telegram';
+            final mode = prefs.getString('proxy_mode') ?? 'full';
             await HydraPlatformGateway.instance.setProxyMode(mode: mode);
-            debugPrint("Applied saved proxy mode: $mode");
-          } catch (e) {
-            debugPrint("Failed to apply saved proxy mode: $e");
-          }
-        })
-        .catchError((e) {
-          debugPrint("Hydra network runtime error: $e");
-        });
+          })
+          .catchError((Object error) {
+            debugPrint('Hydra network runtime error: $error');
+          }),
+    );
   } catch (e) {
-    debugPrint("Init error: $e");
+    debugPrint('Init error: $e');
   }
 
   runApp(const HydraApp());
@@ -121,9 +94,10 @@ class HydraApp extends StatelessWidget {
       title: 'Hydra Network',
       theme: ThemeData.dark(useMaterial3: true).copyWith(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.deepPurple,
+          seedColor: const Color(0xFF0EA5E9),
           brightness: Brightness.dark,
         ),
+        scaffoldBackgroundColor: const Color(0xFF08111F),
       ),
       home: home ?? const MainScreen(),
     );
@@ -140,20 +114,26 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
 
-  final List<Widget> _screens = [
-    const ConnectScreen(),
-    const ConnectionsScreen(),
-    const BalanceScreen(),
-    const ModelsScreen(),
-    const ContentScreen(),
-    const LogsScreen(),
-    const SettingsScreen(),
+  static const _titles = <String>[
+    'Connect',
+    'Connections',
+    'Routes',
+    'Relay Usage',
+    'Settings',
+  ];
+
+  final List<Widget> _screens = const [
+    ConnectScreen(),
+    ConnectionsScreen(),
+    RoutesScreen(),
+    RelayUsageScreen(),
+    SettingsScreen(),
   ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Hydra P2P Node'), centerTitle: true),
+      appBar: AppBar(title: Text(_titles[_currentIndex]), centerTitle: true),
       body: IndexedStack(index: _currentIndex, children: _screens),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
@@ -167,14 +147,15 @@ class _MainScreenState extends State<MainScreen> {
             icon: Icon(Icons.power_settings_new),
             label: 'Connect',
           ),
-          NavigationDestination(icon: Icon(Icons.swap_vert), label: 'Network'),
           NavigationDestination(
-            icon: Icon(Icons.account_balance_outlined),
-            label: 'Balance',
+            icon: Icon(Icons.account_tree_outlined),
+            label: 'Connections',
           ),
-          NavigationDestination(icon: Icon(Icons.smart_toy), label: 'AI'),
-          NavigationDestination(icon: Icon(Icons.article), label: 'Content'),
-          NavigationDestination(icon: Icon(Icons.terminal), label: 'Logs'),
+          NavigationDestination(icon: Icon(Icons.route), label: 'Routes'),
+          NavigationDestination(
+            icon: Icon(Icons.query_stats),
+            label: 'Relay Usage',
+          ),
           NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
         ],
       ),

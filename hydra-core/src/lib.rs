@@ -5,21 +5,21 @@ pub mod socks;
 pub mod transport;
 use anyhow::Result;
 use async_trait::async_trait;
-use connections::{ConnectionRegistry, RouteType};
+use connections::{
+    ConnectionRegistry, ResolvedRoutePolicy, RoutePolicyAction, RouteType,
+};
 use discovery::RouteDiscoveryService;
 use hydra_ai::AiNegotiator;
 use hydra_econ::EconLedger;
 use hydra_econ::provider::ProviderMetricsLedger;
 use hydra_p2p::P2PHandle;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, warn};
-use transport::ConfiguredTransport;
-
-use std::sync::RwLock;
+use transport::{ConfiguredTransport, TransportKind};
 
 #[derive(Debug, Clone, Default)]
 pub struct CreditRuntimeStatus {
@@ -39,6 +39,16 @@ pub trait CreditController: Send + Sync {
     ) -> Result<()>;
 }
 
+#[async_trait]
+pub trait UsageRecorder: Send + Sync {
+    async fn record_usage(
+        &self,
+        transport: &ConfiguredTransport,
+        bytes_total: u64,
+        duration: Duration,
+    ) -> Result<()>;
+}
+
 pub struct Socks5Server {
     addr: SocketAddr,
     #[allow(dead_code)]
@@ -47,12 +57,13 @@ pub struct Socks5Server {
     p2p: P2PHandle,
     #[allow(dead_code)]
     econ: Arc<EconLedger>,
-    transports: Vec<ConfiguredTransport>,
+    transports: Arc<RwLock<Vec<ConfiguredTransport>>>,
     proxy_mode: Arc<RwLock<String>>,
     registry: Arc<ConnectionRegistry>,
     discovery: Option<Arc<RouteDiscoveryService>>,
     credit: Option<Arc<dyn CreditController>>,
     provider_metrics: Option<Arc<ProviderMetricsLedger>>,
+    usage_recorder: Option<Arc<dyn UsageRecorder>>,
 }
 
 impl Socks5Server {
@@ -66,18 +77,20 @@ impl Socks5Server {
         discovery: Option<Arc<RouteDiscoveryService>>,
         credit: Option<Arc<dyn CreditController>>,
         provider_metrics: Option<Arc<ProviderMetricsLedger>>,
+        usage_recorder: Option<Arc<dyn UsageRecorder>>,
     ) -> Self {
         Self {
             addr,
             ai,
             p2p,
             econ,
-            transports,
+            transports: Arc::new(RwLock::new(transports)),
             proxy_mode: Arc::new(RwLock::new(proxy_mode)),
             registry: Arc::new(ConnectionRegistry::new()),
             discovery,
             credit,
             provider_metrics,
+            usage_recorder,
         }
     }
 
@@ -87,6 +100,10 @@ impl Socks5Server {
 
     pub fn proxy_mode_handle(&self) -> Arc<RwLock<String>> {
         self.proxy_mode.clone()
+    }
+
+    pub fn transports_handle(&self) -> Arc<RwLock<Vec<ConfiguredTransport>>> {
+        self.transports.clone()
     }
 
     pub fn set_proxy_mode(&self, mode: &str) {
@@ -108,7 +125,11 @@ impl Socks5Server {
             let (stream, peer_addr) = listener.accept().await?;
             debug!("Accepted connection from {}", peer_addr);
 
-            let transports = self.transports.clone();
+            let transports = self
+                .transports
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             let proxy_mode = self
                 .proxy_mode
                 .read()
@@ -119,6 +140,7 @@ impl Socks5Server {
             let credit = self.credit.clone();
             let p2p = self.p2p.clone();
             let provider_metrics = self.provider_metrics.clone();
+            let usage_recorder = self.usage_recorder.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = handle_connection(
@@ -130,6 +152,7 @@ impl Socks5Server {
                     credit,
                     p2p,
                     provider_metrics,
+                    usage_recorder,
                 )
                 .await
                 {
@@ -151,6 +174,7 @@ async fn handle_connection(
     credit: Option<Arc<dyn CreditController>>,
     p2p: P2PHandle,
     provider_metrics: Option<Arc<ProviderMetricsLedger>>,
+    usage_recorder: Option<Arc<dyn UsageRecorder>>,
 ) -> Result<()> {
     // 1. Negotiation (Handshake)
     let mut buf = [0u8; 2];
@@ -279,26 +303,51 @@ async fn handle_connection(
         credit_status.clone(),
         premium_better,
     );
+    let resolved_policy = registry.resolve_policy(&target_addr, is_telegram);
+    let policy_transports = filter_transports_for_policy(&all_transports, &resolved_policy.action);
     let plan = select_transport_plan(
         &target_addr,
         is_telegram,
         is_relay_infra,
         &proxy_mode,
-        &all_transports,
+        &resolved_policy,
+        &policy_transports,
     );
 
-    let conn_id = registry.register(&target_addr, plan.requires_proxy());
+    let conn_id = registry.register(
+        &target_addr,
+        resolved_policy.group.clone(),
+        resolved_policy.action.clone(),
+    );
     info!(
-        "Connection #{}: target={}, telegram={}, proxy_required={}, mode={}",
+        "Connection #{}: target={}, telegram={}, proxy_required={}, mode={}, policy={}",
         conn_id,
         target_addr,
         is_telegram,
         plan.requires_proxy(),
-        proxy_mode
+        proxy_mode,
+        resolved_policy.action.as_label(),
     );
 
+    if plan.is_blocked() {
+        registry.update_route(
+            conn_id,
+            RouteType::Blocked,
+            Some("Blocked by saved policy".to_string()),
+            Some("Blocked".to_string()),
+        );
+        stream.write_all(&socks::failure_reply()).await?;
+        registry.close(conn_id);
+        return Ok(());
+    }
+
     if plan.is_direct() {
-        registry.update_route(conn_id, RouteType::Direct, Some("Direct".to_string()));
+        registry.update_route(
+            conn_id,
+            RouteType::Direct,
+            Some("Direct".to_string()),
+            Some("Direct".to_string()),
+        );
         return do_direct(stream, &target_addr, conn_id, &registry).await;
     }
 
@@ -309,8 +358,9 @@ async fn handle_connection(
         );
         registry.update_route(
             conn_id,
-            RouteType::Relay,
+            route_type_for_policy(&resolved_policy.action),
             Some("No matching transports configured".to_string()),
+            Some(resolved_policy.action.as_label()),
         );
         stream.write_all(&socks::failure_reply()).await?;
         registry.close(conn_id);
@@ -328,7 +378,8 @@ async fn handle_connection(
         );
         registry.update_route(
             conn_id,
-            RouteType::Relay,
+            route_type_for_transport(&configured),
+            Some(format!("Using {}", configured.metadata.label)),
             Some(configured.metadata.label.clone()),
         );
 
@@ -359,6 +410,14 @@ async fn handle_connection(
                         .await
                     {
                         warn!("Failed to persist credit usage: {}", error);
+                    }
+                }
+                if let Some(recorder) = &usage_recorder {
+                    if let Err(error) = recorder
+                        .record_usage(&configured, up.saturating_add(down), duration)
+                        .await
+                    {
+                        warn!("Failed to persist transport usage: {}", error);
                     }
                 }
                 if let (Some(metrics), Some(agent_id)) =
@@ -402,8 +461,9 @@ async fn handle_connection(
     );
     registry.update_route(
         conn_id,
-        RouteType::Relay,
+        route_type_for_policy(&resolved_policy.action),
         Some(format!("Transport failure: {}", errors.join("; "))),
+        Some(resolved_policy.action.as_label()),
     );
     stream.write_all(&socks::failure_reply()).await?;
     registry.close(conn_id);
@@ -548,6 +608,7 @@ async fn do_direct(
 struct TransportPlan {
     transports: Vec<ConfiguredTransport>,
     proxy_required: bool,
+    blocked: bool,
 }
 
 impl TransportPlan {
@@ -555,6 +616,7 @@ impl TransportPlan {
         Self {
             transports: Vec::new(),
             proxy_required: false,
+            blocked: false,
         }
     }
 
@@ -562,6 +624,15 @@ impl TransportPlan {
         Self {
             proxy_required: true,
             transports,
+            blocked: false,
+        }
+    }
+
+    fn blocked() -> Self {
+        Self {
+            transports: Vec::new(),
+            proxy_required: false,
+            blocked: true,
         }
     }
 
@@ -570,7 +641,52 @@ impl TransportPlan {
     }
 
     fn is_direct(&self) -> bool {
-        !self.proxy_required
+        !self.proxy_required && !self.blocked
+    }
+
+    fn is_blocked(&self) -> bool {
+        self.blocked
+    }
+}
+
+fn filter_transports_for_policy(
+    transports: &[ConfiguredTransport],
+    policy: &RoutePolicyAction,
+) -> Vec<ConfiguredTransport> {
+    match policy {
+        RoutePolicyAction::Wss { profile_id } => transports
+            .iter()
+            .filter(|transport| {
+                transport.kind == TransportKind::Wss
+                    && transport.metadata.profile_id.as_deref() == Some(profile_id.as_str())
+            })
+            .cloned()
+            .collect(),
+        RoutePolicyAction::Vless { profile_id } => transports
+            .iter()
+            .filter(|transport| {
+                transport.kind == TransportKind::Vless
+                    && transport.metadata.profile_id.as_deref() == Some(profile_id.as_str())
+            })
+            .cloned()
+            .collect(),
+        _ => transports.to_vec(),
+    }
+}
+
+fn route_type_for_transport(transport: &ConfiguredTransport) -> RouteType {
+    match transport.kind {
+        TransportKind::Wss => RouteType::Wss,
+        TransportKind::Vless => RouteType::Vless,
+    }
+}
+
+fn route_type_for_policy(policy: &RoutePolicyAction) -> RouteType {
+    match policy {
+        RoutePolicyAction::Vless { .. } => RouteType::Vless,
+        RoutePolicyAction::Wss { .. } => RouteType::Wss,
+        RoutePolicyAction::Block => RouteType::Blocked,
+        _ => RouteType::Wss,
     }
 }
 
@@ -579,8 +695,24 @@ fn select_transport_plan(
     is_telegram: bool,
     is_relay_infra: bool,
     proxy_mode: &str,
+    resolved_policy: &ResolvedRoutePolicy,
     transports: &[ConfiguredTransport],
 ) -> TransportPlan {
+    if matches!(resolved_policy.action, RoutePolicyAction::Block) {
+        return TransportPlan::blocked();
+    }
+
+    if matches!(resolved_policy.action, RoutePolicyAction::Direct) {
+        return TransportPlan::direct();
+    }
+
+    if matches!(
+        resolved_policy.action,
+        RoutePolicyAction::Wss { .. } | RoutePolicyAction::Vless { .. }
+    ) {
+        return TransportPlan::proxied(transports.to_vec());
+    }
+
     if is_relay_infra || proxy_mode == "off" {
         return TransportPlan::direct();
     }
@@ -607,6 +739,7 @@ fn select_transport_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connections::{ConnectionGroup, ConnectionGroupKind};
     use crate::transport::{
         Transport, TransportKind, TransportMetadata, TransportSource, TransportStream,
     };
@@ -648,7 +781,20 @@ mod tests {
                 created_at: None,
                 endpoint_host: None,
                 label: "dummy".to_string(),
+                profile_id: None,
             },
+        }
+    }
+
+    fn auto_policy() -> ResolvedRoutePolicy {
+        ResolvedRoutePolicy {
+            group: ConnectionGroup {
+                group_kind: ConnectionGroupKind::Domain,
+                group_key: "example.com".to_string(),
+                app_label: None,
+                package_name: None,
+            },
+            action: RoutePolicyAction::Auto,
         }
     }
 
@@ -659,6 +805,7 @@ mod tests {
             true,
             false,
             "off",
+            &auto_policy(),
             &[configured(TransportMode::Telegram)],
         );
         assert!(plan.is_direct());
@@ -671,6 +818,7 @@ mod tests {
             true,
             false,
             "telegram",
+            &auto_policy(),
             &[
                 configured(TransportMode::Telegram),
                 configured(TransportMode::All),
@@ -687,6 +835,7 @@ mod tests {
             false,
             false,
             "telegram",
+            &auto_policy(),
             &[configured(TransportMode::All)],
         );
         assert!(plan.is_direct());
@@ -699,6 +848,7 @@ mod tests {
             false,
             false,
             "full",
+            &auto_policy(),
             &[
                 configured(TransportMode::Telegram),
                 configured(TransportMode::All),
@@ -716,6 +866,7 @@ mod tests {
             false,
             true,
             "full",
+            &auto_policy(),
             &[configured(TransportMode::All)],
         );
         assert!(plan.is_direct());
@@ -728,6 +879,7 @@ mod tests {
             false,
             false,
             "full",
+            &auto_policy(),
             &[configured(TransportMode::Telegram)],
         );
         assert!(plan.requires_proxy());

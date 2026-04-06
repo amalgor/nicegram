@@ -69,6 +69,7 @@ pub async fn prepare_local_runtime(base_dir: String) -> anyhow::Result<()> {
 
     init_quota_from_config(&config);
     let _ = crate::credit_runtime::init_credit_services(base_path.clone(), &config).await?;
+    let _ = crate::api::routes::bootstrap(&base_path, &config)?;
 
     let ai = Arc::new(AiNegotiator::new(&config.ai));
     {
@@ -91,6 +92,7 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
     crate::api::shared_state::init_shared_base_dir(&base_path)?;
     let config_path = base_path.join("hydra.toml");
     let config = HydraConfig::load_with_base_dir(&config_path, &base_path)?;
+    let usage_recorder = crate::api::routes::bootstrap(&base_path, &config)?;
 
     init_quota_from_config(&config);
     let (discovery, credit, provider_metrics) =
@@ -153,7 +155,9 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
         }
     };
 
-    let transports = transport::build_transports(&config.transports)?;
+    let transports = transport::build_transports_from_profiles(
+        &crate::api::routes::current_profiles()?,
+    )?;
     if let Some(service) = &discovery {
         service.attach_p2p_handle(p2p_handle.clone()).await;
     }
@@ -169,6 +173,7 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
         discovery,
         credit,
         provider_metrics,
+        Some(usage_recorder),
     );
 
     // Store registry and proxy mode handle for FRB API access
@@ -184,6 +189,7 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
         let mut shared = SHARED_P2P_HANDLE.lock().await;
         *shared = Some(p2p_handle.clone());
     }
+    crate::api::routes::attach_runtime_handles(server.registry(), server.transports_handle())?;
 
     tokio::spawn(async move {
         if let Err(e) = server.run().await {
@@ -224,6 +230,12 @@ pub async fn get_active_connections() -> anyhow::Result<String> {
                 "is_proxied": s.is_proxied,
                 "status": s.status,
                 "ai_reason": s.ai_reason,
+                "group_kind": s.group_kind,
+                "group_key": s.group_key,
+                "app_label": s.app_label,
+                "package_name": s.package_name,
+                "resolved_policy": s.resolved_policy,
+                "transport_label": s.transport_label,
             })
         })
         .collect();
@@ -270,6 +282,7 @@ fn ensure_snapshot_writer() {
 
     tokio::spawn(async {
         loop {
+            let _ = crate::api::routes::reload_from_disk();
             if let Ok(json) = get_active_connections().await {
                 let _ = crate::api::shared_state::persist_active_connections(&json);
             }

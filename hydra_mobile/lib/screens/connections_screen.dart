@@ -1,40 +1,45 @@
 import 'dart:async';
-import 'dart:convert';
+
 import 'package:flutter/material.dart';
-import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
-import 'package:hydra_mobile/src/rust/api/simple.dart';
-import 'package:hydra_mobile/widgets/connection_tile.dart';
+import 'package:hydra_mobile/mvp/mobile_state_repository.dart';
 
-class _AppGroup {
-  final String appDomain;
-  final List<ConnectionData> connections;
-  bool isProxied;
-  int totalBytesUp = 0;
-  int totalBytesDown = 0;
-  int activeCount = 0;
-  String? llmComment;
-  bool llmLoading = false;
-
-  _AppGroup({
-    required this.appDomain,
+class _ConnectionGroupView {
+  _ConnectionGroupView({
+    required this.groupKind,
+    required this.groupKey,
+    required this.title,
+    required this.subtitle,
     required this.connections,
-    required this.isProxied,
-  }) {
-    for (final c in connections) {
-      totalBytesUp += c.bytesUp;
-      totalBytesDown += c.bytesDown;
-      if (c.status == 'active') activeCount++;
-    }
-  }
+    required this.savedPolicyLabel,
+  });
 
-  int get totalBytes => totalBytesUp + totalBytesDown;
+  final String groupKind;
+  final String groupKey;
+  final String title;
+  final String subtitle;
+  final List<ConnectionSnapshotModel> connections;
+  final String savedPolicyLabel;
+
+  int get activeCount =>
+      connections.where((conn) => conn.status == 'active').length;
+
+  int get totalBytes =>
+      connections.fold(0, (total, conn) => total + conn.totalBytes);
+
   String get routeSummary {
-    final relay = connections.where((c) => c.routeType == 'relay').length;
-    final direct = connections.where((c) => c.routeType == 'direct').length;
-    final parts = <String>[];
-    if (relay > 0) parts.add('$relay relay');
-    if (direct > 0) parts.add('$direct direct');
-    return parts.join(', ');
+    final counts = <String, int>{};
+    for (final connection in connections) {
+      counts.update(
+        connection.routeType,
+        (value) => value + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    final ordered = counts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return ordered
+        .map((entry) => '${entry.value} ${routeTypeLabel(entry.key)}')
+        .join(' • ');
   }
 }
 
@@ -50,12 +55,21 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
   @override
   bool get wantKeepAlive => true;
 
+  static const _repository = MobileStateRepository();
+
   Timer? _refreshTimer;
-  List<ConnectionData> _connections = [];
-  Map<String, dynamic>? _stats;
+  bool _loading = true;
   bool _showClosed = false;
-  final Map<String, String?> _llmCache = {};
-  final Set<String> _llmLoading = {};
+  List<ConnectionSnapshotModel> _connections = const [];
+  List<RouteProfile> _profiles = const [];
+  List<RoutePolicyEntry> _policies = const [];
+  ConnectionStatsModel _stats = const ConnectionStatsModel(
+    activeCount: 0,
+    totalCount: 0,
+    proxiedCount: 0,
+    totalBytesUp: 0,
+    totalBytesDown: 0,
+  );
 
   @override
   void initState() {
@@ -75,125 +89,270 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
 
   Future<void> _refresh() async {
     try {
-      final connsJson = await HydraPlatformGateway.instance
-          .getActiveConnections();
-      final statsJson = await HydraPlatformGateway.instance
-          .getConnectionStats();
-      final conns = (jsonDecode(connsJson) as List<dynamic>)
-          .map((e) => ConnectionData.fromJson(e as Map<String, dynamic>))
-          .toList();
-      final stats = jsonDecode(statsJson) as Map<String, dynamic>;
-      if (mounted) {
-        setState(() {
-          _connections = conns;
-          _stats = stats;
-        });
+      final results = await Future.wait<dynamic>([
+        _repository.loadConnections(),
+        _repository.loadConnectionStats(),
+        _repository.loadRouteProfiles(),
+        _repository.loadRoutePolicies(),
+      ]);
+      if (!mounted) {
+        return;
       }
-    } catch (_) {}
-  }
-
-  Future<void> _requestLlmComment(
-    String domain,
-    bool isProxied,
-    int totalBytes,
-  ) async {
-    if (_llmLoading.contains(domain) || _llmCache.containsKey(domain)) return;
-    setState(() {
-      _llmLoading.add(domain);
-    });
-    try {
-      final result = await analyzeHost(
-        host: domain,
-        port: 443,
-        isProxied: isProxied,
-        bytesTotal: BigInt.from(totalBytes),
+      setState(() {
+        _connections = results[0] as List<ConnectionSnapshotModel>;
+        _stats = results[1] as ConnectionStatsModel;
+        _profiles = results[2] as List<RouteProfile>;
+        _policies = results[3] as List<RoutePolicyEntry>;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _loading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to refresh connections: $e')),
       );
-      if (mounted) {
-        setState(() {
-          _llmCache[domain] = result;
-          _llmLoading.remove(domain);
-        });
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _llmLoading.remove(domain);
-        });
-      }
     }
   }
 
-  String _extractDomain(String host) {
-    final parts = host.split('.');
-    if (parts.length >= 2) {
-      return parts.sublist(parts.length - 2).join('.');
-    }
-    return host;
+  RoutePolicyEntry? _findPolicy(String groupKind, String groupKey) {
+    return _policies.cast<RoutePolicyEntry?>().firstWhere(
+      (entry) => entry?.groupKind == groupKind && entry?.groupKey == groupKey,
+      orElse: () => null,
+    );
   }
 
-  List<_AppGroup> _buildGroups() {
-    final displayed = _showClosed
+  List<_ConnectionGroupView> _buildGroups() {
+    final visible = _showClosed
         ? _connections
-        : _connections.where((c) => c.status == 'active').toList();
+        : _connections
+              .where((connection) => connection.status == 'active')
+              .toList();
+    final grouped = <String, List<ConnectionSnapshotModel>>{};
 
-    final Map<String, List<ConnectionData>> grouped = {};
-    for (final c in displayed) {
-      final domain = _extractDomain(c.targetHost);
-      grouped.putIfAbsent(domain, () => []).add(c);
+    for (final connection in visible) {
+      final key = '${connection.groupKind}:${connection.groupKey}';
+      grouped.putIfAbsent(key, () => []).add(connection);
     }
 
-    final groups = grouped.entries.map((e) {
-      final isProxied = e.value.any((c) => c.isProxied);
-      return _AppGroup(
-        appDomain: e.key,
-        connections: e.value,
-        isProxied: isProxied,
+    final views = <_ConnectionGroupView>[];
+    for (final entry in grouped.entries) {
+      final connections = entry.value;
+      final first = connections.first;
+      final savedPolicy = _findPolicy(first.groupKind, first.groupKey);
+      final title = first.groupKind == 'app'
+          ? (first.appLabel?.isNotEmpty == true
+                ? first.appLabel!
+                : first.packageName ?? first.groupKey)
+          : first.groupKey;
+      final subtitle = first.groupKind == 'app'
+          ? (first.packageName ?? 'App-routed traffic')
+          : 'Domain group';
+      views.add(
+        _ConnectionGroupView(
+          groupKind: first.groupKind,
+          groupKey: first.groupKey,
+          title: title,
+          subtitle: subtitle,
+          connections: connections,
+          savedPolicyLabel:
+              savedPolicy?.action.toLabel(_profiles) ?? first.resolvedPolicy,
+        ),
       );
-    }).toList();
+    }
 
-    groups.sort((a, b) {
-      if (a.activeCount > 0 && b.activeCount == 0) return -1;
-      if (a.activeCount == 0 && b.activeCount > 0) return 1;
+    views.sort((a, b) {
+      if (a.activeCount != b.activeCount) {
+        return b.activeCount.compareTo(a.activeCount);
+      }
       return b.totalBytes.compareTo(a.totalBytes);
     });
-    return groups;
+    return views;
+  }
+
+  Future<void> _showPolicySheet(_ConnectionGroupView group) async {
+    final wssProfiles = _profiles
+        .where((profile) => profile.enabled && profile.isWss)
+        .toList();
+    final vlessProfiles = _profiles
+        .where((profile) => profile.enabled && profile.isVless)
+        .toList();
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+            children: [
+              Text(group.title, style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 4),
+              Text(
+                'Choose how new traffic in this group should be routed. Saved choices persist across restarts.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              _policyTile(
+                title: 'Auto',
+                subtitle: 'Use global proxy mode and route priority order.',
+                onTap: () => _applyPolicy(
+                  group: group,
+                  action: const RoutePolicyAction(type: 'auto'),
+                ),
+              ),
+              _policyTile(
+                title: 'Direct',
+                subtitle: 'Bypass WSS and VLESS for this group.',
+                onTap: () => _applyPolicy(
+                  group: group,
+                  action: const RoutePolicyAction(type: 'direct'),
+                ),
+              ),
+              _policyTile(
+                title: 'Block',
+                subtitle: 'Refuse matching traffic inside the runtime.',
+                onTap: () => _applyPolicy(
+                  group: group,
+                  action: const RoutePolicyAction(type: 'block'),
+                ),
+              ),
+              if (wssProfiles.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'WSS relay profiles',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                ...wssProfiles.map(
+                  (profile) => _policyTile(
+                    title: profile.label,
+                    subtitle: profile.shortSummary,
+                    onTap: () => _applyPolicy(
+                      group: group,
+                      action: RoutePolicyAction(
+                        type: 'wss',
+                        profileId: profile.id,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+              if (vlessProfiles.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'Imported VLESS profiles',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                ...vlessProfiles.map(
+                  (profile) => _policyTile(
+                    title: profile.label,
+                    subtitle: profile.shortSummary,
+                    onTap: () => _applyPolicy(
+                      group: group,
+                      action: RoutePolicyAction(
+                        type: 'vless',
+                        profileId: profile.id,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: () async {
+                  Navigator.of(context).pop();
+                  await _repository.clearRoutePolicy(
+                    groupKind: group.groupKind,
+                    groupKey: group.groupKey,
+                  );
+                  await _refresh();
+                },
+                child: const Text('Clear saved choice'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _applyPolicy({
+    required _ConnectionGroupView group,
+    required RoutePolicyAction action,
+  }) async {
+    Navigator.of(context).pop();
+    await _repository.setRoutePolicy(
+      groupKind: group.groupKind,
+      groupKey: group.groupKey,
+      action: action,
+    );
+    await _refresh();
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Saved ${action.toLabel(_profiles)} for ${group.title}. Runtime applies file changes on the next refresh cycle.',
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
     final groups = _buildGroups();
 
     return Column(
       children: [
-        if (_stats != null) _buildStatsBar(context),
+        _buildStatsBar(context),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
           child: Row(
             children: [
               Text(
-                '${groups.length} apps',
+                '${groups.length} groups',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const Spacer(),
-              Text('Closed', style: Theme.of(context).textTheme.bodySmall),
+              Text('Show closed', style: Theme.of(context).textTheme.bodySmall),
               Switch(
                 value: _showClosed,
-                onChanged: (v) => setState(() {
-                  _showClosed = v;
-                }),
+                onChanged: (value) {
+                  setState(() {
+                    _showClosed = value;
+                  });
+                },
               ),
             ],
           ),
         ),
         Expanded(
           child: groups.isEmpty
-              ? _buildEmptyState()
+              ? Center(
+                  child: Text(
+                    'No connection groups yet.',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                )
               : RefreshIndicator(
                   onRefresh: _refresh,
                   child: ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                     itemCount: groups.length,
-                    itemBuilder: (_, i) => _buildAppGroup(context, groups[i]),
+                    itemBuilder: (context, index) =>
+                        _buildGroupCard(groups[index]),
                   ),
                 ),
         ),
@@ -202,297 +361,178 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
   }
 
   Widget _buildStatsBar(BuildContext context) {
-    final active = _stats!['active_count'] ?? 0;
-    final proxied = _stats!['proxied_count'] ?? 0;
-    final direct = active - proxied;
-    final totalUp = _stats!['total_bytes_up'] ?? 0;
-    final totalDown = _stats!['total_bytes_down'] ?? 0;
-
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          _statChip('$active', 'Active', Colors.green),
-          _statChip('$proxied', 'Relay', Colors.blue),
-          _statChip('$direct', 'Direct', Colors.grey),
-          _statChip(_fmt(totalUp), 'Up', Colors.teal),
-          _statChip(_fmt(totalDown), 'Down', Colors.purple),
+          _stat(context, '${_stats.activeCount}', 'Active'),
+          _stat(context, '${_stats.proxiedCount}', 'Proxied'),
+          _stat(context, formatBytes(_stats.totalBytesUp), 'Up'),
+          _stat(context, formatBytes(_stats.totalBytesDown), 'Down'),
         ],
       ),
     );
   }
 
-  Widget _buildAppGroup(BuildContext context, _AppGroup group) {
-    final llmComment = _llmCache[group.appDomain];
-    final llmLoading = _llmLoading.contains(group.appDomain);
+  Widget _buildGroupCard(_ConnectionGroupView group) {
+    final hasAppOwner = group.groupKind == 'app';
 
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      color: group.isProxied ? Colors.blue.withValues(alpha: 0.06) : null,
+      margin: const EdgeInsets.only(bottom: 12),
       child: ExpansionTile(
-        tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-        childrenPadding: EdgeInsets.zero,
-        leading: _buildGroupIcon(group),
-        title: Row(
-          children: [
-            Expanded(
-              child: Text(
-                group.appDomain,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: group.activeCount > 0 ? null : Colors.grey,
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            const SizedBox(width: 4),
-            _badge(
-              group.isProxied ? 'RELAY' : 'DIRECT',
-              group.isProxied ? Colors.blue : Colors.grey,
-            ),
-            if (group.connections.any((c) => c.isTelegram)) ...[
-              const SizedBox(width: 4),
-              _badge('TG', Colors.lightBlue),
-            ],
-          ],
-        ),
-        subtitle: Row(
-          children: [
-            Text(
-              '${group.connections.length} conn',
-              style: const TextStyle(fontSize: 10, color: Colors.grey),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              _fmt(group.totalBytes),
-              style: const TextStyle(fontSize: 10, color: Colors.grey),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              group.routeSummary,
-              style: const TextStyle(fontSize: 10, color: Colors.grey),
-            ),
-          ],
-        ),
-        trailing: SizedBox(
+        tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        leading: Container(
           width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: hasAppOwner
+                ? const Color(0xFF0EA5E9).withValues(alpha: 0.12)
+                : const Color(0xFF94A3B8).withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(
+            hasAppOwner ? Icons.apps : Icons.language,
+            color: hasAppOwner
+                ? const Color(0xFF38BDF8)
+                : const Color(0xFFCBD5E1),
+          ),
+        ),
+        title: Text(
+          group.title,
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                '${group.activeCount}',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: group.activeCount > 0 ? Colors.green : Colors.grey,
-                ),
+                group.subtitle,
+                style: Theme.of(context).textTheme.bodySmall,
               ),
-              const Text(
-                'live',
-                style: TextStyle(fontSize: 9, color: Colors.grey),
+              const SizedBox(height: 4),
+              Text(
+                '${group.routeSummary} • ${formatBytes(group.totalBytes)}',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
           ),
         ),
-        onExpansionChanged: (expanded) {
-          if (expanded && !_llmCache.containsKey(group.appDomain)) {
-            _requestLlmComment(
-              group.appDomain,
-              group.isProxied,
-              group.totalBytes,
-            );
-          }
-        },
+        trailing: IconButton(
+          onPressed: () => _showPolicySheet(group),
+          icon: const Icon(Icons.alt_route),
+          tooltip: 'Route policy',
+        ),
         children: [
-          if (llmLoading)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: CircularProgressIndicator(strokeWidth: 1.5),
-                  ),
-                  SizedBox(width: 8),
-                  Text(
-                    'Analyzing...',
-                    style: TextStyle(fontSize: 11, color: Colors.grey),
-                  ),
-                ],
-              ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _badge(
+                  label: group.savedPolicyLabel,
+                  color: const Color(0xFF0EA5E9),
+                ),
+                _badge(
+                  label: '${group.activeCount} active',
+                  color: const Color(0xFF22C55E),
+                ),
+              ],
             ),
-          if (llmComment != null)
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: _llmBgColor(llmComment),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(
-                    _llmIcon(llmComment),
-                    size: 14,
-                    color: _llmColor(llmComment),
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      llmComment,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: _llmColor(llmComment),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ...group.connections.map((conn) => _buildCompactConn(context, conn)),
-          const SizedBox(height: 4),
+          ),
+          const SizedBox(height: 12),
+          ...group.connections.map(_buildConnectionRow),
         ],
       ),
     );
   }
 
-  Widget _buildCompactConn(BuildContext context, ConnectionData conn) {
-    final isActive = conn.status == 'active';
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 1),
-      child: Row(
-        children: [
-          Icon(
-            isActive ? Icons.circle : Icons.circle_outlined,
-            size: 6,
-            color: isActive ? Colors.green : Colors.grey.shade600,
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              '${conn.targetHost}:${conn.targetPort}',
-              style: TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 10,
-                color: isActive ? Colors.white70 : Colors.grey.shade600,
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          _badge(
-            conn.routeType.toUpperCase(),
-            conn.routeType == 'relay' ? Colors.blue : Colors.grey,
-            small: true,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            conn.totalBytesFormatted,
-            style: const TextStyle(fontSize: 9, color: Colors.grey),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            conn.durationFormatted,
-            style: const TextStyle(fontSize: 9, color: Colors.grey),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildConnectionRow(ConnectionSnapshotModel connection) {
+    final routeColor = routeTypeColor(connection.routeType);
 
-  Widget _buildGroupIcon(_AppGroup group) {
-    if (group.connections.any((c) => c.isTelegram)) {
-      return const Icon(Icons.send, color: Colors.lightBlue, size: 18);
-    }
-    if (group.isProxied) {
-      return const Icon(Icons.cloud, color: Colors.blue, size: 18);
-    }
-    return Icon(Icons.language, color: Colors.grey.shade400, size: 18);
-  }
-
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.wifi_off, size: 48, color: Colors.grey.shade600),
-          const SizedBox(height: 16),
-          const Text(
-            'No active connections',
-            style: TextStyle(color: Colors.grey),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Start VPN to see traffic',
-            style: TextStyle(color: Colors.grey, fontSize: 12),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _badge(String label, Color color, {bool small = false}) {
     return Container(
-      padding: EdgeInsets.symmetric(horizontal: small ? 3 : 5, vertical: 0),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.2),
-        borderRadius: BorderRadius.circular(3),
+        color: Theme.of(
+          context,
+        ).colorScheme.surfaceContainer.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(14),
       ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: small ? 8 : 9,
-          color: color,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    );
-  }
-
-  Widget _statChip(String value, String label, Color color) {
-    return Column(
-      children: [
-        Text(
-          value,
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: color,
-            fontSize: 14,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${connection.targetHost}:${connection.targetPort}',
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              _badge(
+                label: routeTypeLabel(connection.routeType),
+                color: routeColor,
+              ),
+            ],
           ),
-        ),
-        Text(label, style: const TextStyle(fontSize: 9, color: Colors.grey)),
-      ],
+          const SizedBox(height: 6),
+          Text(
+            '${formatBytes(connection.totalBytes)} • ${formatDuration(Duration(milliseconds: connection.durationMs))}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            connection.transportLabel?.isNotEmpty == true
+                ? connection.transportLabel!
+                : 'Resolved policy: ${connection.resolvedPolicy}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
     );
   }
 
-  Color _llmColor(String text) {
-    if (text.contains('[ALERT]')) return Colors.red;
-    if (text.contains('[WARN]')) return Colors.orange;
-    return Colors.green;
+  Widget _policyTile({
+    required String title,
+    required String subtitle,
+    required Future<void> Function() onTap,
+  }) {
+    return Card(
+      child: ListTile(
+        title: Text(title),
+        subtitle: Text(subtitle),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () {
+          onTap();
+        },
+      ),
+    );
   }
 
-  Color _llmBgColor(String text) {
-    if (text.contains('[ALERT]')) return Colors.red.withValues(alpha: 0.1);
-    if (text.contains('[WARN]')) return Colors.orange.withValues(alpha: 0.1);
-    return Colors.green.withValues(alpha: 0.08);
+  Widget _badge({required String label, required Color color}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(label, style: TextStyle(color: color, fontSize: 12)),
+    );
   }
 
-  IconData _llmIcon(String text) {
-    if (text.contains('[ALERT]')) return Icons.error_outline;
-    if (text.contains('[WARN]')) return Icons.warning_amber;
-    return Icons.check_circle_outline;
-  }
-
-  String _fmt(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+  Widget _stat(BuildContext context, String value, String label) {
+    return Expanded(
+      child: Column(
+        children: [
+          Text(value, style: Theme.of(context).textTheme.titleMedium),
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ),
+    );
   }
 }

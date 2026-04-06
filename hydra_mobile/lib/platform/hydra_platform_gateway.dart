@@ -78,8 +78,7 @@ class _AndroidHydraPlatformGateway implements HydraPlatformGateway {
 
   @override
   Future<bool> getVpnActive() async {
-    final fd = await _channel.invokeMethod<int>('getVpnFd');
-    return (fd ?? -1) >= 0;
+    return (await _channel.invokeMethod<bool>('getVpnActive')) ?? false;
   }
 
   @override

@@ -31,6 +31,8 @@ leaf = { git = "https://github.com/eycorsican/leaf", tag = "v0.14.2", default-fe
 moka = { version = "0.12.14", features = ["future"] }
 url = "2.5"
 ipnet = "2.10"
+serde = { workspace = true }
+uuid = "1"
 
 [dev-dependencies]
 tempfile = "3"

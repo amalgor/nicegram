@@ -1,24 +1,50 @@
 # Hydra: Product Strategy
 
-**Last updated:** 2026-04-02
+**Last updated:** 2026-04-05
 
-> Этот файл описывает продуктовую стратегию и forward-looking direction. Текущая shipping implementation в репозитории всё ещё embedded-wallet mobile app; актуальный runtime/UI status фиксируется в `SERVICE_MANUAL.md`.
+> Этот файл описывает продуктовую стратегию и forward-looking direction. Текущий shipping target в репозитории — Android network utility с WSS relay + imported VLESS; актуальный runtime/UI status фиксируется в `SERVICE_MANUAL.md`.
+
+---
+
+## 0. Current Shipping Direction (April 2026)
+
+Near-term product strategy changed:
+- **Ship first:** Android APK that works as a practical network utility
+- **Do not ship yet:** embedded-wallet marketplace, automated monetization, in-app Cloudflare balance, bundled on-device model
+
+Current MVP surface:
+- Android VPN runtime with `Auto | Direct | WSS | VLESS | Block`
+- built-in `Hydra WSS Relay`
+- user-imported `vless://` credentials and V2Ray base64 subscriptions
+- grouped `Connections` view with saved routing policies
+- `Relay Usage` with local Cloudflare cost estimate and external donation/support link
+- optional AI model download in Settings instead of bundling GGUF into APK
+
+Reason for the pivot:
+- it produces a shippable APK faster
+- it avoids premature monetization and wallet friction
+- it turns the existing PoC into a usable product before marketplace economics are hardened
+- it preserves the long-term AI / crypto direction without forcing it into release-critical scope
 
 ---
 
 ## 1. Product Positioning
 
-Hydra is **not a VPN**. Hydra is a **personal AI agent** that lives on the user's phone and:
+Long-term, Hydra is **not just a VPN**. Hydra is a **personal AI agent** that lives on the user's phone and:
 
 - Summarizes incoming messages (TLDR-folding with 4 depth levels)
 - Manages attention (tracks what matters, filters noise)
 - Administers the network (routing, diagnostics, relay selection)
 - Ensures connectivity as a side effect of its operation
 
-Proxying and censorship bypass are **means**, not the product's purpose. This distinction is critical for:
+Long-term proxying and censorship bypass are **means**, not the product's purpose. This distinction is still critical for:
 - App store compliance (AI assistant, not circumvention tool)
 - Marketing (productivity tool, not political statement)
 - Legal positioning (communication tool with resilient transport)
+
+Short-term shipping reality is different:
+- first APK is allowed to be a narrower **network utility**
+- AI assistant, wallet, marketplace, and content intelligence remain strategic differentiators, but not release blockers
 
 ---
 
@@ -175,14 +201,19 @@ The combination of acute demand (censorship), mature technology (on-device LLM),
 
 ## 9. Immediate Roadmap (Current Sprint)
 
-1. Hydra Route Exchange wallet/offers feedback loop on Base Sepolia
-2. Offer creation and stake deposit flows on top of HydraRouteBook
-3. x402-based payment path for automated settlement
-4. Route selection integration between on-chain offers and mobile network runtime
-5. iOS parity and device validation for Marketplace + tunnel stack
-6. Mainnet hardening once UX and economics stabilize
+1. Android APK with built-in WSS relay + imported VLESS profiles
+2. Connections table with persisted app/domain route policies
+3. Relay usage accounting and local Cloudflare cost estimate
+4. Release hardening for Android VPN lifecycle, stop/start stability, and APK size
+5. Optional AI download path in Settings without bundling GGUF into the package
+6. Documentation and QA flow that treat marketplace/payments as postponed, not partially shipped
 
 ### Post-sprint
+- Device validation and first public Android release
+- Better app ownership resolution for non-Telegram traffic groups
+- Safer donation / balance refill flow for relay operations
+- Reintroduce AI-assisted analysis only after optional model install UX is proven
+- Return to HRX marketplace / x402 / on-chain coordination once core utility adoption is real
 - Folding UI (expandable content cards)
 - LoRA personalization
 - Cloud summarization of public channels

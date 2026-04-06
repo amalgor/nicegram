@@ -2,6 +2,7 @@ package com.hydra.network.hydra_mobile
 
 import android.content.Intent
 import android.net.VpnService
+import android.os.Build
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -41,6 +42,8 @@ class MainActivity: FlutterActivity() {
                 result.success(true)
             } else if (call.method == "getVpnFd") {
                 result.success(HydraVpnService.currentFd)
+            } else if (call.method == "getVpnActive") {
+                result.success(HydraVpnService.isRunning)
             } else {
                 result.notImplemented()
             }
@@ -51,7 +54,11 @@ class MainActivity: FlutterActivity() {
         if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
             val intent = Intent(this, HydraVpnService::class.java)
             intent.action = HydraVpnService.ACTION_CONNECT
-            startService(intent)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
         }
         super.onActivityResult(requestCode, resultCode, data)
     }

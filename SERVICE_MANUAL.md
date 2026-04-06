@@ -2,6 +2,16 @@
 
 **Непрерывность между сессиями:** дорожная карта этапов, статус P1–P8 и решения по компромиссам зафиксированы в [`hydra-architecture-review-3ce054.md`](hydra-architecture-review-3ce054.md) (корень репозитория). После сжатия контекста чата начинайте с того файла, затем с этого Service Manual.
 
+## Shipping Status (2026-04-05)
+- Текущий shipping target в репозитории: **Android MVP network utility**, а не embedded-wallet marketplace.
+- Primary surface в `hydra_mobile`: `Connect`, `Connections`, `Routes`, `Relay Usage`, `Settings`.
+- В APK больше **не бандлится GGUF-модель**. LLM остаётся optional download из `Settings -> Optional AI`.
+- Пользовательский routing state хранится рядом с `hydra.toml` в:
+  - `mobile_routes.json` — built-in WSS + imported VLESS profiles и их порядок
+  - `route_policies.json` — сохранённые app/domain route policies
+  - `relay_usage.json` — локальная история WSS relay usage
+- Crypto / Marketplace / Providers / Payments / Content код остаётся в репозитории как latent capability, но скрыт из primary release UI.
+
 ## Обзор архитектуры
 Hydra — это мульти-агентная P2P сеть, предназначенная для интеллектуальной маршрутизации трафика, обхода сетевых ограничений (DPI/цензуры) и проактивной обработки контента (суммаризация, TLDR-фолдинг, факт-чекинг). Главная инновация — локальная Small Language Model (SLM) на каждом узле для динамического принятия решений и обработки контента.
 
@@ -13,7 +23,7 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 5. **hydra-content** — Content Intelligence. Telegram-клиент (grammers MTProto), TLDR-фолдинг, суммаризация через LLM, attention tracking (хранилище по конфигу `[content]`).
 6. **hydra-econ** — Локальный экономический слой и репутационная система (на базе `sled`) для trust/debt без ончейн settlement.
 7. **hydra-exchange** — Base Sepolia HRX client. Локальный EOA wallet (BIP-39), `alloy` bindings для `HydraRouteBook` и `HydraDealBoard`, ERC-8004 identity/reputation, USDC balance и P2P deal escrow lifecycle (`DealBoardClient`).
-8. **hydra_mobile/rust** — Мост Flutter-Rust (flutter_rust_bridge). VPN-интерфейс (tun2proxy), менеджер моделей, телеметрия, API Content, credit-first Balance API, Share & Earn provider runtime и advanced Marketplace API для мобильного UI.
+8. **hydra_mobile/rust** — Мост Flutter-Rust (flutter_rust_bridge). Android VPN runtime (tun2proxy), hot-reload routing store (`mobile_routes.json`, `route_policies.json`, `relay_usage.json`), optional model manager, телеметрия и latent advanced APIs (Content / provider / marketplace), которые сейчас не входят в primary release UI.
 
 ## Конфигурация
 Все параметры вынесены в `hydra.toml` (TOML-файл в рабочей директории). При отсутствии файла используются значения по умолчанию. Пример конфигурации: `hydra.toml.example`.
@@ -33,6 +43,11 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 
 На мобильном устройстве конфигурация загружается из `{app_documents_dir}/hydra.toml`, относительные пути автоматически разрешаются относительно `app_documents_dir`.
 На Android/iOS этот файл теперь materialize-ится из bundled asset `hydra_mobile/assets/hydra.toml` при первом запуске приложения, если в documents dir ещё нет `hydra.toml`. Это защищает release build от silent fallback на `HydraConfig::default()`.
+Для Android MVP поверх `hydra.toml` живут file-based overlays:
+- `mobile_routes.json` — built-in `Hydra WSS Relay` + imported raw/subscription `vless://` profiles; runtime hot-reload-ит этот файл и перестраивает transports без FRB codegen.
+- `route_policies.json` — persisted policies `Auto | Direct | WSS(profile_id) | VLESS(profile_id) | Block` для app/domain групп.
+- `relay_usage.json` — hourly buckets только для `WSS` transport; direct/VLESS bytes туда не пишутся.
+Bundled mobile defaults для shipping APK: `[network].proxy_mode = "full"` и `[crypto].enabled = false`.
 
 ## Применяемые технологии и библиотеки
 - **Сеть**: `libp2p` (TCP, Noise, Yamux, Kademlia DHT, Gossipsub, mDNS).
@@ -52,21 +67,18 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 
 ---
 
-## HRX Protocol — Open Route Exchange Protocol
+## Current Shipping Direction
 
-Архитектурный pivot: Hydra App отделена от VPN-клиента. Hydra App = marketplace + AI agent + wallet, а VPN-функциональность делегируется существующим клиентам (v2rayNG, Shadowrocket, Clash, sing-box) через стандартные subscription URL.
+Актуальный продуктовый pivot: **сначала shipping Android APK как network utility**.
 
-Полная спецификация: [`HRX_PROTOCOL.md`](HRX_PROTOCOL.md)
+Текущая release-модель:
+- Android `VpnService` -> `tun2proxy` -> local SOCKS5 -> selected route `Auto | Direct | WSS | VLESS | Block`
+- built-in profile: `Hydra WSS Relay`
+- user import: raw `vless://...` и V2Ray base64 subscription (newline list, import only `vless://`)
+- live traffic control: `Connections` screen группирует потоки по app/domain и сохраняет пользовательский policy choice
+- relay accounting: `Relay Usage` показывает только local WSS usage + estimated Cloudflare cost + external support link
 
-Суб-протоколы:
-- **HRX Subscribe** (`GET /sub/{token}`) — персонализированные маршруты в форматах v2ray, Clash, sing-box, JSON. Credit tier фильтрация.
-- **HRX Provider** (`POST /provider/register`, `/heartbeat`) — REST API для провайдеров. Stake modes: deferred/immediate/relay_backed.
-- **HRX Pay** — free trial → in-app top-up (P2P/fiat/USDC) → WalletConnect → x402 micropayments.
-- **HRX Discovery** (`GET /api/v1/offers`) — публичный каталог без раскрытия endpoint URIs.
-
-App Store implications: без VpnService и без встроенного кошелька (WalletConnect для внешних) Organization account не требуется.
-
-Текущий статус: спецификация v0.1, Phase A (MVP Subscribe endpoint) запланирован в `hydra-relay-worker`.
+`HRX_PROTOCOL.md` остаётся forward-looking документом для будущего marketplace/payments/discovery слоя, но **не описывает текущую shipping APK surface**.
 
 ---
 
@@ -131,7 +143,7 @@ App Store implications: без VpnService и без встроенного ко�
 ### 5. Ядро (hydra-core)
 - **SOCKS5 Server**: Принимает соединения от локальных приложений, порт из `[network].socks5_port`.
 - **Multi-hop Relay**: Последовательно устанавливает stream-каналы через промежуточные узлы.
-- **Transport layer** (`transport/`): `Socks5Server` работает со списком `ConfiguredTransport` в порядке TOML-конфига. Поддерживаются `WssTransport` и `VlessTransport` (tcp+reality; grpc+reality URL currently parse-only).
+- **Transport layer** (`transport/`): `Socks5Server` работает со списком `ConfiguredTransport` в порядке TOML-конфига. Поддерживаются `WssTransport` и `VlessTransport`. Для VLESS shipping path теперь корректно различает plain TCP/WS credentials без `flow` и Reality/Vision credentials с `flow=xtls-rprx-vision`; `grpc+reality` URL пока остаётся parse-only.
 - **Routing policy**: глобальный `proxy_mode` остаётся в `[network]` (`off | telegram | full`). Для proxied-трафика действует fail-closed: если подходящие transports исчерпаны, соединение закрывается без direct fallback.
 
 ### 6. Cloudflare Worker Relay (hydra-relay-worker/)
@@ -152,27 +164,33 @@ App Store implications: без VpnService и без встроенного ко�
 - **Ops report**: точные deploy/verification outputs сохранены в `reports/2026-04-03-ops-validation.md`.
 
 ### 7. Мобильный слой (hydra_mobile)
-- **Flutter UI**: 7 вкладок — Connect, Network, Balance, AI, Content, Logs, Settings. Для provider/payment batch текущий embedded-wallet mobile app остаётся канонической shipping surface; forward-looking protocol-only docs не отменяют этот runtime.
-- **UI Architecture**: Добавлены `credit/` слой (`CreditRepository`, backend, models), `screens/balance_screen.dart`, `widgets/credit_status_widget.dart`; `screens/marketplace_screen.dart` сохранён как advanced surface для power users/provider flows.
-- **Balance hub**: `BalanceScreen` теперь содержит внутренние вкладки `Overview`, `Payments`, `Providers`, `Advanced`. `Overview` оставляет credit-first UX, `Payments` ведёт buyer/dealer/escrow flows, `Providers` — Share & Earn и route lifecycle, `Advanced` — raw Marketplace и recovery/debug actions.
+- **Flutter UI**: 5 primary вкладок — `Connect`, `Connections`, `Routes`, `Relay Usage`, `Settings`. Это и есть каноническая shipping surface для первого Android APK.
+- **Hidden surfaces**: `Balance`, `Marketplace`, `Payments`, `Providers`, `Content`, `Logs`, model/content/provider/payment widgets и exchange repositories остаются в repo, но не участвуют в primary navigation.
+- **No bundled model**: `pubspec.yaml` больше не включает `assets/models/`, `main.dart` больше не materialize-ит GGUF при first launch. Network runtime стартует без локальной модели; download делается вручную из `Settings -> Optional AI`.
+- **Route store**: Flutter напрямую читает/пишет `mobile_routes.json`, `route_policies.json`, `relay_usage.json` в app documents dir. Это сознательный file-based contract, потому что FRB codegen для новых route APIs в текущем dev environment недоступен.
+- **Routes screen**: built-in WSS relay profile + imported VLESS profiles. Поддерживаются enable/disable, rename, mode (`all` / `telegram`), priority reorder и delete для imported profiles.
+- **VLESS runtime note (2026-04-05)**: импортированные VLESS credentials больше не форсятся в `xtls-rprx-vision`. Runtime формирует standard VLESS header для обычных URI без `flow` и включает Vision extension только когда URI явно содержит `flow=xtls-rprx-vision`. Это закрывает observed Android bug: `SOCKS5 request granted`, но downstream bytes не идут из-за неверного VLESS request header.
+- **Connections screen**: traffic группируется по `app` (best-effort; сейчас guaranteed для Telegram) или `domain` fallback. Пользователь может сохранить policy: `Auto`, `Direct`, `Block`, explicit `WSS(profile_id)`, explicit `VLESS(profile_id)`.
+- **Relay Usage screen**: локальные hourly buckets только для WSS, today/7d/30d aggregation, estimated cost по локальному `USD/GB` rate и external support link/QR/share.
+- **Settings**: global proxy mode (`off | telegram | full`), relay estimate rate, optional AI models. Shipping mobile defaults: `full` mode.
 - **Wallet profiles**: embedded wallet больше не singleton. Добавлены локальные `WalletProfile`-профили с profile switcher в header Balance, profile-scoped mnemonic keys в `flutter_secure_storage`, migration legacy single-wallet state в `default` profile и profile-scoped provider/agent/filter state.
 - **Wallet utilities**: reusable `AddressTile`, `TxHashTile`, `EndpointTile` и `ReceiveSheet` дают copy/share/QR/BaseScan primitives для ручного тестирования платежей и provider endpoints.
 - **Rust bridge**: `flutter_rust_bridge` используется для network/runtime API, credit API (`get_credit_status()`, `get_nudge()`, `dismiss_nudge()`, `accept_trial_route()`, `get_telegram_anchor_info()`), provider API (`get_share_earn_status()`, `set_share_earn_enabled()`, `get_provider_earnings()`, `update_share_settings()`) и advanced Marketplace API (`get_marketplace_config_status()`, `create_wallet()`, `import_wallet()`, `get_wallet_balances()`, `list_route_offers()`, `register_agent()`, `create_offer()`, `deactivate_offer()`, `withdraw_stake()`, `submit_feedback()`).
 - **Payment hub**: `PaymentsHub` покрывает `Buy`, `Sell`, `Escrows`. Там живут deal browse/accept, escrow detail timeline, seller readiness, allowance approve, dealer-profile editor (off-chain KV), offer creation/deactivation и incoming/outgoing escrows.
 - **Share & Earn in Balance**: Level 2 provider surface встроен в `BalanceScreen`. Там живут единый toggle, sharing status, starter/staked state, local score и earnings summary; full Marketplace остаётся advanced surface.
 - **Providers hub**: `ProvidersHub` разделён на `Share & Earn`, `Route Offers`, `Metrics`. Он показывает relay-backed endpoint с copy/share/QR, provider settings, batched reputation sync, route publish/deactivate/withdraw и локальные метрики (latency/throughput/uptime/failures).
-- **VPN**: Android VpnService → TUN FD → `tun2proxy` → локальный SOCKS5 → hydra-core. **Исправлен баг**: `vpn.rs` теперь читает `socks5_port` из загруженной конфигурации через `SOCKS5_PORT` AtomicU16, а не из `NetworkConfig::default()`.
+- **VPN**: Android VpnService → TUN FD → `tun2proxy` → локальный SOCKS5 → hydra-core. **Release blocker fixed**: `HydraVpnService` теперь держит один явный owner `ParcelFileDescriptor`, передаёт в Rust только `dup(...).detachFd()` копию и закрывает оригинал в service lifecycle. Это закрывает documented `fdsan` double-close crash при stop/start cycles.
 - **Connection Tracking** (`hydra-core/src/connections.rs`): `ConnectionRegistry` — thread-safe реестр всех соединений с tracking bytes, route type, Telegram detection, AI reasoning, force-proxy override.
 - **Route Discovery**: `hydra-core/src/discovery.rs` опрашивает `HydraRouteBook`, кеширует offers через `moka` и конвертирует transport-ready `endpoint_ciphertext` (`wss://` / `vless://`) в runtime transports.
 - **Credit-first routing**: runtime сначала предпочитает free static relay, затем free discovered routes; premium discovered routes становятся доступными только после AI-assisted trial/credit approval. При перерасходе premium path мягко душится и затем fallback-ится на free route без hard disconnect.
 - **Balance UX**: `Connect` и `Balance` показывают starter balance, current route state, AI nudge “Found a faster route”, reminder про local assistant memory и placeholder CTA для будущего top-up flow. Default copy избегает слов wallet/mnemonic/blockchain/ERC.
 - **Content Intelligence**: Tap on dialog → `fetch_channel_messages()` → `MessageHandler::fetch_and_process()` → `Summarizer::process()` → `FoldableMessageCard` с 4 уровнями (Headline/Summary/KeyPoints/FullText). Attention tracking при expand/collapse.
-- **Model Manager**: Скачивание моделей с HuggingFace, горячая замена через `SHARED_AI`.
+- **Model Manager**: скачивание моделей с HuggingFace и hot swap через `SHARED_AI` сохранены, но moved behind Settings и не участвуют в first-run path.
 - **Quota Manager** (`quota.rs`): Локальный трекинг потреблённого трафика с периодической синхронизацией с CF Worker KV.
-- **Marketplace**: локальный wallet onboarding, balances (ETH + USDC), ERC-8004 agent registration, filters `region/protocol` с `SharedPreferences`, offers list и manual feedback. По умолчанию скрыт за advanced toggle или unlock после 3+ successful payments.
+- **Marketplace / payments / providers**: локальный wallet onboarding, balances, provider runtime и on-chain flows остаются latent capability. Для Android MVP они intentionally removed from primary navigation и не считаются shipping-critical.
 - **Marketplace runtime states**: экран явно различает `disabled`, `incomplete config`, `no offers` и `load failed`; пустой `route_book_address` в `hydra.toml` больше не вываливает сырой backend exception в UI.
 - **Manual QA runbook**: последовательность ручного тестирования multi-profile payment/provider flows зафиксирована в `reports/2026-04-04-provider-payment-qa-runbook.md`.
-- **Settings**: Proxy mode, краткая on-chain status card и advanced tools toggle. Legacy settlement UI удалён.
+- **Settings**: Proxy mode, relay billing estimate rate и optional AI entry point. Balance/advanced toggles больше не часть primary shipping path.
 
 ---
 

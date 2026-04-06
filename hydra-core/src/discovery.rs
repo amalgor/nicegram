@@ -36,6 +36,7 @@ impl DiscoveredRoute {
         let mut built = build_transports(std::slice::from_ref(&self.transport_config))?;
         let mut configured = built.pop().expect("single config should build");
         configured.metadata = TransportMetadata {
+            profile_id: None,
             source: self.source.clone(),
             offer_id: (self.offer.offer_id > 0).then_some(self.offer.offer_id),
             agent_id: Some(self.offer.agent_id),

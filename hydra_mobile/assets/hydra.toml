@@ -2,7 +2,7 @@
 # This file is copied into the app documents directory on first launch.
 
 [network]
-proxy_mode = "telegram"
+proxy_mode = "full"
 
 [[transports]]
 type = "wss"
@@ -11,7 +11,7 @@ mode = "all"
 device_id = ""
 
 [crypto]
-enabled = true
+enabled = false
 chain = "BASE-SEPOLIA"
 rpc_url = "https://sepolia.base.org"
 route_book_address = "0x70594C7C33544fc0F22592005004B219dfbb012E"

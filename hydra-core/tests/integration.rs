@@ -65,6 +65,7 @@ async fn test_socks5_direct_connection() {
         None,
         None,
         None,
+        None,
     );
     tokio::spawn(async move {
         server.run().await.ok();
@@ -143,6 +144,7 @@ async fn test_socks5_rejects_unsupported_auth() {
         None,
         None,
         None,
+        None,
     );
     tokio::spawn(async move {
         server.run().await.ok();
@@ -204,6 +206,7 @@ async fn test_socks5_domain_connect() {
         econ,
         empty_transports(),
         "off".to_string(),
+        None,
         None,
         None,
         None,
@@ -287,6 +290,7 @@ async fn test_connection_registry_tracking() {
         econ,
         empty_transports(),
         "off".to_string(),
+        None,
         None,
         None,
         None,
@@ -401,8 +405,14 @@ async fn test_ai_routing_selects_best_peer() {
 async fn test_telegram_detection_in_registry() {
     let registry = hydra_core::connections::ConnectionRegistry::new();
 
-    let tg_id = registry.register("149.154.167.50:443", true);
-    let normal_id = registry.register("8.8.8.8:53", false);
+    let tg_policy = registry.resolve_policy("149.154.167.50:443", true);
+    let tg_id = registry.register("149.154.167.50:443", tg_policy.group, tg_policy.action);
+    let normal_policy = registry.resolve_policy("8.8.8.8:53", false);
+    let normal_id = registry.register(
+        "8.8.8.8:53",
+        normal_policy.group,
+        normal_policy.action,
+    );
 
     let snaps = registry.snapshot(false);
     let tg_snap = snaps.iter().find(|s| s.id == tg_id).unwrap();

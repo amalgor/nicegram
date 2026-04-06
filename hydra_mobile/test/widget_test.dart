@@ -6,9 +6,9 @@ void main() {
   testWidgets('App renders main screen', (WidgetTester tester) async {
     await tester.pumpWidget(
       const HydraApp(
-        home: Scaffold(body: Center(child: Text('Hydra P2P Node'))),
+        home: Scaffold(body: Center(child: Text('Hydra Network'))),
       ),
     );
-    expect(find.text('Hydra P2P Node'), findsOneWidget);
+    expect(find.text('Hydra Network'), findsOneWidget);
   });
 }

@@ -104,6 +104,7 @@ async fn main() -> Result<()> {
             discovery,
             None,
             Some(provider_metrics),
+            None,
         );
         server.run().await?;
     }

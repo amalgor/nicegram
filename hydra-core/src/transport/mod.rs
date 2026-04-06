@@ -4,6 +4,7 @@ pub mod wss;
 use anyhow::Result;
 use async_trait::async_trait;
 use hydra_config::{TransportConfig, TransportMode};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub type TransportStream = leaf::proxy::AnyStream;
@@ -40,6 +41,7 @@ pub enum TransportSource {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransportMetadata {
+    pub profile_id: Option<String>,
     pub source: TransportSource,
     pub offer_id: Option<u64>,
     pub agent_id: Option<u64>,
@@ -56,6 +58,7 @@ pub struct TransportMetadata {
 impl TransportMetadata {
     pub fn static_config(kind: TransportKind) -> Self {
         Self {
+            profile_id: None,
             source: TransportSource::StaticConfig,
             offer_id: None,
             agent_id: None,
@@ -73,6 +76,66 @@ impl TransportMetadata {
     pub fn is_premium(&self) -> bool {
         matches!(self.source, TransportSource::DiscoveredPremium)
             || self.price_per_gb_micro_usdc > 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteProfileKind {
+    Wss,
+    Vless,
+}
+
+impl RouteProfileKind {
+    pub fn as_transport_kind(&self) -> TransportKind {
+        match self {
+            Self::Wss => TransportKind::Wss,
+            Self::Vless => TransportKind::Vless,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteProfileSource {
+    Builtin,
+    ImportedRaw,
+    ImportedSubscription,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RouteProfile {
+    pub id: String,
+    pub label: String,
+    pub kind: RouteProfileKind,
+    pub mode: TransportMode,
+    pub enabled: bool,
+    pub priority: u32,
+    pub source: RouteProfileSource,
+    pub config: TransportConfig,
+}
+
+impl RouteProfile {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        kind: RouteProfileKind,
+        mode: TransportMode,
+        enabled: bool,
+        priority: u32,
+        source: RouteProfileSource,
+        config: TransportConfig,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            kind,
+            mode,
+            enabled,
+            priority,
+            source,
+            config,
+        }
     }
 }
 
@@ -134,6 +197,28 @@ pub fn build_transports(configs: &[TransportConfig]) -> Result<Vec<ConfiguredTra
                     metadata: TransportMetadata::static_config(TransportKind::Vless),
                 });
             }
+        }
+    }
+
+    Ok(transports)
+}
+
+pub fn build_transports_from_profiles(profiles: &[RouteProfile]) -> Result<Vec<ConfiguredTransport>> {
+    let mut ordered = profiles
+        .iter()
+        .filter(|profile| profile.enabled)
+        .cloned()
+        .collect::<Vec<_>>();
+    ordered.sort_by_key(|profile| profile.priority);
+
+    let mut transports = Vec::with_capacity(ordered.len());
+    for profile in ordered {
+        let mut built = build_transports(std::slice::from_ref(&profile.config))?;
+        if let Some(mut transport) = built.pop() {
+            transport.mode = profile.mode;
+            transport.metadata.profile_id = Some(profile.id.clone());
+            transport.metadata.label = profile.label.clone();
+            transports.push(transport);
         }
     }
 
