@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use grammers_client::{Client, SignInError};
 use grammers_client::client::{LoginToken, PasswordToken};
+use grammers_client::{Client, SignInError};
 use grammers_mtsender::SenderPool;
 use grammers_session::updates::UpdatesLike;
 use hydra_config::TelegramConfig;
@@ -95,7 +95,7 @@ impl TelegramClient {
         let session = Arc::new(
             grammers_session::storages::SqliteSession::open(&self.config.session_path)
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to open Telegram session file: {}", e))?
+                .map_err(|e| anyhow::anyhow!("Failed to open Telegram session file: {}", e))?,
         );
 
         let pool = SenderPool::new(session, self.config.api_id);
@@ -126,7 +126,9 @@ impl TelegramClient {
 
     /// Step 1 of login: send phone number, request login code
     pub async fn send_phone(&mut self, phone: &str) -> Result<()> {
-        let client = self.client.as_ref()
+        let client = self
+            .client
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Not connected. Call connect() first."))?;
 
         info!("Requesting login code for {}...", phone);
@@ -143,9 +145,13 @@ impl TelegramClient {
 
     /// Step 2 of login: verify the code received via Telegram/SMS
     pub async fn send_code(&mut self, code: &str) -> Result<()> {
-        let client = self.client.as_ref()
+        let client = self
+            .client
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Not connected."))?;
-        let token = self.login_token.take()
+        let token = self
+            .login_token
+            .take()
             .ok_or_else(|| anyhow::anyhow!("No login token. Call send_phone() first."))?;
 
         match client.sign_in(&token, code).await {
@@ -171,9 +177,13 @@ impl TelegramClient {
 
     /// Step 3 (optional): provide 2FA password
     pub async fn send_password(&mut self, password: &str) -> Result<()> {
-        let client = self.client.as_ref()
+        let client = self
+            .client
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Not connected."))?;
-        let pw_token = self.password_token.take()
+        let pw_token = self
+            .password_token
+            .take()
             .ok_or_else(|| anyhow::anyhow!("No password token. 2FA was not requested."))?;
 
         match client.check_password(pw_token, password.as_bytes()).await {

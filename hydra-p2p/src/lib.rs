@@ -3,6 +3,7 @@ pub mod telemetry;
 
 use anyhow::{Context, Result, anyhow};
 use diagnostics::{DiagnosticRequest, DiagnosticResponse};
+use hydra_config::NetworkConfig;
 use libp2p::{
     PeerId, StreamProtocol, Swarm,
     futures::{StreamExt, stream::BoxStream},
@@ -13,7 +14,6 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
-use hydra_config::NetworkConfig;
 use libp2p_stream as p2p_stream;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -164,7 +164,11 @@ impl P2PHandle {
             .await
     }
 
-    pub async fn open_stream(&self, peer_id: PeerId, protocol: StreamProtocol) -> Result<libp2p::Stream> {
+    pub async fn open_stream(
+        &self,
+        peer_id: PeerId,
+        protocol: StreamProtocol,
+    ) -> Result<libp2p::Stream> {
         let (tx, rx) = oneshot::channel::<Result<libp2p::Stream>>();
         self.cmd_tx
             .send(P2PCommand::OpenStream {
@@ -208,14 +212,24 @@ impl P2PHandle {
             .map_err(|e| anyhow!("Failed to receive PublishRelayEndpoint response: {}", e))?
     }
 
-    pub async fn publish_service_announcement(&self, announcement: ServiceAnnouncement) -> Result<()> {
+    pub async fn publish_service_announcement(
+        &self,
+        announcement: ServiceAnnouncement,
+    ) -> Result<()> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(P2PCommand::PublishServiceAnnouncement { announcement, resp: tx })
+            .send(P2PCommand::PublishServiceAnnouncement {
+                announcement,
+                resp: tx,
+            })
             .await
             .map_err(|e| anyhow!("Failed to send PublishServiceAnnouncement command: {}", e))?;
-        rx.await
-            .map_err(|e| anyhow!("Failed to receive PublishServiceAnnouncement response: {}", e))?
+        rx.await.map_err(|e| {
+            anyhow!(
+                "Failed to receive PublishServiceAnnouncement response: {}",
+                e
+            )
+        })?
     }
 
     pub async fn get_service_announcements(&self) -> Vec<ServiceAnnouncement> {
@@ -243,7 +257,11 @@ impl P2PNode {
         }
     }
 
-    pub async fn new(keypair: Option<libp2p::identity::Keypair>, listen_port: u16, network_config: &NetworkConfig) -> Result<(Self, P2PHandle)> {
+    pub async fn new(
+        keypair: Option<libp2p::identity::Keypair>,
+        listen_port: u16,
+        network_config: &NetworkConfig,
+    ) -> Result<(Self, P2PHandle)> {
         let local_key = keypair.unwrap_or_else(libp2p::identity::Keypair::generate_ed25519);
         let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
             .with_tokio()
@@ -259,8 +277,8 @@ impl P2PNode {
             .with_behaviour(|key| {
                 let peer_id = PeerId::from(key.public());
                 let store = MemoryStore::new(peer_id);
-                
-let kademlia = kad::Behaviour::new(peer_id, store);
+
+                let kademlia = kad::Behaviour::new(peer_id, store);
 
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
                     .heartbeat_interval(Duration::from_secs(10))
@@ -274,15 +292,20 @@ let kademlia = kad::Behaviour::new(peer_id, store);
                 .map_err(|e| std::io::Error::other(format!("gossipsub: {}", e)))?;
 
                 let relay_topic = IdentTopic::new(RELAY_ENDPOINTS_TOPIC);
-                gossipsub.subscribe(&relay_topic)
+                gossipsub
+                    .subscribe(&relay_topic)
                     .map_err(|e| std::io::Error::other(format!("gossipsub subscribe: {}", e)))?;
                 let services_topic = IdentTopic::new(SERVICE_ANNOUNCEMENTS_TOPIC);
-                gossipsub.subscribe(&services_topic)
+                gossipsub
+                    .subscribe(&services_topic)
                     .map_err(|e| std::io::Error::other(format!("gossipsub subscribe: {}", e)))?;
 
                 let mdns_enabled = listen_port == 0;
                 let mdns = if mdns_enabled {
-                    Some(mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?)
+                    Some(mdns::tokio::Behaviour::new(
+                        mdns::Config::default(),
+                        peer_id,
+                    )?)
                 } else {
                     None
                 };
@@ -321,9 +344,8 @@ let kademlia = kad::Behaviour::new(peer_id, store);
             .accept(TUNNEL_PROTOCOL)
             .map_err(|e| anyhow!("Failed to accept protocol: {}", e))?;
 
-        
         let (tx, rx) = mpsc::channel(32);
-        
+
         for boot_addr_str in &network_config.bootstrap_nodes {
             match boot_addr_str.parse::<libp2p::Multiaddr>() {
                 Ok(boot_addr) => {
@@ -582,10 +604,7 @@ async fn handle_incoming_tunnel(
             .parse()
             .context("Invalid peer ID for multi-hop")?;
 
-        match p2p
-            .open_stream(next_peer, TUNNEL_PROTOCOL)
-            .await
-        {
+        match p2p.open_stream(next_peer, TUNNEL_PROTOCOL).await {
             Ok(mut outbound) => {
                 libp2p::futures::AsyncWriteExt::write_all(stream, &[0x00])
                     .await

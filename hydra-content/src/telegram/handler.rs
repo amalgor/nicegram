@@ -1,12 +1,12 @@
+use crate::models::{ContentNode, FoldLevel, ProcessedMessage, TrackedChat};
+use crate::processing::summarizer::Summarizer;
 use anyhow::Result;
 use grammers_client::Client;
 use grammers_client::client::UpdatesConfiguration;
-use grammers_client::update::Update;
 use grammers_client::peer::Peer;
-use grammers_session::updates::UpdatesLike;
+use grammers_client::update::Update;
 use grammers_session::types::PeerRef;
-use crate::models::{ProcessedMessage, ContentNode, FoldLevel, TrackedChat};
-use crate::processing::summarizer::Summarizer;
+use grammers_session::updates::UpdatesLike;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 

@@ -454,7 +454,10 @@ fn build_vless_tcp_header(
 
     match addr_type {
         1 => {
-            let parts: Vec<u8> = dst_addr.split('.').map(|segment| segment.parse().unwrap()).collect();
+            let parts: Vec<u8> = dst_addr
+                .split('.')
+                .map(|segment| segment.parse().unwrap())
+                .collect();
             header.extend_from_slice(&parts);
         }
         2 => {

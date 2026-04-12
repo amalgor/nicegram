@@ -14,12 +14,12 @@ pub fn http_client() -> reqwest::Client {
             let mut root_store = rustls::RootCertStore::empty();
             root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
             let tls_config = rustls::ClientConfig::builder_with_provider(
-                    rustls::crypto::ring::default_provider().into(),
-                )
-                .with_safe_default_protocol_versions()
-                .expect("ring provider supports default TLS versions")
-                .with_root_certificates(root_store)
-                .with_no_client_auth();
+                rustls::crypto::ring::default_provider().into(),
+            )
+            .with_safe_default_protocol_versions()
+            .expect("ring provider supports default TLS versions")
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
 
             reqwest::Client::builder()
                 .use_preconfigured_tls(tls_config)
@@ -107,11 +107,9 @@ fn parse_optional_address(field: &str, value: &str) -> Result<Option<Address>> {
         return Ok(None);
     }
 
-    Ok(Some(
-        trimmed
-            .parse::<Address>()
-            .with_context(|| format!("Invalid [crypto].{} '{}'", field, value))?,
-    ))
+    Ok(Some(trimmed.parse::<Address>().with_context(|| {
+        format!("Invalid [crypto].{} '{}'", field, value)
+    })?))
 }
 
 #[cfg(test)]

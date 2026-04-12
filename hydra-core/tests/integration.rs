@@ -66,7 +66,8 @@ async fn test_socks5_direct_connection() {
         None,
         None,
         None,
-    );
+        &hydra_config::IntelligenceConfig::default(),
+    ).unwrap();
     tokio::spawn(async move {
         server.run().await.ok();
     });
@@ -145,7 +146,8 @@ async fn test_socks5_rejects_unsupported_auth() {
         None,
         None,
         None,
-    );
+        &hydra_config::IntelligenceConfig::default(),
+    ).unwrap();
     tokio::spawn(async move {
         server.run().await.ok();
     });
@@ -154,8 +156,8 @@ async fn test_socks5_rejects_unsupported_auth() {
 
     let mut client = TcpStream::connect(socks_addr).await.unwrap();
 
-    // Offer only username/password auth (0x02), no no-auth
-    client.write_all(&[0x05, 0x01, 0x02]).await.unwrap();
+    // Offer only GSSAPI auth (0x01), which we don't support
+    client.write_all(&[0x05, 0x01, 0x01]).await.unwrap();
     let mut resp = [0u8; 2];
     client.read_exact(&mut resp).await.unwrap();
     assert_eq!(resp, [0x05, 0xFF], "Server should reject with 0xFF");
@@ -210,7 +212,8 @@ async fn test_socks5_domain_connect() {
         None,
         None,
         None,
-    );
+        &hydra_config::IntelligenceConfig::default(),
+    ).unwrap();
     tokio::spawn(async move {
         server.run().await.ok();
     });
@@ -294,7 +297,8 @@ async fn test_connection_registry_tracking() {
         None,
         None,
         None,
-    );
+        &hydra_config::IntelligenceConfig::default(),
+    ).unwrap();
     let registry = server.registry();
     tokio::spawn(async move {
         server.run().await.ok();
@@ -400,18 +404,26 @@ async fn test_ai_routing_selects_best_peer() {
     assert_eq!(result.transport, "vless");
 }
 
-/// Test Telegram target detection in connection registry.
+/// Test Telegram target detection remains available for transport selection.
 #[tokio::test]
 async fn test_telegram_detection_in_registry() {
     let registry = hydra_core::connections::ConnectionRegistry::new();
 
-    let tg_policy = registry.resolve_policy("149.154.167.50:443", true);
-    let tg_id = registry.register("149.154.167.50:443", tg_policy.group, tg_policy.action);
-    let normal_policy = registry.resolve_policy("8.8.8.8:53", false);
+    let tg_policy = registry.resolve_policy("149.154.167.50:443", None);
+    let tg_id = registry.register(
+        "149.154.167.50:443",
+        tg_policy.group,
+        tg_policy.action,
+        None,
+        None,
+    );
+    let normal_policy = registry.resolve_policy("8.8.8.8:53", None);
     let normal_id = registry.register(
         "8.8.8.8:53",
         normal_policy.group,
         normal_policy.action,
+        None,
+        None,
     );
 
     let snaps = registry.snapshot(false);
@@ -419,8 +431,10 @@ async fn test_telegram_detection_in_registry() {
     let normal_snap = snaps.iter().find(|s| s.id == normal_id).unwrap();
 
     assert!(
-        tg_snap.is_telegram,
-        "149.154.x.x should be detected as Telegram"
+        hydra_core::socks::is_telegram_target("149.154.167.50:443"),
+        "149.154.x.x should be detected as Telegram target"
     );
-    assert!(!normal_snap.is_telegram, "8.8.8.8 should not be Telegram");
+    assert!(!hydra_core::socks::is_telegram_target("8.8.8.8:53"));
+    assert_eq!(tg_snap.group_kind, "domain");
+    assert_eq!(normal_snap.group_kind, "domain");
 }

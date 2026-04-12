@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use base64::Engine;
 use hydra_config::{HydraConfig, TransportConfig, TransportMode};
@@ -6,8 +6,8 @@ use hydra_core::connections::{
     ConnectionGroupKind, ConnectionRegistry, RoutePolicyAction, RoutePolicyEntry,
 };
 use hydra_core::transport::{
-    ConfiguredTransport, RouteProfile, RouteProfileKind, RouteProfileSource, TransportKind,
-    build_transports_from_profiles,
+    build_transports_from_profiles, ConfiguredTransport, RouteProfile, RouteProfileKind,
+    RouteProfileSource, TransportKind,
 };
 use hydra_core::UsageRecorder;
 use serde::{Deserialize, Serialize};
@@ -81,7 +81,10 @@ impl RelayUsageStore {
             .inner
             .lock()
             .map_err(|e| anyhow!("relay usage lock poisoned: {e}"))?;
-        if let Some(sample) = guard.iter_mut().find(|sample| sample.bucket_start == bucket_start) {
+        if let Some(sample) = guard
+            .iter_mut()
+            .find(|sample| sample.bucket_start == bucket_start)
+        {
             sample.bytes = sample.bytes.saturating_add(bytes);
         } else {
             guard.push(RelayUsageSample {
@@ -245,7 +248,11 @@ pub async fn import_route_profiles(payload: String, import_format: String) -> Re
                 continue;
             }
 
-            if state.profiles.iter().any(|profile| profile_url(profile) == Some(candidate.as_str())) {
+            if state
+                .profiles
+                .iter()
+                .any(|profile| profile_url(profile) == Some(candidate.as_str()))
+            {
                 skipped.push(format!("Skipped duplicate VLESS entry: {candidate}"));
                 continue;
             }
@@ -280,7 +287,11 @@ pub async fn update_route_profile(profile_json: String) -> Result<String> {
     let normalized = normalize_profile(updated)?;
 
     let profile = with_state_mut(|state| {
-        let Some(index) = state.profiles.iter().position(|profile| profile.id == normalized.id) else {
+        let Some(index) = state
+            .profiles
+            .iter()
+            .position(|profile| profile.id == normalized.id)
+        else {
             bail!("Unknown route profile");
         };
         if matches!(state.profiles[index].source, RouteProfileSource::Builtin)
@@ -301,7 +312,11 @@ pub async fn update_route_profile(profile_json: String) -> Result<String> {
 
 pub async fn delete_route_profile(profile_id: String) -> Result<()> {
     with_state_mut(|state| {
-        let Some(index) = state.profiles.iter().position(|profile| profile.id == profile_id) else {
+        let Some(index) = state
+            .profiles
+            .iter()
+            .position(|profile| profile.id == profile_id)
+        else {
             bail!("Unknown route profile");
         };
         if matches!(state.profiles[index].source, RouteProfileSource::Builtin) {
@@ -360,7 +375,10 @@ pub async fn set_route_policy(
             .as_ref()
             .ok_or_else(|| anyhow!("route runtime not attached"))?;
         let policy = registry.upsert_policy(parsed_group_kind, group_key.clone(), parsed_action);
-        persist_json(&state.base_dir.join(ROUTE_POLICIES_FILE), &registry.list_policies())?;
+        persist_json(
+            &state.base_dir.join(ROUTE_POLICIES_FILE),
+            &registry.list_policies(),
+        )?;
         Ok(policy)
     })?;
     to_json(&policy)
@@ -374,7 +392,10 @@ pub async fn clear_route_policy(group_kind: String, group_key: String) -> Result
             .as_ref()
             .ok_or_else(|| anyhow!("route runtime not attached"))?;
         registry.clear_policy(parsed_group_kind, &group_key);
-        persist_json(&state.base_dir.join(ROUTE_POLICIES_FILE), &registry.list_policies())?;
+        persist_json(
+            &state.base_dir.join(ROUTE_POLICIES_FILE),
+            &registry.list_policies(),
+        )?;
         Ok(())
     })
 }
@@ -474,7 +495,10 @@ fn build_imported_vless_profile(
 ) -> Result<RouteProfile> {
     let config = hydra_core::transport::vless::VlessConfig::try_from(url)
         .with_context(|| "Failed to parse VLESS URL")?;
-    let label = format!("{}:{} ({})", config.address, config.port, config.server_name);
+    let label = format!(
+        "{}:{} ({})",
+        config.address, config.port, config.server_name
+    );
     let id = format!("imported-vless-{}-{index}", now_epoch_millis());
     Ok(RouteProfile::new(
         id,

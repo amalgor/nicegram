@@ -1,8 +1,8 @@
+use alloy::signers::SignerSync;
 use alloy::signers::local::{
     MnemonicBuilder, PrivateKeySigner,
     coins_bip39::{English, Mnemonic},
 };
-use alloy::signers::SignerSync;
 use anyhow::{Context, Result};
 use rand::thread_rng;
 use zeroize::Zeroizing;
@@ -38,8 +38,7 @@ impl LocalWallet {
 
     pub fn signer_from_phrase(mnemonic: &str) -> Result<PrivateKeySigner> {
         let phrase = Zeroizing::new(normalize_mnemonic(mnemonic));
-        Mnemonic::<English>::new_from_phrase(phrase.as_str())
-            .context("Invalid BIP-39 mnemonic")?;
+        Mnemonic::<English>::new_from_phrase(phrase.as_str()).context("Invalid BIP-39 mnemonic")?;
 
         MnemonicBuilder::<English>::default()
             .phrase(phrase.as_str())
@@ -79,7 +78,8 @@ mod tests {
 
     #[test]
     fn import_normalizes_whitespace_and_case() {
-        let phrase = " legal winner thank year wave sausage worth useful legal winner thank yellow ";
+        let phrase =
+            " legal winner thank year wave sausage worth useful legal winner thank yellow ";
         let imported = LocalWallet::import(phrase).unwrap();
         assert_eq!(
             imported.address,

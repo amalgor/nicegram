@@ -8,7 +8,6 @@ class ConnectionData {
   final int bytesUp;
   final int bytesDown;
   final int durationMs;
-  final bool isTelegram;
   final bool isProxied;
   final String status;
   final String? aiReason;
@@ -21,7 +20,6 @@ class ConnectionData {
     required this.bytesUp,
     required this.bytesDown,
     required this.durationMs,
-    required this.isTelegram,
     required this.isProxied,
     required this.status,
     this.aiReason,
@@ -36,7 +34,6 @@ class ConnectionData {
       bytesUp: json['bytes_up'] as int,
       bytesDown: json['bytes_down'] as int,
       durationMs: json['duration_ms'] as int,
-      isTelegram: json['is_telegram'] as bool,
       isProxied: json['is_proxied'] as bool,
       status: json['status'] as String,
       aiReason: json['ai_reason'] as String?,
@@ -61,11 +58,7 @@ class ConnectionTile extends StatelessWidget {
   final ConnectionData conn;
   final ValueChanged<bool>? onProxyToggle;
 
-  const ConnectionTile({
-    super.key,
-    required this.conn,
-    this.onProxyToggle,
-  });
+  const ConnectionTile({super.key, required this.conn, this.onProxyToggle});
 
   @override
   Widget build(BuildContext context) {
@@ -73,9 +66,6 @@ class ConnectionTile extends StatelessWidget {
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      color: conn.isTelegram
-          ? Colors.blue.withValues(alpha: 0.08)
-          : null,
       child: ExpansionTile(
         leading: _buildLeadingIcon(context),
         title: Text(
@@ -98,21 +88,10 @@ class ConnectionTile extends StatelessWidget {
             const SizedBox(width: 8),
             Text(
               conn.durationFormatted,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.grey,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: Colors.grey),
             ),
-            if (conn.isTelegram) ...[
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                decoration: BoxDecoration(
-                  color: Colors.blue.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: const Text('TG', style: TextStyle(fontSize: 10, color: Colors.blue)),
-              ),
-            ],
           ],
         ),
         trailing: isActive && onProxyToggle != null
@@ -134,12 +113,22 @@ class ConnectionTile extends StatelessWidget {
               child: Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.purple.withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(4),
                     ),
-                    child: const Text('AI', style: TextStyle(fontSize: 10, color: Colors.purple, fontWeight: FontWeight.bold)),
+                    child: const Text(
+                      'AI',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.purple,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -156,9 +145,18 @@ class ConnectionTile extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Port: ${conn.targetPort}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                Text('Up: ${_formatBytes(conn.bytesUp)}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                Text('Down: ${_formatBytes(conn.bytesDown)}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                Text(
+                  'Port: ${conn.targetPort}',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+                Text(
+                  'Up: ${_formatBytes(conn.bytesUp)}',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+                Text(
+                  'Down: ${_formatBytes(conn.bytesDown)}',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
               ],
             ),
           ),
@@ -210,7 +208,11 @@ class ConnectionTile extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: TextStyle(fontSize: 10, color: badgeColor, fontWeight: FontWeight.bold),
+        style: TextStyle(
+          fontSize: 10,
+          color: badgeColor,
+          fontWeight: FontWeight.bold,
+        ),
       ),
     );
   }

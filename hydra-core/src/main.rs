@@ -105,7 +105,8 @@ async fn main() -> Result<()> {
             None,
             Some(provider_metrics),
             None,
-        );
+            &config.intelligence,
+        )?;
         server.run().await?;
     }
 

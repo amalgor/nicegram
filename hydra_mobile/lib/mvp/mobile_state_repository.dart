@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart' show Color;
 import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
+import 'package:hydra_mobile/screens/connect_screen.dart' show categoryLabel;
 import 'package:shared_preferences/shared_preferences.dart';
 
 const String kMobileRoutesFile = 'mobile_routes.json';
@@ -248,6 +249,63 @@ class ImportReport {
   final int totalCandidates;
 }
 
+enum GroupingMode { app, category, country }
+
+class ConnectionGroupModel {
+  const ConnectionGroupModel({
+    required this.key,
+    required this.label,
+    required this.count,
+    required this.bytes,
+    required this.trackers,
+    required this.mode,
+  });
+
+  final String key;
+  final String label;
+  final int count;
+  final int bytes;
+  final int trackers;
+  final GroupingMode mode;
+
+  factory ConnectionGroupModel.fromAppJson(Map<String, dynamic> json) {
+    final app = json['app'] as String? ?? 'unknown';
+    final label = json['label'] as String?;
+    return ConnectionGroupModel(
+      key: app,
+      label: label ?? app,
+      count: (json['count'] as num?)?.toInt() ?? 0,
+      bytes: (json['bytes'] as num?)?.toInt() ?? 0,
+      trackers: (json['trackers'] as num?)?.toInt() ?? 0,
+      mode: GroupingMode.app,
+    );
+  }
+
+  factory ConnectionGroupModel.fromCategoryJson(Map<String, dynamic> json) {
+    final category = json['category'] as String? ?? 'unknown';
+    return ConnectionGroupModel(
+      key: category,
+      label: categoryLabel(category),
+      count: (json['count'] as num?)?.toInt() ?? 0,
+      bytes: (json['bytes'] as num?)?.toInt() ?? 0,
+      trackers: 0,
+      mode: GroupingMode.category,
+    );
+  }
+
+  factory ConnectionGroupModel.fromCountryJson(Map<String, dynamic> json) {
+    final country = json['country'] as String? ?? 'unknown';
+    return ConnectionGroupModel(
+      key: country,
+      label: country == 'unknown' ? 'Unknown' : country,
+      count: (json['count'] as num?)?.toInt() ?? 0,
+      bytes: (json['bytes'] as num?)?.toInt() ?? 0,
+      trackers: (json['trackers'] as num?)?.toInt() ?? 0,
+      mode: GroupingMode.country,
+    );
+  }
+}
+
 class ConnectionSnapshotModel {
   const ConnectionSnapshotModel({
     required this.id,
@@ -257,7 +315,6 @@ class ConnectionSnapshotModel {
     required this.bytesUp,
     required this.bytesDown,
     required this.durationMs,
-    required this.isTelegram,
     required this.isProxied,
     required this.status,
     required this.groupKind,
@@ -266,6 +323,15 @@ class ConnectionSnapshotModel {
     this.aiReason,
     this.appLabel,
     this.packageName,
+    this.appUid,
+    this.reverseDns,
+    this.whoisOrg,
+    this.whoisAsn,
+    this.whoisCountry,
+    this.classificationCategory,
+    this.classificationConfidence,
+    this.classificationSource,
+    this.classificationExplanation,
     this.transportLabel,
   });
 
@@ -276,7 +342,6 @@ class ConnectionSnapshotModel {
   final int bytesUp;
   final int bytesDown;
   final int durationMs;
-  final bool isTelegram;
   final bool isProxied;
   final String status;
   final String groupKind;
@@ -285,6 +350,15 @@ class ConnectionSnapshotModel {
   final String? aiReason;
   final String? appLabel;
   final String? packageName;
+  final int? appUid;
+  final String? reverseDns;
+  final String? whoisOrg;
+  final int? whoisAsn;
+  final String? whoisCountry;
+  final String? classificationCategory;
+  final double? classificationConfidence;
+  final String? classificationSource;
+  final String? classificationExplanation;
   final String? transportLabel;
 
   factory ConnectionSnapshotModel.fromJson(Map<String, dynamic> json) {
@@ -296,7 +370,6 @@ class ConnectionSnapshotModel {
       bytesUp: (json['bytes_up'] as num?)?.toInt() ?? 0,
       bytesDown: (json['bytes_down'] as num?)?.toInt() ?? 0,
       durationMs: (json['duration_ms'] as num?)?.toInt() ?? 0,
-      isTelegram: json['is_telegram'] as bool? ?? false,
       isProxied: json['is_proxied'] as bool? ?? false,
       status: json['status'] as String? ?? 'closed',
       groupKind: json['group_kind'] as String? ?? 'domain',
@@ -305,11 +378,23 @@ class ConnectionSnapshotModel {
       aiReason: json['ai_reason'] as String?,
       appLabel: json['app_label'] as String?,
       packageName: json['package_name'] as String?,
+      appUid: (json['app_uid'] as num?)?.toInt(),
+      reverseDns: json['reverse_dns'] as String?,
+      whoisOrg: json['whois_org'] as String?,
+      whoisAsn: (json['whois_asn'] as num?)?.toInt(),
+      whoisCountry: json['whois_country'] as String?,
+      classificationCategory: json['classification_category'] as String?,
+      classificationConfidence: (json['classification_confidence'] as num?)
+          ?.toDouble(),
+      classificationSource: json['classification_source'] as String?,
+      classificationExplanation: json['classification_explanation'] as String?,
       transportLabel: json['transport_label'] as String?,
     );
   }
 
   int get totalBytes => bytesUp + bytesDown;
+
+  bool get hasAppAttribution => appUid != null && appUid! >= 0;
 }
 
 class ConnectionStatsModel {
@@ -317,6 +402,8 @@ class ConnectionStatsModel {
     required this.activeCount,
     required this.totalCount,
     required this.proxiedCount,
+    required this.blockedCount,
+    required this.trackerCount,
     required this.totalBytesUp,
     required this.totalBytesDown,
   });
@@ -324,6 +411,8 @@ class ConnectionStatsModel {
   final int activeCount;
   final int totalCount;
   final int proxiedCount;
+  final int blockedCount;
+  final int trackerCount;
   final int totalBytesUp;
   final int totalBytesDown;
 
@@ -332,6 +421,8 @@ class ConnectionStatsModel {
       activeCount: (json['active_count'] as num?)?.toInt() ?? 0,
       totalCount: (json['total_count'] as num?)?.toInt() ?? 0,
       proxiedCount: (json['proxied_count'] as num?)?.toInt() ?? 0,
+      blockedCount: (json['blocked_count'] as num?)?.toInt() ?? 0,
+      trackerCount: (json['tracker_count'] as num?)?.toInt() ?? 0,
       totalBytesUp: (json['total_bytes_up'] as num?)?.toInt() ?? 0,
       totalBytesDown: (json['total_bytes_down'] as num?)?.toInt() ?? 0,
     );
@@ -563,6 +654,33 @@ class MobileStateRepository {
     final jsonText = await HydraPlatformGateway.instance.getConnectionStats();
     final decoded = jsonDecode(jsonText) as Map<String, dynamic>;
     return ConnectionStatsModel.fromJson(decoded);
+  }
+
+  Future<List<ConnectionGroupModel>> loadConnectionsByApp() async {
+    final jsonText = await HydraPlatformGateway.instance.getConnectionsByApp();
+    final decoded = jsonDecode(jsonText) as Map<String, dynamic>;
+    final groups = decoded['groups'] as List<dynamic>? ?? [];
+    return groups
+        .map((e) => ConnectionGroupModel.fromAppJson(Map<String, dynamic>.from(e as Map)))
+        .toList();
+  }
+
+  Future<List<ConnectionGroupModel>> loadConnectionsByCategory() async {
+    final jsonText = await HydraPlatformGateway.instance.getConnectionsByCategory();
+    final decoded = jsonDecode(jsonText) as Map<String, dynamic>;
+    final groups = decoded['groups'] as List<dynamic>? ?? [];
+    return groups
+        .map((e) => ConnectionGroupModel.fromCategoryJson(Map<String, dynamic>.from(e as Map)))
+        .toList();
+  }
+
+  Future<List<ConnectionGroupModel>> loadConnectionsByCountry() async {
+    final jsonText = await HydraPlatformGateway.instance.getConnectionsByCountry();
+    final decoded = jsonDecode(jsonText) as Map<String, dynamic>;
+    final groups = decoded['groups'] as List<dynamic>? ?? [];
+    return groups
+        .map((e) => ConnectionGroupModel.fromCountryJson(Map<String, dynamic>.from(e as Map)))
+        .toList();
   }
 
   List<String> _parseRaw(String payload) {

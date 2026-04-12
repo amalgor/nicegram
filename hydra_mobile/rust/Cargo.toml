@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-flutter_rust_bridge = "=2.11.1"
+flutter_rust_bridge = "=2.12.0"
 hydra-config = { path = "../../hydra-config" }
 hydra-content = { path = "../../hydra-content" }
 hydra-core = { path = "../../hydra-core" }
@@ -24,7 +24,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 alloy = { workspace = true }
 chrono = "0.4"
-tun2proxy = "0.7.19"
+tun2proxy = { path = "../../../tun2proxy" }
+moka = { version = "0.12", features = ["sync"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["stream", "rustls", "charset", "http2", "json"] }
 libp2p = "0.56"
 async-trait = "0.1"

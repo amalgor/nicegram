@@ -144,8 +144,7 @@ impl CreditLedger {
             }
         }
         self.ensure_limit(&mut account, linked_anchor);
-        account.advanced_unlocked =
-            account.payment_count >= self.settings.advanced_after_payments;
+        account.advanced_unlocked = account.payment_count >= self.settings.advanced_after_payments;
         self.save(&account)?;
         Ok(account)
     }
@@ -160,15 +159,12 @@ impl CreditLedger {
         account.debt_micro_usdc = (account.debt_micro_usdc - amount_micro_usdc).max(0);
         account.payment_count = account.payment_count.saturating_add(1);
         account.last_payment = now_epoch_secs();
-        let grown = (account.credit_limit_micro_usdc as f64 * self.settings.growth_factor).round()
-            as i64;
-        account.credit_limit_micro_usdc = grown.max(base_limit_micro_usdc(
-            &self.settings,
-            linked_anchor,
-        ));
+        let grown =
+            (account.credit_limit_micro_usdc as f64 * self.settings.growth_factor).round() as i64;
+        account.credit_limit_micro_usdc =
+            grown.max(base_limit_micro_usdc(&self.settings, linked_anchor));
         account.tier = AccountTier::Paid;
-        account.advanced_unlocked =
-            account.payment_count >= self.settings.advanced_after_payments;
+        account.advanced_unlocked = account.payment_count >= self.settings.advanced_after_payments;
         self.save(&account)?;
         Ok(account)
     }
@@ -193,7 +189,9 @@ impl CreditLedger {
         };
         let from_account: CreditAccount = serde_json::from_slice(&from_bytes)?;
         let mut to_account = self.load_or_create(to_anchor_id, linked_anchor)?;
-        to_account.usage_bytes = to_account.usage_bytes.saturating_add(from_account.usage_bytes);
+        to_account.usage_bytes = to_account
+            .usage_bytes
+            .saturating_add(from_account.usage_bytes);
         to_account.usage_seconds = to_account
             .usage_seconds
             .saturating_add(from_account.usage_seconds);
@@ -225,8 +223,7 @@ impl CreditLedger {
     pub fn check_credit(&self, anchor_id: &str, linked_anchor: bool) -> Result<CreditStatus> {
         let mut account = self.load_or_create(anchor_id, linked_anchor)?;
         self.ensure_limit(&mut account, linked_anchor);
-        account.advanced_unlocked =
-            account.payment_count >= self.settings.advanced_after_payments;
+        account.advanced_unlocked = account.payment_count >= self.settings.advanced_after_payments;
         self.save(&account)?;
 
         let limit = account.credit_limit_micro_usdc.max(1);
@@ -239,8 +236,8 @@ impl CreditLedger {
         } else {
             let range = (self.settings.fallback_threshold - self.settings.soft_throttle_threshold)
                 .max(f64::EPSILON);
-            let progress = ((utilization_pct - self.settings.soft_throttle_threshold) / range)
-                .clamp(0.0, 1.0);
+            let progress =
+                ((utilization_pct - self.settings.soft_throttle_threshold) / range).clamp(0.0, 1.0);
             1.0 - progress * (1.0 - self.settings.min_speed_pct)
         };
 
@@ -285,7 +282,9 @@ impl CreditLedger {
                 id: "credit:urge-payment".to_string(),
                 kind: "urge_payment".to_string(),
                 title: "Balance running low".to_string(),
-                message: "Premium routes are close to the limit. Add balance soon to avoid slowing down.".to_string(),
+                message:
+                    "Premium routes are close to the limit. Add balance soon to avoid slowing down."
+                        .to_string(),
             })
         } else if utilization_pct >= self.settings.soft_nudge_threshold {
             Some(NudgeEvent {
@@ -335,7 +334,9 @@ impl CreditLedger {
         account.credit_limit_micro_usdc = account
             .credit_limit_micro_usdc
             .max(base_limit_micro_usdc(&self.settings, linked_anchor));
-        if account.advanced_unlocked || account.payment_count >= self.settings.advanced_after_payments {
+        if account.advanced_unlocked
+            || account.payment_count >= self.settings.advanced_after_payments
+        {
             account.advanced_unlocked = true;
         }
     }

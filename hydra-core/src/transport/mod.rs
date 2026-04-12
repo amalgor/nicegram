@@ -203,7 +203,9 @@ pub fn build_transports(configs: &[TransportConfig]) -> Result<Vec<ConfiguredTra
     Ok(transports)
 }
 
-pub fn build_transports_from_profiles(profiles: &[RouteProfile]) -> Result<Vec<ConfiguredTransport>> {
+pub fn build_transports_from_profiles(
+    profiles: &[RouteProfile],
+) -> Result<Vec<ConfiguredTransport>> {
     let mut ordered = profiles
         .iter()
         .filter(|profile| profile.enabled)

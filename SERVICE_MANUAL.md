@@ -4,7 +4,7 @@
 
 ## Shipping Status (2026-04-05)
 - Текущий shipping target в репозитории: **Android MVP network utility**, а не embedded-wallet marketplace.
-- Primary surface в `hydra_mobile`: `Connect`, `Connections`, `Routes`, `Relay Usage`, `Settings`.
+- Primary surface в `hydra_mobile`: `Intelligence`, `Connections`, `Routes`, `Relay`, `Settings`.
 - В APK больше **не бандлится GGUF-модель**. LLM остаётся optional download из `Settings -> Optional AI`.
 - Пользовательский routing state хранится рядом с `hydra.toml` в:
   - `mobile_routes.json` — built-in WSS + imported VLESS profiles и их порядок
@@ -39,6 +39,7 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **[agent]** — P2P deal agent: `auto_spend_limit`, `max_rate_premium`, `preferred_payment_methods`, `min_dealer_reputation`
 - **[discovery]** — параметры опроса `HydraRouteBook`: `poll_interval_secs`, `max_offers`, `prefer_free`, `rpc_timeout_secs`
 - **[credit]** — локальная кредитная политика для premium routes: `trial_credit_usdc`, `linked_credit_usdc`, `growth_factor`, thresholds для nudge/throttle/fallback, `advanced_after_payments`
+- **[intelligence]** — сетевой intelligence pipeline: `auto_block_trackers` (opt-in блокировка трекеров, default false), `block_confidence_threshold` (минимальный confidence для автоблока, default 0.8), `verdict_cache_ttl_seconds` (TTL кеша вердиктов, default 43200 = 12ч), `verdict_cache_max_entries` (макс. записей в кеше, default 50000)
 - **[bootstrap]** — `listen_port` (для bootstrap-нод)
 
 На мобильном устройстве конфигурация загружается из `{app_documents_dir}/hydra.toml`, относительные пути автоматически разрешаются относительно `app_documents_dir`.
@@ -145,6 +146,13 @@ Bundled mobile defaults для shipping APK: `[network].proxy_mode = "full"` и 
 - **Multi-hop Relay**: Последовательно устанавливает stream-каналы через промежуточные узлы.
 - **Transport layer** (`transport/`): `Socks5Server` работает со списком `ConfiguredTransport` в порядке TOML-конфига. Поддерживаются `WssTransport` и `VlessTransport`. Для VLESS shipping path теперь корректно различает plain TCP/WS credentials без `flow` и Reality/Vision credentials с `flow=xtls-rprx-vision`; `grpc+reality` URL пока остаётся parse-only.
 - **Routing policy**: глобальный `proxy_mode` остаётся в `[network]` (`off | telegram | full`). Для proxied-трафика действует fail-closed: если подходящие transports исчерпаны, соединение закрывается без direct fallback.
+- **App Attribution** (Android 10+): `ConnectionInfo` и `ConnectionSnapshot` теперь содержат `app_uid`, `app_label`, `package_name`. На Android используется `ConnectivityManager.getConnectionOwnerUid()` через platform channel для определения приложения-источника по реальному `(protocol, src, dst)` tuple, полученному из `tun2proxy` source metadata. Важная operational detail: в текущем vendored `tun2proxy` session info включается через SOCKS5 `USER/PASS`, когда username оканчивается на `+info`, поэтому mobile VPN bridge теперь подключается к локальному SOCKS5 как `socks5://hydra+info:session@127.0.0.1:<port>`. Для `getConnectionOwnerUid()` destination host больше не резолвится принудительно: domain targets передаются через `InetSocketAddress.createUnresolved(host, port)`, а IP literals остаются resolved. Kotlin-side `AppResolver` держит UID LRU cache, Rust mobile bridge (`hydra_mobile/rust/src/api/app_resolver.rs`) держит `moka` caches и pending/completed resolution queues, а snapshot writer применяет завершённые app verdicts обратно в `ConnectionRegistry`. Dart-сторона стартует resolution loop после boot runtime и опрашивает pending queue каждые 500ms.
+- **Network Intelligence state**: `ConnectionInfo` / `ConnectionSnapshot` дополнены `reverse_dns`, `whois_org`, `whois_asn`, `whois_country` и flattened classification fields (`classification_category`, `classification_confidence`, `classification_source`, `classification_explanation`). `ConnectionRegistry` умеет обновлять enrichment/classification постфактум, а `ConnectionStats` теперь считает `blocked_count` и `tracker_count`.
+- **Enrichment Service** (`enrichment.rs`): Асинхронный сервис для обогащения connection metadata. Выполняет reverse DNS lookup через `hickory-resolver` (Google DNS) и WHOIS lookup через `whois-rust`. Результаты кешируются в `moka` cache (TTL 24h, max 10K entries). Enrichment запускается как detached tokio task после регистрации connection — не блокирует connection establishment. Каждый sub-lookup (DNS, WHOIS) имеет 3-секундный timeout. WHOIS parsing извлекает `OrgName/organisation/owner/descr`, `OriginAS/origin`, `Country` из raw response. Embedded minimal `servers.json` для IP lookups (ARIN default).
+- **Tracker Database** (`tracker_db.rs`): Embedded static classifier для известных tracker/ad доменов. Данные загружаются из `hydra-core/data/trackers.json` через `include_str!()` при компиляции. Категории: `Advertising`, `Analytics`, `SocialTracking`, `Telemetry`, `Fingerprinting`, `Malware`, `ContentDelivery`. Matching: exact domain match first, затем parent domain fallback (e.g., `pixel.facebook.com` → `facebook.com`). O(1) average lookup через HashMap. Источники: Disconnect list, DuckDuckGo Tracker Radar, EasyList, uBlock Origin. ~500 curated domains. Обновление: редактировать `trackers.json`, пересобрать. `classify_domain()` и `classify_ip()` (с reverse DNS) возвращают `TrackerMatch { domain_matched, company, category }`.
+- **Classification Verdict Cache** (`classifier.rs`): Трёхуровневый классификатор соединений. **Tier 1** — `VerdictCache` на базе `moka::sync::Cache` (TTL 12h, max 50K entries), ключ `(host_or_domain, app_uid)`, синхронный lookup < 1ms. **Tier 2** — `TrackerDatabase.classify_domain()` + WHOIS-based heuristic rules (keyword matching по org name: advertising, analytics, marketing, tracker, adtech и т.д.). **Tier 3** — LLM classifier (см. ниже). Поток: `classify_fast()` вызывается синхронно сразу после парсинга target — проверяет cache, затем tracker DB; если verdict blocking и `auto_block_trackers = true` и user policy = `Auto`, соединение блокируется. `classify_enriched()` вызывается async после enrichment — re-check tracker DB с PTR, WHOIS rules, enqueue в LLM если Unknown. Late-block verdicts логируются, но не убивают активное соединение. User policy override: classifier не блокирует если пользователь явно задал policy (Direct/WSS/VLESS). Конфигурация через `[intelligence]` секцию. Статистика: `ClassifierStats` (cache size, hit rate, tracker hits, rules applied, LLM pending). 15 unit tests.
+- **Classification Event Log** (`classification_log.rs`): JSONL dataset writer для всех verdicts. Пишет в `{shared_base_dir}/classification_events.jsonl`, ротирует файл на 10MB, хранит до 3 rotated copies (`classification_events.1.jsonl` ... `.3.jsonl`), TTL нет — это долговременный датасет. В журнал попадают tracker DB, WHOIS rules, LLM queue placements и пользовательские override-сигналы в структуре `ClassificationEvent`. Mobile FRB экспортирует `get_classification_log_stats()` и `export_classification_events(limit)` из того же shared base dir. Эти данные считаются кэшируемыми/переиспользуемыми для отладки и dataset collection; их нужно хранить локально до явной очистки.
+- **Telegram routing flag cleanup**: `is_telegram` удалён из durable connection state и snapshot JSON. Telegram detection всё ещё используется в runtime для transport selection и proxy heuristics, но не хранится как отдельное persisted connection поле; app/domain grouping теперь строится вокруг `package_name`/`app_uid` или domain fallback.
 
 ### 6. Cloudflare Worker Relay (hydra-relay-worker/)
 Отдельный проект (TypeScript, вне Rust workspace). Развёрнут на Cloudflare Workers free tier.
@@ -296,9 +304,9 @@ Bundled mobile defaults для shipping APK: `[network].proxy_mode = "full"` и 
 
 ### Network & Connect UI + LLM Analysis (30 марта 2026) — ВЫПОЛНЕНО
 - **Network screen полностью переписан**: Соединения группируются по домену приложения (google.com, telegram.org и т.д.). Каждая группа показывает: иконку, домен, badge RELAY/DIRECT/TG, количество соединений, объём трафика, route summary, количество активных. Разворачивается в список индивидуальных соединений с компактным отображением (host:port, route badge, bytes, duration).
-- **Async LLM security comments**: При развороте группы асинхронно запрашивается анализ безопасности от встроенной Qwen 2.5 модели (`analyze_host()`). Результат кешируется и отображается с цветовой маркировкой [OK]/[WARN]/[ALERT].
+- **Async LLM security comments**: При развороте группы асинхронно запрашивается классификация хоста (`analyze_host()`). Результат берётся из `VerdictCache` (intelligence pipeline Tier 1-3) и возвращается как structured JSON с полями `category`, `confidence`, `source`, `explanation`.
 - **Connect screen переделан**: Кнопка Connect стала компактнее (160px). Добавлен таймер uptime. Stats grid с 4 карточками (Active/Relayed/Direct/Total) с иконками. Traffic bar (Up/Down) с цветовой индикацией. LLM Security Analysis card — каждые 30 секунд автоматически запрашивает `analyze_connections()` с обзором всех активных соединений. Кнопка ручного re-analyze.
-- **Rust API**: Добавлены `analyze_connections(json)` и `analyze_host(host, port, is_proxied, bytes)` — промпты для Qwen 2.5 с [OK]/[WARN]/[ALERT] тегами. Используют `SHARED_AI` lock для доступа к модели.
+- **Rust API**: `analyze_connections(json)` возвращает structured JSON summary с classifier stats, tracker/malware/blocked counts и top tracker domains (без raw LLM вызова). `analyze_host(host, port, is_proxied, bytes)` возвращает cached verdict из `VerdictCache` (category, confidence, source, explanation) или `pending` если классификация ещё не завершена.
 - **FRB codegen (30 марта 2026)**: Запущен `flutter_rust_bridge_codegen generate`, все FRB API (`getActiveConnections`, `getConnectionStats`, `setConnectionProxy`, `setProxyMode`, `analyzeConnections`, `analyzeHost`) сгенерированы как real bindings вместо стабов. Content hash: `-2077367203`. Исправлен missing `CachedContent` struct в `hydra-content/src/attention/tracker.rs`.
 
 #### Bootstrap-нода (boot.ze1.org) — обновлена 30 марта 2026
@@ -315,7 +323,7 @@ Bundled mobile defaults для shipping APK: `[network].proxy_mode = "full"` и 
   1. Загрузка AI модели сделана **ленивой** (lazy) — не грузится при старте, только по явному запросу пользователя через Settings > AI Models.
   2. Параметры llama.cpp: `mmap=true, mlock=false` для снижения RSS.
   3. Контекст уменьшен с 2048 до 512 токенов (достаточно для коротких security-промптов).
-  4. `analyze_connections()` и `analyze_host()` возвращают fallback-сообщение "[OK] AI not loaded" вместо ошибки, если модель не загружена.
+  4. `analyze_connections()` возвращает structured JSON summary из classifier stats (не требует LLM). `analyze_host()` возвращает cached verdict из VerdictCache или `pending` status.
 - **Результат**: приложение стабильно работает 5+ минут, RSS ~240 MB.
 
 #### Relay Worker fix (30 марта 2026)
@@ -362,6 +370,45 @@ Bundled mobile defaults для shipping APK: `[network].proxy_mode = "full"` и 
 - **Carrier-specific ECH behavior (2026-04-04)**: на физическом Android устройстве `M2101K7BNY` под реальным mobile carrier path живых `ECH accepted` не наблюдалось. Логи показывают повторяемый `TLS handshake timeout` именно на ECH-enabled handshake к `relay.hydra-net.work`, после чего standard TLS успешно поднимает тот же WSS relay для `mtalk.google.com:5228`, `149.154.167.51:443`, `149.154.167.51:5222` и других targets. Чтобы не тратить по ~5 секунд на каждый новый relay socket, клиент теперь после первого такого timeout включает 10-минутный cooldown и пишет `ECH temporarily disabled ... using standard TLS`.
 - **TLS fix (Android)**: `rustls-platform-verifier` паникует на Android без JNI-инициализации. Исправлено: `hydra-exchange/src/config.rs` — синглтон `http_client()` строит `reqwest::Client` с явным `ring` CryptoProvider + `webpki-roots` корневыми сертификатами. Все `ProviderBuilder::new().connect_http(url)` заменены на `connect_reqwest(http_client(), url)` в `client.rs` и `deal_client.rs` (18 call sites). Зависимости `rustls`, `webpki-roots`, `reqwest` добавлены в `hydra-exchange/Cargo.toml`. 13 тестов проходят.
 - **Pending**: iOS device validation, real mobile provider session (телефон в режиме Share & Earn provider) against deployed Worker, и перенос Telegram censorship bypass на более подходящий transport path (`vless/reality`, provider routes, later DPI hardening), потому что plain Cloudflare Worker TCP relay под реальным carrier DPI пока недостаточен для устойчивой Telegram session.
+
+### Intelligence Pipeline: Prompt 6 Mobile Bridge (2026-04-08)
+
+**Status**: COMPLETED (Prompt 6 из `prompts/intelligence-pipeline-prompts.md`)
+
+**Реализовано**:
+- **FRB API расширен двумя функциями** в `hydra_mobile/rust/src/api/simple.rs`:
+  - `get_classifier_stats()` — возвращает JSON со статистикой классификатора: `cache_size`, `cache_hit_rate`, `tracker_hits`, `rules_applied`, `llm_pending`
+  - `set_intelligence_auto_block(enabled: bool)` — runtime toggle для автоблокировки трекеров
+- **SHARED_CLASSIFIER** — добавлен глобальный handle к `ConnectionClassifier` для доступа из мобильного bridge
+- **Enrichment и classification данные** уже экспортируются в JSON через `get_active_connections()`:
+  - `reverse_dns`, `whois_org`, `whois_asn`, `whois_country`
+  - `classification_category`, `classification_confidence`, `classification_source`, `classification_explanation`
+- **ConnectionStatsModel** уже содержит `blocked_count` и `tracker_count` из `get_connection_stats()`
+- **Dart модели** (`ConnectionSnapshotModel`, `ConnectionStatsModel`) корректно парсят все новые поля как nullable
+- **Backward compatibility**: все enrichment/classification поля опциональны, существующий UI продолжает работать
+
+**Архитектура**:
+- Enrichment pipeline (Prompts 3-5) работает async и не блокирует connection establishment
+- Fast classification (<1ms) проверяет cache + tracker DB перед подключением
+- Enriched classification запускается после DNS/WHOIS lookup и обновляет registry
+- Flutter получает обогащенные snapshots через существующий polling механизм (2 сек interval)
+
+**Prompt 7: Intelligence Dashboard UI** — COMPLETED 2026-04-08:
+- **connect_screen.dart** полностью переработан:
+  - Intelligence Summary Card (gradient, категорийные pills с подсчётом: ADS/ANALYTICS/TELEMETRY/SOCIAL/CLEAN/UNKNOWN, blocked bytes)
+  - Compact VPN Status Bar (indicator dot + switch вместо 152px hero circle)
+  - Top Threats Card (top 3 приложения по tracker connections с company names)
+  - Route Inventory и Relay Snapshot карточки сохранены
+- **connections_screen.dart** расширен:
+  - Classification badge (цветная pill с доминантной категорией) рядом с заголовком группы
+  - Category filter bar (горизонтальные FilterChip: All/ADS/ANALYTICS/TELEMETRY/SOCIAL/CLEAN/UNKNOWN) — фильтрация локальная без re-fetch
+  - Enrichment details в раскрытых connection rows: reverse DNS, WHOIS (org, ASN, country), classification line с confidence %
+  - Graceful degradation: "Analyzing..." для connections без classification
+  - Stats bar теперь показывает Trackers count вместо Uplink
+- **main.dart** — навигация переименована: Intelligence | Connections | Routes | Relay | Settings, иконка shield
+- Classification color palette: advertising=#EF4444, analytics=#F97316, telemetry=#EAB308, social_tracking=#8B5CF6, legitimate=#22C55E, unknown=#94A3B8, malware=#DC2626
+- Shared helpers (`categoryColor`, `categoryLabel`, `isTrackerCategory`, `kCategoryColors`, `kCategoryLabels`) экспортированы из connect_screen.dart и reuse в connections_screen.dart
+- `flutter analyze` — 0 issues
 
 ### Этап 2: Attention + персонализация
 - **AttentionTracker** — полнота клиентского трекинга и политика событий.

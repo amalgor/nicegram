@@ -151,10 +151,7 @@ pub enum TransportConfig {
         device_id: String,
     },
     /// VLESS transport encoded as a raw vless:// URL.
-    Vless {
-        url: String,
-        mode: TransportMode,
-    },
+    Vless { url: String, mode: TransportMode },
 }
 
 impl TransportConfig {
@@ -217,10 +214,8 @@ impl Default for CryptoConfig {
             rpc_url: "https://sepolia.base.org".to_string(),
             route_book_address: String::new(),
             deal_board_address: String::new(),
-            identity_registry_address: "0x8004A818BFB912233c491871b3d84c89A494BD9e"
-                .to_string(),
-            reputation_registry_address: "0x8004B663056A597Dffe9eCcC1965A193B7388713"
-                .to_string(),
+            identity_registry_address: "0x8004A818BFB912233c491871b3d84c89A494BD9e".to_string(),
+            reputation_registry_address: "0x8004B663056A597Dffe9eCcC1965A193B7388713".to_string(),
             usdc_address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e".to_string(),
         }
     }
@@ -316,6 +311,33 @@ impl Default for CreditConfig {
     }
 }
 
+/// Network intelligence pipeline configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IntelligenceConfig {
+    /// Automatically block connections to known trackers/ads (opt-in).
+    /// When false, connections are classified but not blocked — user sees
+    /// verdicts in the UI before choosing to enable blocking.
+    pub auto_block_trackers: bool,
+    /// Minimum confidence threshold to auto-block a tracker connection (0.0–1.0)
+    pub block_confidence_threshold: f32,
+    /// Verdict cache TTL in seconds (how long a cached classification is reused)
+    pub verdict_cache_ttl_seconds: u64,
+    /// Verdict cache max entries
+    pub verdict_cache_max_entries: u64,
+}
+
+impl Default for IntelligenceConfig {
+    fn default() -> Self {
+        Self {
+            auto_block_trackers: false,
+            block_confidence_threshold: 0.8,
+            verdict_cache_ttl_seconds: 43200, // 12 hours
+            verdict_cache_max_entries: 50_000,
+        }
+    }
+}
+
 /// Bootstrap node specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -345,6 +367,7 @@ pub struct HydraConfig {
     pub transports: Vec<TransportConfig>,
     pub crypto: CryptoConfig,
     pub agent: AgentConfig,
+    pub intelligence: IntelligenceConfig,
     pub bootstrap: BootstrapConfig,
 }
 
@@ -361,6 +384,7 @@ impl Default for HydraConfig {
             transports: default_transports(),
             crypto: CryptoConfig::default(),
             agent: AgentConfig::default(),
+            intelligence: IntelligenceConfig::default(),
             bootstrap: BootstrapConfig::default(),
         }
     }
@@ -409,21 +433,23 @@ impl HydraConfig {
 
     /// Returns the first WSS endpoint and device ID for quota synchronization.
     pub fn primary_quota_transport(&self) -> Option<(String, String)> {
-        self.transports.iter().find_map(|transport| match transport {
-            TransportConfig::Wss {
-                endpoints,
-                device_id,
-                ..
-            } => endpoints.first().cloned().map(|endpoint| {
-                let device_id = if device_id.trim().is_empty() {
-                    "hydra-mobile".to_string()
-                } else {
-                    device_id.clone()
-                };
-                (endpoint, device_id)
-            }),
-            TransportConfig::Vless { .. } => None,
-        })
+        self.transports
+            .iter()
+            .find_map(|transport| match transport {
+                TransportConfig::Wss {
+                    endpoints,
+                    device_id,
+                    ..
+                } => endpoints.first().cloned().map(|endpoint| {
+                    let device_id = if device_id.trim().is_empty() {
+                        "hydra-mobile".to_string()
+                    } else {
+                        device_id.clone()
+                    };
+                    (endpoint, device_id)
+                }),
+                TransportConfig::Vless { .. } => None,
+            })
     }
 
     /// Write default configuration to a file for the user to customize.
@@ -642,7 +668,10 @@ listen_port = 44444
             config.telegram.session_path,
             PathBuf::from("/data/hydra/telegram.session")
         );
-        assert_eq!(config.content.db_path, PathBuf::from("/data/hydra/content.db"));
+        assert_eq!(
+            config.content.db_path,
+            PathBuf::from("/data/hydra/content.db")
+        );
     }
 
     #[test]
@@ -716,7 +745,10 @@ listen_port = 44444
 
         assert_eq!(
             config.primary_quota_transport(),
-            Some(("wss://relay.example.com".to_string(), "device-1".to_string()))
+            Some((
+                "wss://relay.example.com".to_string(),
+                "device-1".to_string()
+            ))
         );
     }
 

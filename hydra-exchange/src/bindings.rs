@@ -182,8 +182,7 @@ mod tests {
         assert_eq!(
             ReputationRegistry::giveFeedbackCall::SELECTOR,
             keccak256(
-                "giveFeedback(uint256,int128,uint8,string,string,string,string,bytes32)"
-                    .as_bytes()
+                "giveFeedback(uint256,int128,uint8,string,string,string,string,bytes32)".as_bytes()
             )[0..4]
         );
         assert_eq!(

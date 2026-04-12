@@ -18,8 +18,13 @@ pub fn start_vpn_tunnel(fd: i32) -> anyhow::Result<()> {
     tracing::info!("Initializing tun2proxy with SOCKS5 bridge...");
 
     let port = SOCKS5_PORT.load(Ordering::Relaxed);
-    let proxy_addr = format!("socks5://127.0.0.1:{}", port);
-    tracing::info!("tun2proxy will connect to SOCKS5 at 127.0.0.1:{}", port);
+    // In the vendored tun2proxy build, SOCKS5 username ending with "+info"
+    // triggers embedding "protocol|src_ip|src_port" into USER/PASS auth.
+    let proxy_addr = format!("socks5://hydra+info:session@127.0.0.1:{}", port);
+    tracing::info!(
+        "tun2proxy will connect to SOCKS5 at 127.0.0.1:{} with session-info auth",
+        port
+    );
 
     let mut args = Args::default();
     args.proxy = ArgProxy::try_from(proxy_addr.as_str()).map_err(|e| anyhow::anyhow!("{}", e))?;

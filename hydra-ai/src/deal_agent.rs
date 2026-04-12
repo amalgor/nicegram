@@ -13,18 +13,11 @@ use crate::models::qwen2_infer::Qwen2Infer;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DealDecision {
     /// Agent found a deal and auto-approved it (amount <= auto_spend_limit).
-    AutoApproved {
-        offer: ScoredDeal,
-    },
+    AutoApproved { offer: ScoredDeal },
     /// Agent found a deal but requires user confirmation (amount > auto_spend_limit).
-    NeedsConfirmation {
-        offer: ScoredDeal,
-        reason: String,
-    },
+    NeedsConfirmation { offer: ScoredDeal, reason: String },
     /// No suitable deals found.
-    NoDeal {
-        reason: String,
-    },
+    NoDeal { reason: String },
 }
 
 /// A deal offer with a computed score.
@@ -72,11 +65,7 @@ impl DealAgent {
 
     /// Find the best deal for a given currency and amount.
     /// Scores all active offers, applies filters, and returns a decision.
-    pub async fn find_best_deal(
-        &self,
-        currency: &str,
-        usdc_amount: f64,
-    ) -> Result<DealDecision> {
+    pub async fn find_best_deal(&self, currency: &str, usdc_amount: f64) -> Result<DealDecision> {
         let offers = self.deal_client.query_deals(currency).await?;
 
         if offers.is_empty() {
@@ -105,7 +94,11 @@ impl DealAgent {
         }
 
         // Sort by score descending
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // LLM re-ranking if model is loaded
         if let Some(reranked) = self.llm_rerank(&scored).await {
@@ -145,7 +138,8 @@ impl DealAgent {
         match &decision {
             DealDecision::AutoApproved { offer } => {
                 let amount_str = format!("{:.6}", usdc_amount);
-                let result = self.deal_client
+                let result = self
+                    .deal_client
                     .accept_deal(offer.offer_id, &amount_str, mnemonic)
                     .await?;
 
@@ -208,11 +202,7 @@ impl DealAgent {
                         .any(|p| p.eq_ignore_ascii_case(m))
                 })
                 .count();
-            if matches > 0 {
-                1.0
-            } else {
-                0.1
-            }
+            if matches > 0 { 1.0 } else { 0.1 }
         };
 
         // Weighted composite score
@@ -337,12 +327,7 @@ mod tests {
         }
     }
 
-    fn make_offer(
-        offer_id: u64,
-        rate: &str,
-        rep_value: &str,
-        methods: Vec<&str>,
-    ) -> DealOfferView {
+    fn make_offer(offer_id: u64, rate: &str, rep_value: &str, methods: Vec<&str>) -> DealOfferView {
         DealOfferView {
             offer_id,
             dealer: format!("0xdealer{}", offer_id),
@@ -426,7 +411,10 @@ mod tests {
         let s1 = agent.score_offer(&matching).unwrap();
         let s2 = agent.score_offer(&non_matching).unwrap();
 
-        assert!(s1.score > s2.score, "matching payment method should score higher");
+        assert!(
+            s1.score > s2.score,
+            "matching payment method should score higher"
+        );
     }
 
     #[test]

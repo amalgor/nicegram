@@ -1,3 +1,4 @@
+pub mod app_resolver;
 pub mod content;
 pub mod credit;
 pub mod exchange;

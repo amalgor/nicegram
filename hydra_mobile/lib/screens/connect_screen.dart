@@ -8,6 +8,54 @@ import 'package:hydra_mobile/src/rust/api/vpn.dart';
 
 bool gIsVpnActive = false;
 
+// Classification category colors
+const kCategoryColors = <String, Color>{
+  'advertising': Color(0xFFEF4444),
+  'analytics': Color(0xFFF97316),
+  'telemetry': Color(0xFFEAB308),
+  'social_tracking': Color(0xFF8B5CF6),
+  'legitimate': Color(0xFF22C55E),
+  'unknown': Color(0xFF94A3B8),
+  'malware': Color(0xFFDC2626),
+};
+
+// Classification category short labels for UI pills
+const kCategoryLabels = <String, String>{
+  'advertising': 'ADS',
+  'analytics': 'ANALYTICS',
+  'telemetry': 'TELEMETRY',
+  'social_tracking': 'SOCIAL',
+  'legitimate': 'CLEAN',
+  'unknown': 'UNKNOWN',
+  'malware': 'MALWARE',
+};
+
+Color categoryColor(String? category) {
+  if (category == null) return kCategoryColors['unknown']!;
+  return kCategoryColors[category] ?? kCategoryColors['unknown']!;
+}
+
+String categoryLabel(String? category) {
+  if (category == null) return 'UNKNOWN';
+  return kCategoryLabels[category] ?? category.toUpperCase();
+}
+
+bool isTrackerCategory(String? category) {
+  return category == 'advertising' ||
+      category == 'analytics' ||
+      category == 'telemetry' ||
+      category == 'social_tracking' ||
+      category == 'malware';
+}
+
+class _ThreatAppInfo {
+  _ThreatAppInfo({required this.appName, required this.packageName});
+  final String appName;
+  final String packageName;
+  int trackerCount = 0;
+  final Set<String> companies = {};
+}
+
 class ConnectScreen extends StatefulWidget {
   const ConnectScreen({super.key});
 
@@ -29,6 +77,8 @@ class _ConnectScreenState extends State<ConnectScreen>
     activeCount: 0,
     totalCount: 0,
     proxiedCount: 0,
+    blockedCount: 0,
+    trackerCount: 0,
     totalBytesUp: 0,
     totalBytesDown: 0,
   );
@@ -39,6 +89,7 @@ class _ConnectScreenState extends State<ConnectScreen>
   );
   double _relayCostPerGb = kDefaultRelayCostPerGb;
   List<RouteProfile> _profiles = const [];
+  List<ConnectionSnapshotModel> _connections = const [];
   bool _busy = false;
 
   @override
@@ -97,6 +148,7 @@ class _ConnectScreenState extends State<ConnectScreen>
         _repository.loadRouteProfiles(),
         _repository.loadRelayUsageSummary(),
         _repository.loadRelayCostPerGb(),
+        _repository.loadConnections(),
       ]);
       if (!mounted) {
         return;
@@ -106,10 +158,51 @@ class _ConnectScreenState extends State<ConnectScreen>
         _profiles = results[1] as List<RouteProfile>;
         _relayUsage = results[2] as RelayUsageSummary;
         _relayCostPerGb = results[3] as double;
+        _connections = results[4] as List<ConnectionSnapshotModel>;
       });
     } catch (e) {
       debugPrint('Dashboard refresh failed: $e');
     }
+  }
+
+  Map<String, int> _categoryCounts() {
+    final counts = <String, int>{};
+    for (final conn in _connections) {
+      final cat = conn.classificationCategory ?? 'unknown';
+      counts.update(cat, (v) => v + 1, ifAbsent: () => 1);
+    }
+    return counts;
+  }
+
+  List<_ThreatAppInfo> _topThreats({int limit = 3}) {
+    final apps = <String, _ThreatAppInfo>{};
+    for (final conn in _connections) {
+      if (!isTrackerCategory(conn.classificationCategory)) continue;
+      final key = conn.packageName ?? conn.groupKey;
+      if (key.isEmpty) continue;
+      final info = apps.putIfAbsent(
+        key,
+        () => _ThreatAppInfo(
+          appName: conn.appLabel ?? conn.groupKey,
+          packageName: key,
+        ),
+      );
+      info.trackerCount++;
+      final org = conn.whoisOrg;
+      if (org != null && org.isNotEmpty) {
+        info.companies.add(org);
+      }
+      final src = conn.classificationSource;
+      if (src != null && src.isNotEmpty && info.companies.length < 3) {
+        final cat = conn.classificationCategory;
+        if (cat != null) {
+          info.companies.add(categoryLabel(cat));
+        }
+      }
+    }
+    final sorted = apps.values.toList()
+      ..sort((a, b) => b.trackerCount.compareTo(a.trackerCount));
+    return sorted.take(limit).toList();
   }
 
   Future<void> _toggleVpn() async {
@@ -168,16 +261,22 @@ class _ConnectScreenState extends State<ConnectScreen>
     final vlessProfiles = _profiles.where((profile) => profile.isVless).length;
     final estimatedTodayCost =
         (_relayUsage.todayBytes / (1024 * 1024 * 1024)) * _relayCostPerGb;
+    final categoryCounts = _categoryCounts();
+    final threats = _topThreats();
 
     return RefreshIndicator(
       onRefresh: _refreshDashboard,
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _buildHeroCard(context),
-          const SizedBox(height: 16),
-          _buildStatsGrid(context),
-          const SizedBox(height: 16),
+          _buildIntelligenceSummary(context, categoryCounts),
+          const SizedBox(height: 12),
+          _buildCompactVpnBar(context),
+          const SizedBox(height: 12),
+          if (threats.isNotEmpty) ...[
+            _buildTopThreats(context, threats),
+            const SizedBox(height: 12),
+          ],
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -224,7 +323,7 @@ class _ConnectScreenState extends State<ConnectScreen>
               ),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -254,27 +353,36 @@ class _ConnectScreenState extends State<ConnectScreen>
               ),
             ),
           ),
-          const SizedBox(height: 16),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.smart_toy_outlined),
-              title: const Text('Optional AI stays off by default'),
-              subtitle: const Text(
-                'No LLM model is bundled into this APK. Download a model later from Settings if you want local analysis.',
-              ),
-            ),
-          ),
         ],
       ),
     );
   }
 
-  Widget _buildHeroCard(BuildContext context) {
+  Widget _buildIntelligenceSummary(
+    BuildContext context,
+    Map<String, int> categoryCounts,
+  ) {
+    final totalAnalyzed = _connections.length;
+    final blockedBytes = _connections
+        .where((c) => c.routeType == 'blocked')
+        .fold(0, (sum, c) => sum + c.totalBytes);
+
+    // Build ordered category pills: tracker categories first, then clean/unknown
+    final pillOrder = [
+      'advertising',
+      'analytics',
+      'telemetry',
+      'social_tracking',
+      'malware',
+      'legitimate',
+      'unknown',
+    ];
+
     return Container(
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(20),
         gradient: const LinearGradient(
-          colors: [Color(0xFF0F172A), Color(0xFF0C4A6E)],
+          colors: [Color(0xFF0F172A), Color(0xFF1E1B4B)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -282,140 +390,219 @@ class _ConnectScreenState extends State<ConnectScreen>
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            GestureDetector(
-              onTap: _toggleVpn,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 220),
-                width: 152,
-                height: 152,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: gIsVpnActive
-                      ? const Color(0xFF22C55E).withValues(alpha: 0.18)
-                      : Colors.white.withValues(alpha: 0.08),
-                  border: Border.all(
-                    color: gIsVpnActive
-                        ? const Color(0xFF22C55E)
-                        : Colors.white24,
-                    width: 3,
+            Row(
+              children: [
+                Text(
+                  '$totalAnalyzed',
+                  style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
-                child: _busy
-                    ? const Center(child: CircularProgressIndicator())
-                    : Icon(
-                        Icons.power_settings_new,
-                        size: 80,
-                        color: gIsVpnActive
-                            ? const Color(0xFF86EFAC)
-                            : Colors.white,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'connections analyzed',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Colors.white70,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: pillOrder
+                  .where((cat) => (categoryCounts[cat] ?? 0) > 0)
+                  .map((cat) {
+                    final count = categoryCounts[cat] ?? 0;
+                    final color = categoryColor(cat);
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
                       ),
-              ),
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: color.withValues(alpha: 0.35),
+                        ),
+                      ),
+                      child: Text(
+                        '${categoryLabel(cat)} $count',
+                        style: TextStyle(
+                          color: color,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    );
+                  })
+                  .toList(),
             ),
-            const SizedBox(height: 18),
-            Text(
-              gIsVpnActive ? 'VPN Active' : 'VPN Idle',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                color: gIsVpnActive ? const Color(0xFF86EFAC) : Colors.white,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              gIsVpnActive
-                  ? 'Android VPN is routing traffic into the local SOCKS5 runtime.'
-                  : 'Import your own VLESS credentials or use the built-in WSS relay, then start the VPN.',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Colors.white.withValues(alpha: 0.8),
-              ),
-            ),
-            if (gIsVpnActive && _connectedAt != null) ...[
-              const SizedBox(height: 10),
+            if (_stats.blockedCount > 0 || blockedBytes > 0) ...[
+              const SizedBox(height: 12),
               Text(
-                'Uptime ${formatDuration(_uptime)}',
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: Colors.white70),
+                '[BLOCKED] ${_stats.blockedCount} connections, ${formatBytes(blockedBytes)} saved',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFFEF4444).withValues(alpha: 0.9),
+                ),
               ),
             ],
+            const SizedBox(height: 10),
+            Text(
+              'Powered by on-device analysis',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.white38,
+                fontSize: 11,
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildStatsGrid(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: _statCard(
-            context,
-            label: 'Active',
-            value: '${_stats.activeCount}',
-            icon: Icons.link,
-            color: const Color(0xFF22C55E),
-          ),
+  Widget _buildCompactVpnBar(BuildContext context) {
+    final statusColor = gIsVpnActive
+        ? const Color(0xFF22C55E)
+        : const Color(0xFF94A3B8);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: statusColor,
+                boxShadow: gIsVpnActive
+                    ? [
+                        BoxShadow(
+                          color: statusColor.withValues(alpha: 0.5),
+                          blurRadius: 6,
+                        ),
+                      ]
+                    : null,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    gIsVpnActive ? 'VPN Active' : 'VPN Idle',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  if (gIsVpnActive && _connectedAt != null)
+                    Text(
+                      'Uptime ${formatDuration(_uptime)}  |  ${_stats.activeCount} active  |  ${formatBytes(_stats.totalBytesDown)} down',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    )
+                  else
+                    Text(
+                      'Start VPN to route traffic',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                ],
+              ),
+            ),
+            SizedBox(
+              height: 40,
+              width: 64,
+              child: _busy
+                  ? const Center(
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : Switch(
+                      value: gIsVpnActive,
+                      onChanged: (_) => _toggleVpn(),
+                      activeThumbColor: const Color(0xFF22C55E),
+                    ),
+            ),
+          ],
         ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _statCard(
-            context,
-            label: 'Proxied',
-            value: '${_stats.proxiedCount}',
-            icon: Icons.cloud_queue,
-            color: const Color(0xFF38BDF8),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _statCard(
-            context,
-            label: 'Uplink',
-            value: formatBytes(_stats.totalBytesUp),
-            icon: Icons.north,
-            color: const Color(0xFFF59E0B),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _statCard(
-            context,
-            label: 'Downlink',
-            value: formatBytes(_stats.totalBytesDown),
-            icon: Icons.south,
-            color: const Color(0xFFA78BFA),
-          ),
-        ),
-      ],
+      ),
     );
   }
 
-  Widget _statCard(
-    BuildContext context, {
-    required String label,
-    required String value,
-    required IconData icon,
-    required Color color,
-  }) {
+  Widget _buildTopThreats(
+    BuildContext context,
+    List<_ThreatAppInfo> threats,
+  ) {
     return Card(
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(icon, color: color, size: 18),
-            const SizedBox(height: 10),
             Text(
-              value,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              'Top Threats',
+              style: Theme.of(context).textTheme.titleMedium,
             ),
-            const SizedBox(height: 4),
-            Text(label, style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(height: 10),
+            ...threats.map((info) {
+              final companiesText = info.companies.isNotEmpty
+                  ? info.companies.take(3).join(', ')
+                  : 'Tracker traffic';
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEF4444).withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        Icons.apps,
+                        color: Color(0xFFEF4444),
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            info.appName,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            '${info.trackerCount} tracker connections ($companiesText)',
+                            style: Theme.of(context).textTheme.bodySmall,
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
           ],
         ),
       ),

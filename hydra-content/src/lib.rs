@@ -1,15 +1,15 @@
-pub mod models;
-pub mod telegram;
-pub mod processing;
 pub mod attention;
+pub mod models;
+pub mod processing;
+pub mod telegram;
 
-use anyhow::Result;
-use hydra_ai::AiNegotiator;
-use hydra_config::HydraConfig;
 use crate::attention::tracker::AttentionTracker;
 use crate::processing::summarizer::Summarizer;
 use crate::telegram::client::TelegramClient;
 use crate::telegram::handler::MessageHandler;
+use anyhow::Result;
+use hydra_ai::AiNegotiator;
+use hydra_config::HydraConfig;
 use std::sync::Arc;
 use tracing::info;
 
@@ -25,10 +25,7 @@ pub struct ContentEngine {
 impl ContentEngine {
     /// Create a new ContentEngine from config and a shared AI negotiator.
     pub fn new(config: &HydraConfig, ai: Arc<AiNegotiator>) -> Result<Self> {
-        let summarizer = Arc::new(Summarizer::new(
-            ai,
-            config.content.summarization_max_tokens,
-        ));
+        let summarizer = Arc::new(Summarizer::new(ai, config.content.summarization_max_tokens));
 
         let tg_client = TelegramClient::new(config.telegram.clone());
         let handler = MessageHandler::new(summarizer.clone());

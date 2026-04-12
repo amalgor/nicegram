@@ -1,15 +1,23 @@
+pub mod classifier;
+pub mod classification_log;
 pub mod connections;
 pub mod discovery;
+pub mod enrichment;
+pub mod llm_classifier;
 pub mod onion;
 pub mod socks;
+pub mod tracker_db;
 pub mod transport;
 use anyhow::Result;
 use async_trait::async_trait;
-use connections::{
-    ConnectionRegistry, ResolvedRoutePolicy, RoutePolicyAction, RouteType,
-};
+use classifier::{ClassificationResult, ConnectionClassifier, ClassificationRequest};
+use classification_log::ClassificationEventLog;
+use llm_classifier::LlmClassifier;
+use connections::{ConnectionRegistry, ResolvedRoutePolicy, RoutePolicyAction, RouteType};
 use discovery::RouteDiscoveryService;
+use enrichment::EnrichmentService;
 use hydra_ai::AiNegotiator;
+use hydra_config::IntelligenceConfig;
 use hydra_econ::EconLedger;
 use hydra_econ::provider::ProviderMetricsLedger;
 use hydra_p2p::P2PHandle;
@@ -18,6 +26,8 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
+use tracker_db::TrackerDatabase;
 use tracing::{debug, error, info, warn};
 use transport::{ConfiguredTransport, TransportKind};
 
@@ -64,6 +74,10 @@ pub struct Socks5Server {
     credit: Option<Arc<dyn CreditController>>,
     provider_metrics: Option<Arc<ProviderMetricsLedger>>,
     usage_recorder: Option<Arc<dyn UsageRecorder>>,
+    enrichment: Arc<EnrichmentService>,
+    classifier: Arc<ConnectionClassifier>,
+    classification_log: Arc<ClassificationEventLog>,
+    llm_rx: std::sync::Mutex<Option<mpsc::Receiver<ClassificationRequest>>>,
 }
 
 impl Socks5Server {
@@ -78,8 +92,20 @@ impl Socks5Server {
         credit: Option<Arc<dyn CreditController>>,
         provider_metrics: Option<Arc<ProviderMetricsLedger>>,
         usage_recorder: Option<Arc<dyn UsageRecorder>>,
-    ) -> Self {
-        Self {
+        intelligence_config: &IntelligenceConfig,
+    ) -> Result<Self> {
+        let enrichment = EnrichmentService::new()?;
+        let tracker_db = Arc::new(TrackerDatabase::new());
+        let (classifier, llm_rx) = ConnectionClassifier::new(tracker_db, intelligence_config);
+        let classification_log = Arc::new(ClassificationEventLog::new(
+            crate::classification_log::default_base_dir(),
+        )?);
+        info!(
+            "ConnectionClassifier initialized: auto_block={}, threshold={}",
+            intelligence_config.auto_block_trackers,
+            intelligence_config.block_confidence_threshold,
+        );
+        Ok(Self {
             addr,
             ai,
             p2p,
@@ -91,11 +117,23 @@ impl Socks5Server {
             credit,
             provider_metrics,
             usage_recorder,
-        }
+            enrichment: Arc::new(enrichment),
+            classifier: Arc::new(classifier),
+            classification_log,
+            llm_rx: std::sync::Mutex::new(Some(llm_rx)),
+        })
     }
 
     pub fn registry(&self) -> Arc<ConnectionRegistry> {
         self.registry.clone()
+    }
+
+    pub fn classifier(&self) -> Arc<ConnectionClassifier> {
+        self.classifier.clone()
+    }
+
+    pub fn classification_log(&self) -> Arc<ClassificationEventLog> {
+        self.classification_log.clone()
     }
 
     pub fn proxy_mode_handle(&self) -> Arc<RwLock<String>> {
@@ -116,6 +154,18 @@ impl Socks5Server {
     pub async fn run(&self) -> Result<()> {
         if let Some(discovery) = &self.discovery {
             discovery.start_polling();
+        }
+
+        // Spawn LLM classifier task (Tier 3: best-effort async classification)
+        if let Some(llm_rx) = self.llm_rx.lock().unwrap().take() {
+            let infer = self.ai.infer().clone();
+            let registry = self.registry.clone();
+            let verdict_cache = self.classifier.verdict_cache().clone();
+            let llm_classifier = LlmClassifier::new(infer, llm_rx);
+            tokio::spawn(async move {
+                llm_classifier.run(registry, verdict_cache).await;
+            });
+            info!("LLM classifier task spawned for Tier 3 classification");
         }
 
         let listener = TcpListener::bind(self.addr).await?;
@@ -141,6 +191,9 @@ impl Socks5Server {
             let p2p = self.p2p.clone();
             let provider_metrics = self.provider_metrics.clone();
             let usage_recorder = self.usage_recorder.clone();
+            let enrichment = self.enrichment.clone();
+            let classifier = self.classifier.clone();
+            let classification_log = self.classification_log.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = handle_connection(
@@ -153,6 +206,9 @@ impl Socks5Server {
                     p2p,
                     provider_metrics,
                     usage_recorder,
+                    enrichment,
+                    classifier,
+                    classification_log,
                 )
                 .await
                 {
@@ -165,6 +221,49 @@ impl Socks5Server {
     }
 }
 
+/// Read USERNAME/PASSWORD auth subnegotiation (RFC 1929).
+/// Returns parsed SourceInfo from the username field.
+async fn read_userpass_auth(stream: &mut TcpStream) -> Result<socks::SourceInfo> {
+    // VER (1) | ULEN (1) | UNAME (1-255) | PLEN (1) | PASSWD (1-255)
+    let mut ver_ulen = [0u8; 2];
+    stream.read_exact(&mut ver_ulen).await?;
+
+    if ver_ulen[0] != 0x01 {
+        return Err(anyhow::anyhow!(
+            "Invalid auth subnegotiation version: expected 0x01, got 0x{:02x}",
+            ver_ulen[0]
+        ));
+    }
+
+    let ulen = ver_ulen[1] as usize;
+    let mut username = vec![0u8; ulen];
+    stream.read_exact(&mut username).await?;
+
+    let plen = stream.read_u8().await? as usize;
+    let mut _password = vec![0u8; plen];
+    stream.read_exact(&mut _password).await?;
+
+    // Send success response: VER (0x01) | STATUS (0x00 = success)
+    stream.write_all(&[0x01, 0x00]).await?;
+
+    let username_str = String::from_utf8_lossy(&username);
+    let source_info = socks::SourceInfo::parse(&username_str);
+
+    if source_info.has_source() {
+        debug!(
+            "Source info from tun2proxy: {}:{} ({})",
+            source_info
+                .src_ip
+                .map(|ip| ip.to_string())
+                .unwrap_or_default(),
+            source_info.src_port.unwrap_or(0),
+            source_info.protocol
+        );
+    }
+
+    Ok(source_info)
+}
+
 async fn handle_connection(
     mut stream: TcpStream,
     transports: Vec<ConfiguredTransport>,
@@ -175,6 +274,9 @@ async fn handle_connection(
     p2p: P2PHandle,
     provider_metrics: Option<Arc<ProviderMetricsLedger>>,
     usage_recorder: Option<Arc<dyn UsageRecorder>>,
+    enrichment: Arc<EnrichmentService>,
+    classifier: Arc<ConnectionClassifier>,
+    classification_log: Arc<ClassificationEventLog>,
 ) -> Result<()> {
     // 1. Negotiation (Handshake)
     let mut buf = [0u8; 2];
@@ -188,13 +290,18 @@ async fn handle_connection(
     let mut methods = vec![0u8; n_methods];
     stream.read_exact(&mut methods).await?;
 
-    // We only support 'NO AUTHENTICATION REQUIRED' (0x00)
-    if !methods.contains(&0x00) {
-        stream.write_all(&[0x05, 0xFF]).await?;
+    // Prefer USERNAME/PASSWORD (0x02) to get source info from tun2proxy,
+    // fallback to NO AUTHENTICATION (0x00)
+    let source_info = if methods.contains(&socks::AUTH_USER_PASS) {
+        stream.write_all(&[0x05, socks::AUTH_USER_PASS]).await?;
+        Some(read_userpass_auth(&mut stream).await?)
+    } else if methods.contains(&socks::AUTH_NONE) {
+        stream.write_all(&[0x05, socks::AUTH_NONE]).await?;
+        None
+    } else {
+        stream.write_all(&[0x05, socks::AUTH_NO_ACCEPTABLE]).await?;
         return Err(anyhow::anyhow!("No supported auth methods"));
-    }
-
-    stream.write_all(&[0x05, 0x00]).await?;
+    };
 
     // 2. Request
     let mut header = [0u8; 4];
@@ -303,7 +410,7 @@ async fn handle_connection(
         credit_status.clone(),
         premium_better,
     );
-    let resolved_policy = registry.resolve_policy(&target_addr, is_telegram);
+    let resolved_policy = registry.resolve_policy(&target_addr, None);
     let policy_transports = filter_transports_for_policy(&all_transports, &resolved_policy.action);
     let plan = select_transport_plan(
         &target_addr,
@@ -318,6 +425,8 @@ async fn handle_connection(
         &target_addr,
         resolved_policy.group.clone(),
         resolved_policy.action.clone(),
+        None, // App attribution resolved asynchronously via mobile bridge
+        source_info.as_ref(),
     );
     info!(
         "Connection #{}: target={}, telegram={}, proxy_required={}, mode={}, policy={}",
@@ -328,6 +437,117 @@ async fn handle_connection(
         proxy_mode,
         resolved_policy.action.as_label(),
     );
+
+    // Fast classification (synchronous, <1ms): check cache then tracker DB
+    let (target_host_str, target_port) = socks::split_target(&target_addr)
+        .map(|(h, p)| (h.to_string(), p))
+        .unwrap_or_else(|| (target_addr.clone(), 0));
+
+    let fast_verdict = classifier.classify_fast(&target_host_str, target_port, None);
+    if let ClassificationResult::Verdict(ref classification) = fast_verdict {
+        registry.update_classification(conn_id, classification.clone());
+        classification_log.log_event(crate::classification_log::make_event(
+            target_host_str.clone(),
+            target_port,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            classification.category,
+            classification.confidence,
+            classification.source,
+            classification.explanation.clone(),
+            0,
+            0,
+            None,
+        ));
+
+        // Block tracker connections only when auto_block is on AND user has no explicit policy
+        if classifier.should_block(classification)
+            && resolved_policy.action == RoutePolicyAction::Auto
+        {
+            info!(
+                conn_id = conn_id,
+                host = target_host_str.as_str(),
+                category = classification.category.as_str(),
+                confidence = classification.confidence,
+                "Blocking tracker connection (auto_block)"
+            );
+            registry.update_route(
+                conn_id,
+                RouteType::Blocked,
+                Some(format!(
+                    "Blocked: {} (confidence {:.0}%)",
+                    classification.category.as_str(),
+                    classification.confidence * 100.0
+                )),
+                Some("Blocked".to_string()),
+            );
+            stream.write_all(&socks::failure_reply()).await?;
+            registry.close(conn_id);
+            return Ok(());
+        }
+    }
+
+    // Spawn async enrichment + enriched classification task (non-blocking)
+    {
+        let enrichment = enrichment.clone();
+        let registry = registry.clone();
+        let classifier = classifier.clone();
+        let target_host = target_host_str.clone();
+        let is_pending = matches!(fast_verdict, ClassificationResult::Pending);
+        tokio::spawn(async move {
+            let result = enrichment.enrich_host(&target_host).await;
+            debug!(
+                "Connection #{}: enrichment complete - org={:?}, asn={:?}, country={:?}",
+                conn_id, result.whois_org, result.asn, result.country
+            );
+            registry.update_enrichment(
+                conn_id,
+                result.reverse_dns.clone(),
+                result.whois_org.clone(),
+                result.asn,
+                result.country.clone(),
+            );
+
+            // Run enriched classification if fast path didn't produce a verdict
+            if is_pending {
+                classifier
+                    .classify_enriched(
+                        conn_id,
+                        &target_host,
+                        target_port,
+                        None,
+                        None,
+                        None,
+                        &result,
+                        &registry,
+                        &classification_log,
+                    )
+                    .await;
+
+                // Late-block verdict: log but do not kill active connection
+                if let Some(cached) = classifier.verdict_cache().get(
+                    &classifier::VerdictKey {
+                        host_or_domain: target_host.to_lowercase(),
+                        app_uid: None,
+                    },
+                ) {
+                    if classifier.should_block(&cached) {
+                        info!(
+                            conn_id = conn_id,
+                            host = target_host.as_str(),
+                            category = cached.category.as_str(),
+                            confidence = cached.confidence,
+                            "Late classification: would block but connection already active"
+                        );
+                    }
+                }
+            }
+        });
+    }
 
     if plan.is_blocked() {
         registry.update_route(

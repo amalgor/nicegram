@@ -50,6 +50,40 @@ Future<void> _materializeBundledConfigIfNeeded(String baseDir) async {
   await configFile.writeAsString(content);
 }
 
+Future<void> _materializeBundledModelIfNeeded(String baseDir) async {
+  final modelsDir = Directory('$baseDir/models');
+  if (!await modelsDir.exists()) {
+    await modelsDir.create(recursive: true);
+  }
+
+  final target = File('${modelsDir.path}/qwen3.5-0.8b.gguf');
+  if (await target.exists() && await target.length() > 0) {
+    return;
+  }
+
+  const bundledCandidates = <String>[
+    'assets/models/Qwen3.5-0.8B-Q4_K_M.gguf',
+    'assets/models/qwen3.5-0.8b.gguf',
+  ];
+
+  for (final assetPath in bundledCandidates) {
+    try {
+      final data = await rootBundle.load(assetPath);
+      final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+      if (bytes.isEmpty) {
+        continue;
+      }
+      await target.writeAsBytes(bytes, flush: true);
+      debugPrint('Bundled model copied from $assetPath to ${target.path}');
+      return;
+    } catch (e) {
+      debugPrint('Bundled model not found at $assetPath: $e');
+    }
+  }
+
+  debugPrint('No bundled Qwen-3.5 model found in assets/models');
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await RustLib.init();
@@ -61,6 +95,7 @@ Future<void> main() async {
   try {
     final baseDir = await HydraPlatformGateway.instance.resolveBaseDir();
     await _materializeBundledConfigIfNeeded(baseDir);
+    await _materializeBundledModelIfNeeded(baseDir);
     await prepareLocalRuntime(baseDir: baseDir);
     initModelManager(baseDir: baseDir);
 
@@ -71,6 +106,7 @@ Future<void> main() async {
             final prefs = await SharedPreferences.getInstance();
             final mode = prefs.getString('proxy_mode') ?? 'full';
             await HydraPlatformGateway.instance.setProxyMode(mode: mode);
+            await HydraPlatformGateway.instance.startAppResolutionLoop();
           })
           .catchError((Object error) {
             debugPrint('Hydra network runtime error: $error');
@@ -115,10 +151,10 @@ class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
 
   static const _titles = <String>[
-    'Connect',
+    'Intelligence',
     'Connections',
     'Routes',
-    'Relay Usage',
+    'Relay',
     'Settings',
   ];
 
@@ -144,8 +180,9 @@ class _MainScreenState extends State<MainScreen> {
         },
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.power_settings_new),
-            label: 'Connect',
+            icon: Icon(Icons.shield_outlined),
+            selectedIcon: Icon(Icons.shield),
+            label: 'Intelligence',
           ),
           NavigationDestination(
             icon: Icon(Icons.account_tree_outlined),
@@ -154,7 +191,7 @@ class _MainScreenState extends State<MainScreen> {
           NavigationDestination(icon: Icon(Icons.route), label: 'Routes'),
           NavigationDestination(
             icon: Icon(Icons.query_stats),
-            label: 'Relay Usage',
+            label: 'Relay',
           ),
           NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
         ],

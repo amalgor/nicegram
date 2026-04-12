@@ -53,7 +53,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    let tg = client.client().expect("Client must be available after auth");
+    let tg = client
+        .client()
+        .expect("Client must be available after auth");
 
     // --- Phase 2: Find news channels ---
     println!();
@@ -67,7 +69,11 @@ async fn main() -> Result<()> {
             Peer::User(_) => "USER",
             Peer::Group(_) => "GROUP",
             Peer::Channel(ch) => {
-                if ch.username().is_some() { "PUBLIC_CH" } else { "PRIVATE_CH" }
+                if ch.username().is_some() {
+                    "PUBLIC_CH"
+                } else {
+                    "PRIVATE_CH"
+                }
             }
         };
         let name = peer.name().unwrap_or("?").to_string();
@@ -91,17 +97,26 @@ async fn main() -> Result<()> {
     // --- Phase 3: Read messages & summarize ---
     println!();
     println!("=== Content Intelligence: TLDR Folding ===");
-    println!("Found {} public channels. Reading last 3 messages from each (max 3 channels).", news_channels.len());
+    println!(
+        "Found {} public channels. Reading last 3 messages from each (max 3 channels).",
+        news_channels.len()
+    );
     println!();
 
     let ai = Arc::new(AiNegotiator::new(&config.ai));
 
     // Try loading LLM model for real summarization (llama.cpp — tokenizer embedded in GGUF)
     if config.ai.model_path.exists() {
-        println!("[...] Loading AI model for summarization: {}", config.ai.model_path.display());
+        println!(
+            "[...] Loading AI model for summarization: {}",
+            config.ai.model_path.display()
+        );
         match ai.load_model(config.ai.model_path.clone()).await {
             Ok(_) => println!("[OK] AI model loaded. Summarization will use LLM."),
-            Err(e) => println!("[WARN] Failed to load model: {}. Using heuristic fallback.", e),
+            Err(e) => println!(
+                "[WARN] Failed to load model: {}. Using heuristic fallback.",
+                e
+            ),
         }
     } else {
         println!("[INFO] AI model not found. Using heuristic fallback for summarization.");
@@ -126,7 +141,12 @@ async fn main() -> Result<()> {
             }
 
             println!();
-            println!("  [MSG #{}] {} ({} chars)", message.id(), message.date().format("%H:%M"), text.len());
+            println!(
+                "  [MSG #{}] {} ({} chars)",
+                message.id(),
+                message.date().format("%H:%M"),
+                text.len()
+            );
 
             if text.len() > 200 {
                 let tree = summarizer.process(&text).await?;
@@ -159,7 +179,9 @@ fn print_tree(node: &hydra_content::models::ContentNode, indent: usize) {
     };
 
     let display = if node.content.len() > 120 {
-        let boundary = node.content.char_indices()
+        let boundary = node
+            .content
+            .char_indices()
             .take_while(|(i, _)| *i <= 120)
             .last()
             .map(|(i, _)| i)

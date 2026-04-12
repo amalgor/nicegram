@@ -233,7 +233,8 @@ mod tests {
 
     #[test]
     fn test_parse_routing_json_with_surrounding_text() {
-        let response = "Here is the routing: {\"path\": [], \"transport\": \"raw\", \"max_price\": 0.0} done.";
+        let response =
+            "Here is the routing: {\"path\": [], \"transport\": \"raw\", \"max_price\": 0.0} done.";
         let inst = parse_routing_json(response).unwrap();
         assert!(inst.path.is_empty());
         assert_eq!(inst.transport, "raw");
@@ -255,7 +256,8 @@ mod tests {
 
     #[test]
     fn test_parse_routing_json_multi_hop() {
-        let json = r#"{"path": ["peer1", "peer2", "peer3"], "transport": "vless", "max_price": 0.01}"#;
+        let json =
+            r#"{"path": ["peer1", "peer2", "peer3"], "transport": "vless", "max_price": 0.01}"#;
         let inst = parse_routing_json(json).unwrap();
         assert_eq!(inst.path.len(), 3);
     }
@@ -298,7 +300,10 @@ mod tests {
             diagnostic_context: None,
         };
         let result = ai.decide_route(req).await.unwrap();
-        assert!(result.path.is_empty(), "Low trust peer should result in direct route");
+        assert!(
+            result.path.is_empty(),
+            "Low trust peer should result in direct route"
+        );
     }
 
     #[tokio::test]

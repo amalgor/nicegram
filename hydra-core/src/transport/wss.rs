@@ -225,7 +225,10 @@ pub async fn connect_relay_websocket(
     endpoint: &str,
     request: tungstenite::http::Request<()>,
     log_context: &str,
-) -> Result<(WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>, RelayTlsReport)> {
+) -> Result<(
+    WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>,
+    RelayTlsReport,
+)> {
     let parsed = parse_endpoint(endpoint)?;
     let (preferred_tls_config, ech_configured) =
         build_tls_client_config(&parsed.host, parsed.port).await?;
@@ -270,10 +273,7 @@ pub async fn connect_relay_websocket(
 
     let (ws_stream, _response) = ws_result;
 
-    Ok((
-        ws_stream,
-        tls_report,
-    ))
+    Ok((ws_stream, tls_report))
 }
 
 fn relay_dns_resolver() -> &'static TokioResolver {
@@ -446,10 +446,7 @@ async fn attempt_tls_handshake(
     log_context: &str,
     tls_config: Arc<rustls::ClientConfig>,
     ech_configured: bool,
-) -> Result<(
-    tokio_rustls::client::TlsStream<TcpStream>,
-    RelayTlsReport,
-)> {
+) -> Result<(tokio_rustls::client::TlsStream<TcpStream>, RelayTlsReport)> {
     let tcp_stream = connect_relay_tcp_stream(host, port, log_context).await?;
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|error| anyhow::anyhow!("Invalid server name '{}': {}", host, error))?;

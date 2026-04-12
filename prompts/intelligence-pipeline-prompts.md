@@ -38,10 +38,21 @@ Prompts 3 and 4 can be executed in parallel after Prompt 2.
 
 ---
 
-## Prompt 1: App Attribution via getConnectionOwnerUid
+## Prompt 1: App Attribution via getConnectionOwnerUid [COMPLETED 2026-04-07, VERIFIED]
 
 **Model:** GPT-5.4 or Opus-4.6
 **Reasoning level:** Medium (low o-series, standard thinking). Straightforward Android API integration, no architectural ambiguity.
+**Status:** COMPLETED and verified against code. Final implementation notes:
+- `AppResolver` singleton in `HydraVpnService.kt` with UID LRU cache (512 entries)
+- Platform channel now resolves by real connection tuple only: `resolveAppByConnection`
+- Rust mobile bridge `app_resolver.rs` keeps `moka` caches plus a pending/completed resolution queue
+- Snapshot writer enqueues unresolved `(protocol, src, dst)` lookups and applies completed verdicts back into `ConnectionRegistry`
+- Dart integration starts `startAppResolutionLoop()` after network runtime boot and polls every 500ms
+- Mobile VPN bridge forces SOCKS5 `USER/PASS` with local dummy credentials and `+info` username marker so vendored `tun2proxy` actually embeds `protocol|src_ip|src_port` in username
+- `ConnectionInfo` / `ConnectionSnapshot` carry `app_uid`, `app_label`, `package_name`
+- Tests cover cache behavior, pending queue dedupe, and completed-resolution submission
+
+**Verification note:** the first draft in the worktree still relied on destination-only heuristics and did not fully feed results back into `ConnectionRegistry`. A later device check also found that `tun2proxy` stayed on SOCKS5 `NO AUTH`, so `src_ip/src_port` never reached Hydra. That gap is now closed by forcing local dummy SOCKS5 credentials with the vendored `tun2proxy` `+info` username marker, which makes it send the source-aware username payload.
 
 ```
 CONTEXT
@@ -124,10 +135,18 @@ CONSTRAINTS
 
 ---
 
-## Prompt 2: Enrich ConnectionInfo with Classification Fields
+## Prompt 2: Enrich ConnectionInfo with Classification Fields [COMPLETED 2026-04-07]
 
 **Model:** GPT-5.4 or Opus-4.6
 **Reasoning level:** Low (minimal o-series, minimal thinking). Purely mechanical struct expansion with no design decisions.
+**Status:** COMPLETED. Implementation notes:
+- `ConnectionInfo` now carries `reverse_dns`, `whois_*`, and `classification`
+- Added `ConnectionClassification`, `TrafficCategory`, `ClassificationSource`
+- `ConnectionSnapshot` exports flattened classification fields for JSON consumers
+- `ConnectionRegistry` has `update_enrichment()` and `update_classification()`
+- `ConnectionStats` now includes `blocked_count` and `tracker_count`
+- `is_telegram` was removed from tracked connection structs/snapshots; Telegram detection remains only as transient routing input
+- Mobile JSON consumers were updated to match the new snapshot/stats schema
 
 ```
 CONTEXT
@@ -558,10 +577,17 @@ CONSTRAINTS
 
 ---
 
-## Prompt 7: Intelligence Dashboard UI
+## Prompt 7: Intelligence Dashboard UI [COMPLETED 2026-04-08]
 
 **Model:** Opus-4.6
 **Reasoning level:** Medium-High (extended thinking). UI/UX design decisions, layout architecture, making the intelligence data visually compelling.
+**Status:** COMPLETED. Implementation notes:
+- `connect_screen.dart` redesigned: Intelligence Summary Card (category pills with counts, blocked bytes), Compact VPN Status Bar (dot indicator + switch), Top Threats Card (top 3 apps by tracker count with company names). Route Inventory and Relay Snapshot cards preserved.
+- `connections_screen.dart` enhanced: classification badge (dominant category pill) on group title, category filter bar (FilterChip row: All/ADS/ANALYTICS/TELEMETRY/SOCIAL/CLEAN/UNKNOWN), enrichment details in expanded rows (reverse DNS, WHOIS org/ASN/country, classification line with confidence %), graceful "Analyzing..." fallback for pending classification.
+- `main.dart` tabs renamed: Intelligence | Connections | Routes | Relay | Settings. Shield icon for Intelligence tab.
+- Shared helpers (`categoryColor`, `categoryLabel`, `isTrackerCategory`, `kCategoryColors`, `kCategoryLabels`) in connect_screen.dart, reused by connections_screen.dart.
+- Classification color palette per spec: advertising=#EF4444, analytics=#F97316, telemetry=#EAB308, social_tracking=#8B5CF6, legitimate=#22C55E, unknown=#94A3B8, malware=#DC2626.
+- `flutter analyze` — 0 issues.
 
 ```
 CONTEXT

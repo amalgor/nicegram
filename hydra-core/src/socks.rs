@@ -19,8 +19,58 @@ pub const SOCKS_VERSION: u8 = 0x05;
 
 /// No-auth method
 pub const AUTH_NONE: u8 = 0x00;
+/// Username/password auth method
+pub const AUTH_USER_PASS: u8 = 0x02;
 /// No acceptable method
 pub const AUTH_NO_ACCEPTABLE: u8 = 0xFF;
+
+/// Source connection info extracted from SOCKS5 username field.
+/// Format: "username|protocol|src_ip|src_port" or "username|protocol|src_ip|src_port|dst_ip"
+#[derive(Debug, Clone, Default)]
+pub struct SourceInfo {
+    pub username: String,
+    pub protocol: String,
+    pub src_ip: Option<IpAddr>,
+    pub src_port: Option<u16>,
+    pub dst_ip: Option<IpAddr>,
+}
+
+impl SourceInfo {
+    /// Parse source info from username field.
+    /// Expected format: "username|protocol|src_ip|src_port" or "username|protocol|src_ip|src_port|dst_ip"
+    /// Falls back to treating entire string as username if parsing fails.
+    pub fn parse(raw: &str) -> Self {
+        let parts: Vec<&str> = raw.splitn(5, '|').collect();
+        if parts.len() >= 4 {
+            let src_ip = parts[2].parse::<IpAddr>().ok();
+            let src_port = parts[3].parse::<u16>().ok();
+            let dst_ip = if parts.len() >= 5 {
+                parts[4].parse::<IpAddr>().ok()
+            } else {
+                None
+            };
+            Self {
+                username: parts[0].to_string(),
+                protocol: parts[1].to_string(),
+                src_ip,
+                src_port,
+                dst_ip,
+            }
+        } else {
+            Self {
+                username: raw.to_string(),
+                protocol: String::new(),
+                src_ip: None,
+                src_port: None,
+                dst_ip: None,
+            }
+        }
+    }
+
+    pub fn has_source(&self) -> bool {
+        self.src_ip.is_some()
+    }
+}
 
 /// Telegram DC ranges from the official `core.telegram.org/resources/cidr.txt`
 /// snapshot used by this repo.
@@ -361,5 +411,41 @@ mod tests {
         assert!(is_relay_infrastructure("boot.ze1.org:22"));
         assert!(!is_relay_infrastructure("google.com:443"));
         assert!(!is_relay_infrastructure("149.154.167.50:443"));
+    }
+
+    #[test]
+    fn test_source_info_parse_full() {
+        let info = SourceInfo::parse("hydra|tcp|192.168.1.100|54321");
+        assert_eq!(info.username, "hydra");
+        assert_eq!(info.protocol, "tcp");
+        assert_eq!(info.src_ip, Some("192.168.1.100".parse().unwrap()));
+        assert_eq!(info.src_port, Some(54321));
+        assert!(info.has_source());
+    }
+
+    #[test]
+    fn test_source_info_parse_ipv6() {
+        let info = SourceInfo::parse("user|udp|::1|12345");
+        assert_eq!(info.username, "user");
+        assert_eq!(info.protocol, "udp");
+        assert_eq!(info.src_ip, Some("::1".parse().unwrap()));
+        assert_eq!(info.src_port, Some(12345));
+    }
+
+    #[test]
+    fn test_source_info_parse_fallback() {
+        let info = SourceInfo::parse("simple_username");
+        assert_eq!(info.username, "simple_username");
+        assert_eq!(info.protocol, "");
+        assert_eq!(info.src_ip, None);
+        assert_eq!(info.src_port, None);
+        assert!(!info.has_source());
+    }
+
+    #[test]
+    fn test_source_info_parse_partial() {
+        let info = SourceInfo::parse("user|tcp");
+        assert_eq!(info.username, "user|tcp");
+        assert!(!info.has_source());
     }
 }

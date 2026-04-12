@@ -131,7 +131,13 @@ async fn wallet_balances_and_offer_query_work_against_anvil() -> anyhow::Result<
     assert_eq!(offers[0].offer_id, 1);
     assert_eq!(offers[0].region, "US");
     assert_eq!(offers[0].protocols, vec!["vless".to_string()]);
-    assert_eq!(offers[0].reputation.as_ref().map(|item| item.feedback_count), Some(0));
+    assert_eq!(
+        offers[0]
+            .reputation
+            .as_ref()
+            .map(|item| item.feedback_count),
+        Some(0)
+    );
 
     Ok(())
 }
@@ -190,7 +196,10 @@ async fn register_and_feedback_work_against_anvil() -> anyhow::Result<()> {
         .summary_for_agent(registration.agent_id)
         .await?;
     assert_eq!(summary.as_ref().map(|item| item.feedback_count), Some(1));
-    assert_eq!(summary.as_ref().map(|item| item.formatted_value.as_str()), Some("1"));
+    assert_eq!(
+        summary.as_ref().map(|item| item.formatted_value.as_str()),
+        Some("1")
+    );
 
     Ok(())
 }

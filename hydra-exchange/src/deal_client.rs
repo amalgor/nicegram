@@ -24,22 +24,25 @@ impl DealBoardClient {
     }
 
     fn deal_board_address(&self) -> Result<alloy::primitives::Address> {
-        self.config
-            .deal_board_address
-            .ok_or_else(|| anyhow::anyhow!(
+        self.config.deal_board_address.ok_or_else(|| {
+            anyhow::anyhow!(
                 "Missing [crypto].deal_board_address in hydra.toml. \
                  Deploy HydraDealBoard and set the address."
-            ))
+            )
+        })
     }
 
     /// Query active deal offers for a given fiat currency (ISO 4217, e.g. "RUB").
     pub async fn query_deals(&self, currency: &str) -> Result<Vec<DealOfferView>> {
         let address = self.deal_board_address()?;
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let board = HydraDealBoard::new(address, &provider);
 
-        let total = board.totalOffers().call().await
+        let total = board
+            .totalOffers()
+            .call()
+            .await
             .context("Failed to get totalOffers")?
             .to::<u64>();
 
@@ -47,7 +50,10 @@ impl DealBoardClient {
         let mut views = Vec::new();
 
         for i in 1..=total {
-            let offer = board.getOffer(U256::from(i)).call().await
+            let offer = board
+                .getOffer(U256::from(i))
+                .call()
+                .await
                 .context("Failed to get offer")?;
             if !offer.active {
                 continue;
@@ -78,8 +84,8 @@ impl DealBoardClient {
     /// Get a single deal offer by ID.
     pub async fn get_offer(&self, offer_id: u64) -> Result<DealOfferView> {
         let address = self.deal_board_address()?;
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let board = HydraDealBoard::new(address, &provider);
 
         let offer = board
@@ -261,15 +267,14 @@ impl DealBoardClient {
             .context("Failed to send acceptDeal transaction")?;
 
         let tx_hash = format!("{:#x}", pending.tx_hash());
-        let receipt = pending.get_receipt().await
+        let receipt = pending
+            .get_receipt()
+            .await
             .context("Failed to get acceptDeal receipt")?;
 
         let escrow_id = decode_escrow_created_id(&receipt);
 
-        Ok(AcceptDealResult {
-            escrow_id,
-            tx_hash,
-        })
+        Ok(AcceptDealResult { escrow_id, tx_hash })
     }
 
     /// Mark fiat as sent. Only the buyer can call this.
@@ -288,7 +293,9 @@ impl DealBoardClient {
             .context("Failed to send markFiatSent transaction")?;
 
         let tx_hash = format!("{:#x}", pending.tx_hash());
-        pending.get_receipt().await
+        pending
+            .get_receipt()
+            .await
             .context("Failed to get markFiatSent receipt")?;
 
         Ok(TxHashResult { tx_hash })
@@ -297,8 +304,8 @@ impl DealBoardClient {
     /// Check escrow status.
     pub async fn check_status(&self, escrow_id: u64) -> Result<DealEscrowView> {
         let address = self.deal_board_address()?;
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let board = HydraDealBoard::new(address, &provider);
 
         let escrow = board
@@ -380,7 +387,9 @@ impl DealBoardClient {
             .context("Failed to send claimExpired transaction")?;
 
         let tx_hash = format!("{:#x}", pending.tx_hash());
-        pending.get_receipt().await
+        pending
+            .get_receipt()
+            .await
             .context("Failed to get claimExpired receipt")?;
 
         Ok(TxHashResult { tx_hash })
@@ -405,7 +414,9 @@ impl DealBoardClient {
             .context("Failed to send USDC approve transaction")?;
 
         let tx_hash = format!("{:#x}", pending.tx_hash());
-        pending.get_receipt().await
+        pending
+            .get_receipt()
+            .await
             .context("Failed to get USDC approve receipt")?;
 
         Ok(TxHashResult { tx_hash })
@@ -413,8 +424,8 @@ impl DealBoardClient {
 
     pub async fn allowance(&self, owner: Address) -> Result<DealBoardAllowanceView> {
         let spender = self.deal_board_address()?;
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let usdc = UsdcToken::new(self.config.usdc_address, &provider);
         let allowance = usdc
             .allowance(owner, spender)
@@ -433,8 +444,8 @@ impl DealBoardClient {
 
     async fn fetch_reputation(&self, agent_id: u64) -> Option<ReputationSummary> {
         let registry_address = self.config.reputation_registry_address?;
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let registry = crate::bindings::ReputationRegistry::new(registry_address, &provider);
 
         let clients = registry
@@ -464,8 +475,8 @@ impl DealBoardClient {
 
     async fn total_offers(&self) -> Result<u64> {
         let address = self.deal_board_address()?;
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let board = HydraDealBoard::new(address, &provider);
         let total = board
             .totalOffers()
@@ -477,8 +488,8 @@ impl DealBoardClient {
 
     async fn total_escrows(&self) -> Result<u64> {
         let address = self.deal_board_address()?;
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let board = HydraDealBoard::new(address, &provider);
         let total = board
             .totalEscrows()
@@ -487,7 +498,6 @@ impl DealBoardClient {
             .context("Failed to get HydraDealBoard totalEscrows")?;
         Ok(total.to())
     }
-
 }
 
 // ── Utility functions ──────────────────────────────────────────────────
@@ -527,9 +537,7 @@ fn parse_usdc_amount(amount: &str) -> Result<U256> {
     }
 }
 
-fn decode_escrow_created_id(
-    receipt: &alloy::rpc::types::TransactionReceipt,
-) -> Option<u64> {
+fn decode_escrow_created_id(receipt: &alloy::rpc::types::TransactionReceipt) -> Option<u64> {
     for log in receipt.inner.logs() {
         if let Ok(event) = HydraDealBoard::EscrowCreated::decode_log(log.as_ref()) {
             return Some(event.data.escrowId.to::<u64>());
@@ -538,9 +546,7 @@ fn decode_escrow_created_id(
     None
 }
 
-fn decode_deal_offer_created_id(
-    receipt: &alloy::rpc::types::TransactionReceipt,
-) -> Option<u64> {
+fn decode_deal_offer_created_id(receipt: &alloy::rpc::types::TransactionReceipt) -> Option<u64> {
     for log in receipt.inner.logs() {
         if let Ok(event) = HydraDealBoard::DealOfferCreated::decode_log(log.as_ref()) {
             return Some(event.data.offerId.to::<u64>());
@@ -598,7 +604,10 @@ mod tests {
 
     #[test]
     fn parse_usdc_amount_handles_various_formats() {
-        assert_eq!(parse_usdc_amount("100").unwrap(), U256::from(100_000_000_u64));
+        assert_eq!(
+            parse_usdc_amount("100").unwrap(),
+            U256::from(100_000_000_u64)
+        );
         assert_eq!(parse_usdc_amount("1.5").unwrap(), U256::from(1_500_000_u64));
         assert_eq!(parse_usdc_amount("0.000001").unwrap(), U256::from(1_u64));
         assert!(parse_usdc_amount("").is_err());
@@ -610,12 +619,14 @@ mod tests {
         assert_eq!(normalize_currency("rub").unwrap(), "RUB");
         assert!(normalize_currency("ru").is_err());
         assert_eq!(
-            normalize_payment_methods(&[" Bank_Transfer ".to_string(), "SBP".to_string()])
-                .unwrap(),
+            normalize_payment_methods(&[" Bank_Transfer ".to_string(), "SBP".to_string()]).unwrap(),
             vec!["bank_transfer".to_string(), "sbp".to_string()]
         );
         assert!(normalize_payment_methods(&[]).is_err());
-        assert_eq!(normalize_escrow_role(Some("buyer")).unwrap(), Some("buyer".to_string()));
+        assert_eq!(
+            normalize_escrow_role(Some("buyer")).unwrap(),
+            Some("buyer".to_string())
+        );
         assert_eq!(normalize_escrow_role(Some("")).unwrap(), None);
         assert!(normalize_escrow_role(Some("unknown")).is_err());
     }

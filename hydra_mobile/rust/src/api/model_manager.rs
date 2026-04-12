@@ -21,6 +21,55 @@ pub struct ModelManager {
     models_dir: PathBuf,
 }
 
+const MIN_VALID_MODEL_SIZE: u64 = 1024 * 1024;
+const MODEL_CANDIDATE_FILES: &[(&str, &[&str])] = &[
+    (
+        "qwen2.5-0.5b",
+        &[
+            "qwen2.5-0.5b.gguf",
+            "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        ],
+    ),
+    (
+        "qwen3.5-0.8b",
+        &[
+            "qwen3.5-0.8b.gguf",
+            "Qwen3.5-0.8B-Q4_K_M.gguf",
+        ],
+    ),
+    (
+        "qwen2.5-1.5b",
+        &[
+            "qwen2.5-1.5b.gguf",
+            "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        ],
+    ),
+];
+
+fn candidate_paths(base_dir: &PathBuf, id: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    paths.push(base_dir.join(format!("{}.gguf", id)));
+
+    for (model_id, files) in MODEL_CANDIDATE_FILES {
+        if *model_id == id {
+            for file in *files {
+                paths.push(base_dir.join(file));
+            }
+        }
+    }
+
+    paths
+}
+
+fn resolve_model_path(models_dir: &PathBuf, id: &str) -> Option<PathBuf> {
+    candidate_paths(models_dir, id)
+        .into_iter()
+        .find(|path| match std::fs::metadata(path) {
+            Ok(metadata) => metadata.len() >= MIN_VALID_MODEL_SIZE,
+            Err(_) => false,
+        })
+}
+
 lazy_static::lazy_static! {
     static ref MANAGER: Arc<Mutex<Option<ModelManager>>> = Arc::new(Mutex::new(None));
     /// Shared AI negotiator reference for model hot-reloading from mobile UI
@@ -33,8 +82,14 @@ pub fn init_model_manager(base_dir: String) -> anyhow::Result<()> {
     let models_dir = PathBuf::from(&base_dir).join("models");
     std::fs::create_dir_all(&models_dir)?;
 
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .timeout(std::time::Duration::from_secs(3600)) // 1 hour for large models
+        .build()
+        .unwrap_or_else(|_| Client::new());
+    
     let manager = ModelManager {
-        client: Client::new(),
+        client,
         models_dir,
     };
 
@@ -75,12 +130,30 @@ pub async fn get_available_models() -> anyhow::Result<Vec<ModelInfo>> {
     ];
 
     for model in models.iter_mut() {
-        let path = manager.models_dir.join(format!("{}.gguf", model.id));
-        if path.exists() {
-            model.is_downloaded = true;
+        let mut found = false;
+        for path in candidate_paths(&manager.models_dir, &model.id) {
+            if let Ok(metadata) = std::fs::metadata(&path) {
+                let size = metadata.len();
+                if size >= MIN_VALID_MODEL_SIZE {
+                    model.is_downloaded = true;
+                    found = true;
+                    tracing::debug!("Model {} path: {} size: {} downloaded: true", model.id, path.display(), size);
+                    break;
+                }
+
+                if size > 0 {
+                    let _ = std::fs::remove_file(&path);
+                    tracing::warn!("Removed corrupted model file: {} ({} bytes)", path.display(), size);
+                }
+            }
+        }
+
+        if !found {
+            tracing::debug!("Model {} not found in bundled or downloaded paths", model.id);
         }
     }
 
+    tracing::info!("Models dir: {}, downloaded: {}", manager.models_dir.display(), models.iter().filter(|m| m.is_downloaded).count());
     Ok(models)
 }
 
@@ -100,18 +173,40 @@ pub async fn download_model(id: String, progress: StreamSink<f64>) -> anyhow::Re
         .ok_or_else(|| anyhow::anyhow!("Model not found"))?;
 
     let path = models_dir.join(format!("{}.gguf", model.id));
+    tracing::info!("Downloading model {} to {}", id, path.display());
+    tracing::info!("URL: {}", model.download_url);
+    
     let mut file = tokio::fs::File::create(&path).await?;
 
     let mut res = client.get(&model.download_url).send().await?;
+    let status = res.status();
+    tracing::info!("HTTP response status: {}", status);
+    if !status.is_success() {
+        return Err(anyhow::anyhow!("HTTP error: {}", status));
+    }
     let total_size = res
         .content_length()
         .unwrap_or(model.size_mb as u64 * 1024 * 1024);
 
+    tracing::info!("Starting download, total size: {} bytes", total_size);
+    
     let mut downloaded: u64 = 0;
     while let Some(chunk) = res.chunk().await? {
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
         let _ = progress.add((downloaded as f64 / total_size as f64) * 100.0);
+    }
+    
+    file.flush().await?;
+    drop(file);
+    
+    // Verify file was written
+    let metadata = tokio::fs::metadata(&path).await?;
+    tracing::info!("Download complete: {} bytes written to {}", metadata.len(), path.display());
+    
+    if metadata.len() == 0 {
+        tokio::fs::remove_file(&path).await?;
+        return Err(anyhow::anyhow!("Download failed: file is empty"));
     }
 
     Ok(())
@@ -126,13 +221,11 @@ pub async fn set_active_model(id: String) -> anyhow::Result<()> {
             .clone()
     };
 
-    let model_path = models_dir.join(format!("{}.gguf", id));
-    if !model_path.exists() {
-        return Err(anyhow::anyhow!(
-            "Model '{}' not downloaded. Download it first via the AI Models screen.",
-            id
-        ));
-    }
+    tracing::info!("set_active_model requested: id={}", id);
+    let model_path = resolve_model_path(&models_dir, &id)
+        .ok_or_else(|| anyhow::anyhow!("Model '{}' not downloaded. Download it first via the AI Models screen.", id))?;
+
+    tracing::info!("Resolved active model path: {}", model_path.display());
 
     let ai_guard = SHARED_AI.lock().await;
     let ai = ai_guard.as_ref().ok_or_else(|| {
@@ -144,4 +237,48 @@ pub async fn set_active_model(id: String) -> anyhow::Result<()> {
     tracing::info!("AI model switched to: {}", model_path.display());
 
     Ok(())
+}
+
+/// Check if any model is loaded and ready for inference
+pub async fn is_model_loaded() -> bool {
+    let ai_guard = SHARED_AI.lock().await;
+    if let Some(ai) = ai_guard.as_ref() {
+        let infer_guard = ai.infer().lock().await;
+        infer_guard.is_some()
+    } else {
+        false
+    }
+}
+
+/// Chat with the loaded model - send a prompt and get a response
+pub async fn chat_with_model(prompt: String, max_tokens: u32) -> anyhow::Result<String> {
+    let ai_guard = SHARED_AI.lock().await;
+    let ai = ai_guard.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("Hydra node not started. Start the node first.")
+    })?;
+
+    tracing::info!(
+        "chat_with_model called: prompt_len={}, max_tokens={}",
+        prompt.len(),
+        max_tokens
+    );
+
+    let mut infer_guard = ai.infer().lock().await;
+    let infer = infer_guard.as_mut().ok_or_else(|| {
+        anyhow::anyhow!("No model loaded. Download and activate a model first.")
+    })?;
+
+    let start = std::time::Instant::now();
+    tracing::info!("Starting inference");
+    let response = infer.generate(&prompt, max_tokens as usize)?;
+    let elapsed = start.elapsed();
+    
+    tracing::info!(
+        "LLM inference completed in {:.2}s, {} tokens generated",
+        elapsed.as_secs_f64(),
+        response.split_whitespace().count()
+    );
+    tracing::debug!("LLM response preview: {}", response.chars().take(300).collect::<String>());
+
+    Ok(response)
 }

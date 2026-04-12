@@ -68,8 +68,11 @@ impl ProviderMetricsLedger {
         } else {
             (bytes_relayed as f64 * 8.0) / duration.as_secs_f64() / 1_000_000.0
         };
-        metrics.average_throughput_mbps =
-            rolling_average(metrics.average_throughput_mbps, sample_count, throughput_mbps);
+        metrics.average_throughput_mbps = rolling_average(
+            metrics.average_throughput_mbps,
+            sample_count,
+            throughput_mbps,
+        );
         metrics.recent_failures = metrics.recent_failures.saturating_sub(1);
         metrics.uptime_ratio = if metrics.session_count == 0 {
             1.0
@@ -109,7 +112,11 @@ impl ProviderMetricsLedger {
         Ok(metrics)
     }
 
-    pub fn set_settled_earnings(&self, agent_id: u64, amount_micro_usdc: i64) -> Result<ProviderMetrics> {
+    pub fn set_settled_earnings(
+        &self,
+        agent_id: u64,
+        amount_micro_usdc: i64,
+    ) -> Result<ProviderMetrics> {
         let mut metrics = self.load(agent_id)?;
         metrics.settled_earnings_micro_usdc = amount_micro_usdc.max(0);
         self.save(&metrics)?;
@@ -224,8 +231,8 @@ fn earnings_for_usage(bytes_relayed: u64, price_per_gb_micro_usdc: u64) -> i64 {
     if price_per_gb_micro_usdc == 0 {
         return 0;
     }
-    let earned = (bytes_relayed as u128).saturating_mul(price_per_gb_micro_usdc as u128)
-        / 1_000_000_000u128;
+    let earned =
+        (bytes_relayed as u128).saturating_mul(price_per_gb_micro_usdc as u128) / 1_000_000_000u128;
     earned.min(i64::MAX as u128) as i64
 }
 

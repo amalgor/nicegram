@@ -52,10 +52,7 @@ impl RouteExchangeClient {
 
             let enriched = if let Some(client) = &reputation_client {
                 let reputation = client.summary_for_agent(view.agent_id).await?;
-                RouteOfferView {
-                    reputation,
-                    ..view
-                }
+                RouteOfferView { reputation, ..view }
             } else {
                 view
             };
@@ -89,13 +86,10 @@ impl RouteExchangeClient {
     }
 
     pub async fn get_offer(&self, offer_id: u64) -> Result<RouteOfferView> {
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
-        let offer = route_book
-            .getOffer(U256::from(offer_id))
-            .call()
-            .await?;
+        let offer = route_book.getOffer(U256::from(offer_id)).call().await?;
 
         Ok(RouteOfferView {
             offer_id,
@@ -125,10 +119,9 @@ impl RouteExchangeClient {
         for offer_id in 1..=self.total_offers().await? {
             let offer = self.get_offer(offer_id).await?;
             if let Some(provider_address) = provider_address {
-                let offer_provider = offer
-                    .provider
-                    .parse::<Address>()
-                    .map_err(|error| anyhow::anyhow!("Invalid provider address '{}': {error}", offer.provider))?;
+                let offer_provider = offer.provider.parse::<Address>().map_err(|error| {
+                    anyhow::anyhow!("Invalid provider address '{}': {error}", offer.provider)
+                })?;
                 if offer_provider != provider_address {
                     continue;
                 }
@@ -144,8 +137,8 @@ impl RouteExchangeClient {
     }
 
     pub async fn lifecycle(&self) -> Result<RouteBookLifecycleView> {
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
         let withdrawal_delay = route_book.withdrawalDelay().call().await?;
         Ok(RouteBookLifecycleView {
@@ -154,8 +147,8 @@ impl RouteExchangeClient {
     }
 
     pub async fn wallet_balances(&self, address: Address) -> Result<WalletBalances> {
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let eth_balance: U256 = provider.get_balance(address).await?;
         let usdc = UsdcToken::new(self.config.usdc_address, provider);
         let usdc_balance = usdc.balanceOf(address).call().await?;
@@ -172,8 +165,8 @@ impl RouteExchangeClient {
     }
 
     async fn total_offers(&self) -> Result<u64> {
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
         let total = route_book.totalOffers().call().await?;
         Ok(total.to())
@@ -243,7 +236,10 @@ impl RouteExchangeClient {
             .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
 
-        let pending = route_book.deactivateOffer(U256::from(offer_id)).send().await?;
+        let pending = route_book
+            .deactivateOffer(U256::from(offer_id))
+            .send()
+            .await?;
         let tx_hash = format!("{:#x}", pending.tx_hash());
         let _receipt = pending.get_receipt().await?;
 
@@ -264,7 +260,10 @@ impl RouteExchangeClient {
             .connect_reqwest(http_client(), self.config.rpc_url.clone());
         let route_book = HydraRouteBook::new(self.config.route_book_address, provider);
 
-        let pending = route_book.withdrawStake(U256::from(offer_id)).send().await?;
+        let pending = route_book
+            .withdrawStake(U256::from(offer_id))
+            .send()
+            .await?;
         let tx_hash = format!("{:#x}", pending.tx_hash());
         let _receipt = pending.get_receipt().await?;
 
@@ -353,8 +352,8 @@ impl ReputationClient {
         let Some(registry_address) = self.config.reputation_registry_address else {
             return Ok(None);
         };
-        let provider = ProviderBuilder::new()
-            .connect_reqwest(http_client(), self.config.rpc_url.clone());
+        let provider =
+            ProviderBuilder::new().connect_reqwest(http_client(), self.config.rpc_url.clone());
         let reputation = ReputationRegistry::new(registry_address, provider);
         let clients = reputation.getClients(U256::from(agent_id)).call().await?;
 
@@ -376,7 +375,10 @@ impl ReputationClient {
             feedback_count: summary.count,
             summary_value: summary.summaryValue.to_string(),
             value_decimals: summary.summaryValueDecimals,
-            formatted_value: format_signed_fixed(summary.summaryValue, summary.summaryValueDecimals),
+            formatted_value: format_signed_fixed(
+                summary.summaryValue,
+                summary.summaryValueDecimals,
+            ),
         }))
     }
 }

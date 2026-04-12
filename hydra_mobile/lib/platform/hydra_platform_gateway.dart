@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:hydra_mobile/src/rust/api/app_resolver.dart'
+    as app_resolver_api;
 import 'package:hydra_mobile/src/rust/api/quota.dart' as quota_api;
 import 'package:hydra_mobile/src/rust/api/simple.dart' as simple_api;
 import 'package:hydra_mobile/src/rust/api/telemetry.dart' as telemetry_api;
@@ -27,6 +29,9 @@ abstract class HydraPlatformGateway {
   Future<bool> getVpnActive();
   Future<String> getActiveConnections();
   Future<String> getConnectionStats();
+  Future<String> getConnectionsByApp();
+  Future<String> getConnectionsByCategory();
+  Future<String> getConnectionsByCountry();
   Future<String> getQuotaStatus();
   Future<void> setProxyMode({required String mode});
   Future<void> setConnectionProxy({
@@ -34,6 +39,8 @@ abstract class HydraPlatformGateway {
     required bool proxied,
   });
   void bindVpnFdHandler(Future<void> Function(int fd) handler);
+  Future<void> startAppResolutionLoop();
+  void stopAppResolutionLoop();
 }
 
 class _AndroidHydraPlatformGateway implements HydraPlatformGateway {
@@ -41,6 +48,7 @@ class _AndroidHydraPlatformGateway implements HydraPlatformGateway {
   Future<void> Function(int fd)? _vpnFdHandler;
   bool _vpnCallbackBound = false;
   String? _baseDir;
+  Timer? _appResolutionTimer;
 
   @override
   Future<void> initialize() async {
@@ -88,6 +96,15 @@ class _AndroidHydraPlatformGateway implements HydraPlatformGateway {
   Future<String> getConnectionStats() => simple_api.getConnectionStats();
 
   @override
+  Future<String> getConnectionsByApp() => simple_api.getConnectionsByApp();
+
+  @override
+  Future<String> getConnectionsByCategory() => simple_api.getConnectionsByCategory();
+
+  @override
+  Future<String> getConnectionsByCountry() => simple_api.getConnectionsByCountry();
+
+  @override
   Future<String> getQuotaStatus() => quota_api.getQuotaStatus();
 
   @override
@@ -118,6 +135,71 @@ class _AndroidHydraPlatformGateway implements HydraPlatformGateway {
         }
       }
     });
+  }
+
+  @override
+  Future<void> startAppResolutionLoop() async {
+    _appResolutionTimer?.cancel();
+    _appResolutionTimer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) => _processPendingResolutions(),
+    );
+  }
+
+  @override
+  void stopAppResolutionLoop() {
+    _appResolutionTimer?.cancel();
+    _appResolutionTimer = null;
+  }
+
+  Future<void> _processPendingResolutions() async {
+    try {
+      final pendingJson = app_resolver_api.getPendingAppResolutions();
+      final pending = jsonDecode(pendingJson) as List<dynamic>;
+      if (pending.isEmpty) {
+        return;
+      }
+
+      for (final item in pending) {
+        if (item is! Map<String, dynamic>) continue;
+        final connectionId = (item['connection_id'] as num?)?.toInt();
+        final protocol = (item['protocol'] as num?)?.toInt() ?? 6;
+        final localIp = item['local_ip'] as String?;
+        final localPort = (item['local_port'] as num?)?.toInt();
+        final host = item['remote_ip'] as String?;
+        final port = (item['remote_port'] as num?)?.toInt();
+        if (connectionId == null ||
+            localIp == null ||
+            localPort == null ||
+            host == null ||
+            port == null) {
+          continue;
+        }
+
+        final resultJson = await _channel
+            .invokeMethod<String>('resolveAppByConnection', {
+              'protocol': protocol,
+              'local_ip': localIp,
+              'local_port': localPort,
+              'remote_ip': host,
+              'remote_port': port,
+            });
+
+        if (resultJson != null) {
+          final wrapped = jsonEncode({
+            'connection_id': connectionId,
+            'attribution': jsonDecode(resultJson),
+          });
+          app_resolver_api.submitAppResolution(
+            host: host,
+            port: port,
+            json: wrapped,
+          );
+        }
+      }
+    } catch (e) {
+      // Silently ignore resolution errors
+    }
   }
 }
 
@@ -196,10 +278,21 @@ class _IosHydraPlatformGateway implements HydraPlatformGateway {
       'active_count': 0,
       'total_count': 0,
       'proxied_count': 0,
+      'blocked_count': 0,
+      'tracker_count': 0,
       'total_bytes_up': 0,
       'total_bytes_down': 0,
     }),
   );
+
+  @override
+  Future<String> getConnectionsByApp() async => jsonEncode({'groups': []});
+
+  @override
+  Future<String> getConnectionsByCategory() async => jsonEncode({'groups': []});
+
+  @override
+  Future<String> getConnectionsByCountry() async => jsonEncode({'groups': []});
 
   @override
   Future<String> getQuotaStatus() => _readSharedJsonFile(
@@ -225,6 +318,16 @@ class _IosHydraPlatformGateway implements HydraPlatformGateway {
 
   @override
   void bindVpnFdHandler(Future<void> Function(int fd) handler) {}
+
+  @override
+  Future<void> startAppResolutionLoop() async {
+    // iOS does not support app attribution via VPN service
+  }
+
+  @override
+  void stopAppResolutionLoop() {
+    // iOS does not support app attribution via VPN service
+  }
 
   Future<void> _sendControlCommand(String json) async {
     await _channel.invokeMethod<void>('sendControlCommand', json);

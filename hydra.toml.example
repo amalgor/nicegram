@@ -76,6 +76,19 @@ min_speed_pct = 0.25
 nudge_interval_secs = 3600
 advanced_after_payments = 3
 
+# Network intelligence pipeline: traffic classification and tracker blocking
+[intelligence]
+# Automatically block connections classified as trackers/ads (opt-in, default false).
+# When false, connections are still classified — user sees verdicts in the UI
+# before choosing to enable blocking.
+auto_block_trackers = false
+# Minimum confidence (0.0–1.0) required to auto-block a tracker connection
+block_confidence_threshold = 0.8
+# How long a cached classification verdict is reused (seconds, default 12h)
+verdict_cache_ttl_seconds = 43200
+# Maximum number of cached verdict entries
+verdict_cache_max_entries = 50000
+
 # Bootstrap node (only used with --bootstrap flag)
 [bootstrap]
 listen_port = 33097
