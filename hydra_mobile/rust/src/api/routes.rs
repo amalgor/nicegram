@@ -472,6 +472,10 @@ fn seed_profiles(config: &HydraConfig) -> Result<Vec<RouteProfile>> {
                 RouteProfileKind::Vless,
                 format!("Built-in VLESS {}", index + 1),
             ),
+            TransportConfig::Ssh { host, .. } => (
+                RouteProfileKind::Ssh,
+                format!("SSH {}", host),
+            ),
         };
         profiles.push(RouteProfile::new(
             format!("builtin-{}-{index}", kind_name(kind)),
@@ -590,7 +594,7 @@ fn normalize_profile(mut profile: RouteProfile) -> Result<RouteProfile> {
 fn profile_url(profile: &RouteProfile) -> Option<&str> {
     match &profile.config {
         TransportConfig::Vless { url, .. } => Some(url.as_str()),
-        TransportConfig::Wss { .. } => None,
+        TransportConfig::Wss { .. } | TransportConfig::Ssh { .. } => None,
     }
 }
 
@@ -644,6 +648,7 @@ fn kind_name(kind: RouteProfileKind) -> &'static str {
     match kind {
         RouteProfileKind::Wss => "wss",
         RouteProfileKind::Vless => "vless",
+        RouteProfileKind::Ssh => "ssh",
     }
 }
 

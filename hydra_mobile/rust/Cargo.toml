@@ -24,7 +24,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 alloy = { workspace = true }
 chrono = "0.4"
-tun2proxy = { path = "../../../tun2proxy" }
+tun2proxy = { git = "https://github.com/tun2proxy/tun2proxy", tag = "v0.7.20" }
 moka = { version = "0.12", features = ["sync"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["stream", "rustls", "charset", "http2", "json"] }
 libp2p = "0.56"
@@ -33,6 +33,10 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 zeroize = { workspace = true }
 base64 = "0.22"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

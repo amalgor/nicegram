@@ -5,6 +5,8 @@ pub mod discovery;
 pub mod enrichment;
 pub mod llm_classifier;
 pub mod onion;
+pub mod shell_commands;
+pub mod shell_executor;
 pub mod socks;
 pub mod tracker_db;
 pub mod transport;
@@ -59,6 +61,18 @@ pub trait UsageRecorder: Send + Sync {
     ) -> Result<()>;
 }
 
+#[async_trait]
+pub trait AppResolver: Send + Sync {
+    async fn resolve_app(
+        &self,
+        protocol: i32,
+        local_ip: &str,
+        local_port: u16,
+        remote_ip: &str,
+        remote_port: u16,
+    ) -> Option<connections::AppAttribution>;
+}
+
 pub struct Socks5Server {
     addr: SocketAddr,
     #[allow(dead_code)]
@@ -74,6 +88,7 @@ pub struct Socks5Server {
     credit: Option<Arc<dyn CreditController>>,
     provider_metrics: Option<Arc<ProviderMetricsLedger>>,
     usage_recorder: Option<Arc<dyn UsageRecorder>>,
+    app_resolver: Option<Arc<dyn AppResolver>>,
     enrichment: Arc<EnrichmentService>,
     classifier: Arc<ConnectionClassifier>,
     classification_log: Arc<ClassificationEventLog>,
@@ -92,6 +107,7 @@ impl Socks5Server {
         credit: Option<Arc<dyn CreditController>>,
         provider_metrics: Option<Arc<ProviderMetricsLedger>>,
         usage_recorder: Option<Arc<dyn UsageRecorder>>,
+        app_resolver: Option<Arc<dyn AppResolver>>,
         intelligence_config: &IntelligenceConfig,
     ) -> Result<Self> {
         let enrichment = EnrichmentService::new()?;
@@ -117,6 +133,7 @@ impl Socks5Server {
             credit,
             provider_metrics,
             usage_recorder,
+            app_resolver,
             enrichment: Arc::new(enrichment),
             classifier: Arc::new(classifier),
             classification_log,
@@ -191,6 +208,7 @@ impl Socks5Server {
             let p2p = self.p2p.clone();
             let provider_metrics = self.provider_metrics.clone();
             let usage_recorder = self.usage_recorder.clone();
+            let app_resolver = self.app_resolver.clone();
             let enrichment = self.enrichment.clone();
             let classifier = self.classifier.clone();
             let classification_log = self.classification_log.clone();
@@ -206,6 +224,7 @@ impl Socks5Server {
                     p2p,
                     provider_metrics,
                     usage_recorder,
+                    app_resolver,
                     enrichment,
                     classifier,
                     classification_log,
@@ -264,6 +283,28 @@ async fn read_userpass_auth(stream: &mut TcpStream) -> Result<socks::SourceInfo>
     Ok(source_info)
 }
 
+fn source_protocol_number(source_info: Option<&socks::SourceInfo>) -> i32 {
+    match source_info
+        .map(|info| info.protocol.as_str())
+        .unwrap_or("tcp")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "udp" => 17,
+        _ => 6,
+    }
+}
+
+fn source_remote_ip(source_info: Option<&socks::SourceInfo>, target_host: &str) -> Option<String> {
+    if let Some(remote_ip) = source_info.and_then(|info| info.dst_ip) {
+        return Some(remote_ip.to_string());
+    }
+
+    let normalized = target_host.trim_start_matches('[').trim_end_matches(']');
+    normalized.parse::<std::net::IpAddr>().ok()?;
+    Some(normalized.to_string())
+}
+
 async fn handle_connection(
     mut stream: TcpStream,
     transports: Vec<ConfiguredTransport>,
@@ -274,6 +315,7 @@ async fn handle_connection(
     p2p: P2PHandle,
     provider_metrics: Option<Arc<ProviderMetricsLedger>>,
     usage_recorder: Option<Arc<dyn UsageRecorder>>,
+    app_resolver: Option<Arc<dyn AppResolver>>,
     enrichment: Arc<EnrichmentService>,
     classifier: Arc<ConnectionClassifier>,
     classification_log: Arc<ClassificationEventLog>,
@@ -370,6 +412,36 @@ async fn handle_connection(
 
     info!("Target requested: {}", target_addr);
 
+    let (target_host_str, target_port) = socks::split_target(&target_addr)
+        .map(|(h, p)| (h.to_string(), p))
+        .unwrap_or_else(|| (target_addr.clone(), 0));
+
+    let app_attribution = if let Some(resolver) = &app_resolver {
+        let local_ip = source_info
+            .as_ref()
+            .and_then(|info| info.src_ip)
+            .map(|ip| ip.to_string());
+        let local_port = source_info.as_ref().and_then(|info| info.src_port);
+        let remote_ip = source_remote_ip(source_info.as_ref(), &target_host_str);
+
+        if let (Some(local_ip), Some(local_port), Some(remote_ip)) = (local_ip, local_port, remote_ip)
+        {
+            resolver
+                .resolve_app(
+                    source_protocol_number(source_info.as_ref()),
+                    &local_ip,
+                    local_port,
+                    &remote_ip,
+                    target_port,
+                )
+                .await
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let is_telegram = socks::is_telegram_target(&target_addr);
     let is_relay_infra = socks::is_relay_infrastructure(&target_addr);
     let credit_status = if let Some(controller) = &credit {
@@ -410,7 +482,7 @@ async fn handle_connection(
         credit_status.clone(),
         premium_better,
     );
-    let resolved_policy = registry.resolve_policy(&target_addr, None);
+    let resolved_policy = registry.resolve_policy(&target_addr, app_attribution.as_ref());
     let policy_transports = filter_transports_for_policy(&all_transports, &resolved_policy.action);
     let plan = select_transport_plan(
         &target_addr,
@@ -425,7 +497,7 @@ async fn handle_connection(
         &target_addr,
         resolved_policy.group.clone(),
         resolved_policy.action.clone(),
-        None, // App attribution resolved asynchronously via mobile bridge
+        app_attribution.as_ref(),
         source_info.as_ref(),
     );
     info!(
@@ -439,18 +511,24 @@ async fn handle_connection(
     );
 
     // Fast classification (synchronous, <1ms): check cache then tracker DB
-    let (target_host_str, target_port) = socks::split_target(&target_addr)
-        .map(|(h, p)| (h.to_string(), p))
-        .unwrap_or_else(|| (target_addr.clone(), 0));
+    let app_uid = app_attribution.as_ref().map(|attr| attr.uid);
+    let app_label = app_attribution
+        .as_ref()
+        .map(|attr| attr.app_label.clone());
+    let package_name = app_attribution
+        .as_ref()
+        .map(|attr| attr.package_name.clone());
 
-    let fast_verdict = classifier.classify_fast(&target_host_str, target_port, None);
+    let fast_verdict = classifier.classify_fast(&target_host_str, target_port, app_uid);
     if let ClassificationResult::Verdict(ref classification) = fast_verdict {
         registry.update_classification(conn_id, classification.clone());
         classification_log.log_event(crate::classification_log::make_event(
             target_host_str.clone(),
             target_port,
-            None,
-            None,
+            app_uid,
+            app_attribution
+                .as_ref()
+                .map(|attr| attr.package_name.clone()),
             None,
             None,
             None,
@@ -519,9 +597,9 @@ async fn handle_connection(
                         conn_id,
                         &target_host,
                         target_port,
-                        None,
-                        None,
-                        None,
+                        app_uid,
+                        app_label.as_deref(),
+                        package_name.as_deref(),
                         &result,
                         &registry,
                         &classification_log,
@@ -532,7 +610,7 @@ async fn handle_connection(
                 if let Some(cached) = classifier.verdict_cache().get(
                     &classifier::VerdictKey {
                         host_or_domain: target_host.to_lowercase(),
-                        app_uid: None,
+                        app_uid,
                     },
                 ) {
                     if classifier.should_block(&cached) {
@@ -898,6 +976,7 @@ fn route_type_for_transport(transport: &ConfiguredTransport) -> RouteType {
     match transport.kind {
         TransportKind::Wss => RouteType::Wss,
         TransportKind::Vless => RouteType::Vless,
+        TransportKind::Ssh => RouteType::Ssh,
     }
 }
 

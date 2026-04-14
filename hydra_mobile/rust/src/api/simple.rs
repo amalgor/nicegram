@@ -165,6 +165,8 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
     }
     let addr = SocketAddr::from(([127, 0, 0, 1], config.network.socks5_port));
     tracing::info!("Starting SOCKS5 Server on {}", addr);
+    let app_resolver: Option<Arc<dyn hydra_core::AppResolver>> =
+        Some(Arc::new(crate::api::app_resolver::MobileAppResolver));
     let server = Socks5Server::new(
         addr,
         ai,
@@ -176,6 +178,7 @@ pub async fn start_hydra_node(base_dir: String) -> anyhow::Result<()> {
         credit,
         provider_metrics,
         Some(usage_recorder),
+        app_resolver,
         &config.intelligence,
     )?;
 
@@ -245,6 +248,19 @@ async fn sync_pending_app_resolutions() {
         let remote_ip = snapshot.dst_ip.as_deref().unwrap_or(&snapshot.target_host);
 
         let protocol = protocol_number(snapshot.src_protocol.as_deref().unwrap_or("tcp"));
+        if let Some(attribution) = crate::api::app_resolver::resolve_app_for_connection(
+            protocol,
+            local_ip,
+            local_port,
+            remote_ip,
+            snapshot.target_port,
+        )
+        .await
+        {
+            registry.update_app_attribution(snapshot.id, &attribution);
+            continue;
+        }
+
         if let Some(attribution) = crate::api::app_resolver::queue_resolution(
             snapshot.id,
             protocol,
@@ -722,4 +738,86 @@ struct CountryGroup {
 
 fn is_tracker_category(cat: Option<&str>) -> bool {
     matches!(cat, Some("advertising") | Some("analytics") | Some("telemetry") | Some("social_tracking"))
+}
+
+/// Execute a shell command on the device.
+/// Returns JSON: { "exit_code": N|null, "stdout": "...", "stderr": "...", "truncated": bool, "timed_out": bool }
+///
+/// Only read-only inspection commands are allowed (ls, cat, ps, etc.).
+/// Destructive commands (rm, kill, reboot, etc.) are blocked.
+pub async fn shell_exec(command: String) -> anyhow::Result<String> {
+    use hydra_core::shell_executor::ShellExecutor;
+
+    let executor = ShellExecutor::new();
+    let result = executor.exec(&command).await?;
+    let json = serde_json::json!({
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "truncated": result.truncated,
+        "timed_out": result.timed_out,
+    });
+    Ok(json.to_string())
+}
+
+/// Execute multiple shell commands sequentially.
+/// Returns JSON array of results.
+pub async fn shell_exec_batch(commands: Vec<String>) -> anyhow::Result<String> {
+    use hydra_core::shell_executor::ShellExecutor;
+
+    let executor = ShellExecutor::new();
+    let refs: Vec<&str> = commands.iter().map(|s| s.as_str()).collect();
+    let results = executor.exec_batch(&refs).await;
+
+    let json_results: Vec<serde_json::Value> = results
+        .into_iter()
+        .map(|r| match r {
+            Ok(cr) => serde_json::json!({
+                "exit_code": cr.exit_code,
+                "stdout": cr.stdout,
+                "stderr": cr.stderr,
+                "truncated": cr.truncated,
+                "timed_out": cr.timed_out,
+            }),
+            Err(e) => serde_json::json!({
+                "exit_code": null,
+                "stdout": "",
+                "stderr": format!("[ERROR] {}", e),
+                "truncated": false,
+                "timed_out": false,
+            }),
+        })
+        .collect();
+
+    Ok(serde_json::json!(json_results).to_string())
+}
+
+/// Collect a full network inspection from the device.
+/// Returns JSON with tcp_connections, udp_sockets, processes, net_interfaces,
+/// dns_config, routes, uid_stats, and any errors encountered.
+pub async fn inspect_device_network() -> anyhow::Result<String> {
+    use hydra_core::shell_commands::DeviceInspector;
+
+    let inspector = DeviceInspector::new();
+    let inspection = inspector.inspect_network().await;
+    let json = serde_json::json!({
+        "tcp_connections": inspection.tcp_connections,
+        "tcp6_connections": inspection.tcp6_connections,
+        "udp_sockets": inspection.udp_sockets,
+        "processes": inspection.processes,
+        "net_interfaces": inspection.net_interfaces,
+        "dns_config": inspection.dns_config,
+        "routes": inspection.routes,
+        "uid_stats": inspection.uid_stats,
+        "errors": inspection.errors,
+    });
+    Ok(json.to_string())
+}
+
+/// Quick one-line network summary: established/listening TCP counts + top UIDs.
+pub async fn quick_network_summary() -> anyhow::Result<String> {
+    use hydra_core::shell_commands::DeviceInspector;
+
+    let inspector = DeviceInspector::new();
+    inspector.quick_network_summary().await
 }

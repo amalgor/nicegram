@@ -71,6 +71,17 @@ object AppResolver {
         }
     }
 
+    @JvmStatic
+    fun resolveByConnectionJson(
+        protocol: Int,
+        localIp: String,
+        localPort: Int,
+        remoteIp: String,
+        remotePort: Int
+    ): String = toJson(
+        resolveByConnection(protocol, localIp, localPort, remoteIp, remotePort)
+    )
+
     private fun toSocketAddress(host: String, port: Int): InetSocketAddress {
         return if (isIpLiteral(host)) {
             InetSocketAddress(InetAddress.getByName(host), port)
@@ -90,41 +101,101 @@ object AppResolver {
     
     private fun getOrCreateAppInfo(uid: Int, pm: PackageManager): AppInfo {
         uidCache.get(uid)?.let { return it }
-        
-        val packages = pm.getPackagesForUid(uid)
-        
-        if (packages.isNullOrEmpty()) {
-            // System UID or unknown process
-            val (packageName, label) = when {
-                uid == 0 -> "android.system.root" to "Root"
-                uid == 1000 -> "android.system" to "System"
-                uid in 1001..9999 -> "android.system.$uid" to "System ($uid)"
-                else -> {
-                    // Try getNameForUid for shared UIDs
-                    val name = pm.getNameForUid(uid)
-                    if (name != null) {
-                        name to name.substringAfterLast(':')
-                    } else {
-                        "unknown.$uid" to "Unknown ($uid)"
-                    }
-                }
+
+        val info = resolveAppInfoForUid(uid, pm)
+        uidCache.put(uid, info)
+        return info
+    }
+
+    private fun resolveAppInfoForUid(uid: Int, pm: PackageManager): AppInfo {
+        safePackagesForUid(pm, uid)
+            ?.firstOrNull()
+            ?.let { packageName ->
+                return buildPackageAppInfo(uid, packageName, pm)
             }
-            val info = AppInfo(uid, packageName, label)
-            uidCache.put(uid, info)
-            return info
+
+        findPackageByAppId(uid, pm)?.let { packageName ->
+            Log.d(TAG, "Resolved uid=$uid via appId fallback to package=$packageName")
+            return buildPackageAppInfo(uid, packageName, pm)
         }
-        
-        val packageName = packages[0]
+
+        return syntheticAppInfo(uid, safeNameForUid(pm, uid))
+    }
+
+    private fun safePackagesForUid(pm: PackageManager, uid: Int): Array<String>? {
+        return try {
+            pm.getPackagesForUid(uid)
+        } catch (e: Exception) {
+            Log.w(TAG, "getPackagesForUid failed for uid=$uid: ${e.message}")
+            null
+        }
+    }
+
+    private fun safeNameForUid(pm: PackageManager, uid: Int): String? {
+        return try {
+            pm.getNameForUid(uid)
+        } catch (e: Exception) {
+            Log.w(TAG, "getNameForUid failed for uid=$uid: ${e.message}")
+            null
+        }
+    }
+
+    private fun findPackageByAppId(uid: Int, pm: PackageManager): String? {
+        val targetAppId = appIdForUid(uid)
+        val installedApps = try {
+            @Suppress("DEPRECATION")
+            pm.getInstalledApplications(0)
+        } catch (e: Exception) {
+            Log.w(TAG, "getInstalledApplications failed for uid=$uid: ${e.message}")
+            return null
+        }
+
+        installedApps.firstOrNull { it.uid == uid }?.let { return it.packageName }
+
+        val candidates = installedApps.filter { appInfo ->
+            appIdForUid(appInfo.uid) == targetAppId
+        }
+
+        return candidates
+            .sortedWith(
+                compareBy<android.content.pm.ApplicationInfo> { appInfo ->
+                    (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                }.thenBy { appInfo -> appInfo.packageName }
+            )
+            .firstOrNull()
+            ?.packageName
+    }
+
+    private fun appIdForUid(uid: Int): Int {
+        val perUserRange = 100000
+        return if (uid >= 0) uid % perUserRange else uid
+    }
+
+    private fun buildPackageAppInfo(
+        uid: Int,
+        packageName: String,
+        pm: PackageManager
+    ): AppInfo {
         val appLabel = try {
             val appInfo = pm.getApplicationInfo(packageName, 0)
             pm.getApplicationLabel(appInfo).toString()
         } catch (e: Exception) {
+            Log.w(TAG, "getApplicationLabel failed for uid=$uid package=$packageName: ${e.message}")
             packageName.substringAfterLast('.')
         }
-        
-        val info = AppInfo(uid, packageName, appLabel)
-        uidCache.put(uid, info)
-        return info
+
+        return AppInfo(uid, packageName, appLabel)
+    }
+
+    private fun syntheticAppInfo(uid: Int, packageHint: String?): AppInfo {
+        val (packageName, label) = when {
+            uid == 0 -> "android.system.root" to "Root"
+            uid == 1000 -> "android.system" to "System"
+            uid in 1001..9999 -> "android.system.$uid" to "System ($uid)"
+            !packageHint.isNullOrBlank() -> packageHint to packageHint.substringAfterLast(':')
+            else -> "uid.$uid" to "UID $uid"
+        }
+        return AppInfo(uid, packageName, label)
     }
     
     fun toJson(appInfo: AppInfo?): String {

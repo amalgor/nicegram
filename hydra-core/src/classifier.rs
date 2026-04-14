@@ -441,6 +441,11 @@ mod tests {
         }
     }
 
+    fn test_classification_log() -> ClassificationEventLog {
+        let dir = tempfile::tempdir().unwrap();
+        ClassificationEventLog::new(dir.into_path()).unwrap()
+    }
+
     #[test]
     fn test_classify_fast_known_tracker() {
         let db = Arc::new(TrackerDatabase::new());
@@ -621,6 +626,7 @@ mod tests {
             asn: Some(15169),
             country: Some("US".to_string()),
         };
+        let classification_log = test_classification_log();
 
         classifier
             .classify_enriched(
@@ -632,6 +638,7 @@ mod tests {
                 None,
                 &enrichment,
                 &registry,
+                &classification_log,
             )
             .await;
 
@@ -664,6 +671,7 @@ mod tests {
             asn: Some(8075),
             country: Some("US".to_string()),
         };
+        let classification_log = test_classification_log();
 
         classifier
             .classify_enriched(
@@ -675,6 +683,7 @@ mod tests {
                 None,
                 &enrichment,
                 &registry,
+                &classification_log,
             )
             .await;
 

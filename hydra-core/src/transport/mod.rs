@@ -1,3 +1,4 @@
+pub mod ssh;
 pub mod vless;
 pub mod wss;
 
@@ -20,6 +21,7 @@ pub trait Transport: Send + Sync {
 pub enum TransportKind {
     Wss,
     Vless,
+    Ssh,
 }
 
 impl TransportKind {
@@ -27,6 +29,7 @@ impl TransportKind {
         match self {
             Self::Wss => "wss",
             Self::Vless => "vless",
+            Self::Ssh => "ssh",
         }
     }
 }
@@ -84,6 +87,7 @@ impl TransportMetadata {
 pub enum RouteProfileKind {
     Wss,
     Vless,
+    Ssh,
 }
 
 impl RouteProfileKind {
@@ -91,6 +95,7 @@ impl RouteProfileKind {
         match self {
             Self::Wss => TransportKind::Wss,
             Self::Vless => TransportKind::Vless,
+            Self::Ssh => TransportKind::Ssh,
         }
     }
 }
@@ -195,6 +200,33 @@ pub fn build_transports(configs: &[TransportConfig]) -> Result<Vec<ConfiguredTra
                     mode: *mode,
                     transport: Arc::new(vless::VlessTransport::from_url(url)?),
                     metadata: TransportMetadata::static_config(TransportKind::Vless),
+                });
+            }
+            TransportConfig::Ssh {
+                host,
+                port,
+                username,
+                key_path,
+                password,
+                mode,
+            } => {
+                let auth = if let Some(key) = key_path {
+                    ssh::SshAuth::KeyFile(key.clone())
+                } else if let Some(pass) = password {
+                    ssh::SshAuth::Password(pass.clone())
+                } else {
+                    anyhow::bail!("SSH transport requires either key_path or password");
+                };
+                transports.push(ConfiguredTransport {
+                    kind: TransportKind::Ssh,
+                    mode: *mode,
+                    transport: Arc::new(ssh::SshTransport::new(
+                        host.clone(),
+                        *port,
+                        username.clone(),
+                        auth,
+                    )),
+                    metadata: TransportMetadata::static_config(TransportKind::Ssh),
                 });
             }
         }

@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+use hydra_core::connections::AppAttribution as CoreAppAttribution;
 use moka::sync::Cache;
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, OnceLock};
@@ -27,13 +29,13 @@ impl AppAttribution {
                 .is_some_and(|value| !value.is_empty())
     }
 
-    fn to_core(&self) -> Option<hydra_core::connections::AppAttribution> {
+    fn to_core(&self) -> Option<CoreAppAttribution> {
         let uid = u32::try_from(self.uid).ok()?;
         let package_name = self.package_name.clone()?;
         if package_name.is_empty() {
             return None;
         }
-        Some(hydra_core::connections::AppAttribution {
+        Some(CoreAppAttribution {
             uid,
             package_name: package_name.clone(),
             app_label: self.app_label.clone().unwrap_or(package_name),
@@ -59,6 +61,22 @@ struct SubmittedAppResolution {
 
 static UID_CACHE: OnceLock<Cache<i32, AppAttribution>> = OnceLock::new();
 static CONNECTION_CACHE: OnceLock<Cache<String, AppAttribution>> = OnceLock::new();
+
+pub struct MobileAppResolver;
+
+#[async_trait]
+impl hydra_core::AppResolver for MobileAppResolver {
+    async fn resolve_app(
+        &self,
+        protocol: i32,
+        local_ip: &str,
+        local_port: u16,
+        remote_ip: &str,
+        remote_port: u16,
+    ) -> Option<CoreAppAttribution> {
+        resolve_app_for_connection(protocol, local_ip, local_port, remote_ip, remote_port).await
+    }
+}
 
 fn uid_cache() -> &'static Cache<i32, AppAttribution> {
     UID_CACHE.get_or_init(|| {
@@ -86,6 +104,140 @@ fn connection_key(
     remote_port: u16,
 ) -> String {
     format!("{protocol}|{local_ip}:{local_port}|{remote_ip}:{remote_port}")
+}
+
+#[cfg(target_os = "android")]
+fn android_vm() -> anyhow::Result<&'static jni::JavaVM> {
+    static JVM: OnceLock<jni::JavaVM> = OnceLock::new();
+    static JVM_INIT: Mutex<()> = Mutex::new(());
+
+    if let Some(vm) = JVM.get() {
+        return Ok(vm);
+    }
+
+    let _guard = JVM_INIT
+        .lock()
+        .map_err(|error| anyhow::anyhow!("android_vm init mutex poisoned: {error}"))?;
+
+    if let Some(vm) = JVM.get() {
+        return Ok(vm);
+    }
+
+    let vm = unsafe {
+        jni::JavaVM::from_raw(ndk_context::android_context().vm().cast())
+            .map_err(|error| anyhow::anyhow!("create JavaVM wrapper failed: {error}"))?
+    };
+
+    let _ = JVM.set(vm);
+    JVM.get()
+        .ok_or_else(|| anyhow::anyhow!("android_vm init failed"))
+}
+
+#[cfg(target_os = "android")]
+fn android_resolve_app_json(
+    protocol: i32,
+    local_ip: &str,
+    local_port: u16,
+    remote_ip: &str,
+    remote_port: u16,
+) -> anyhow::Result<String> {
+    use jni::objects::{JString, JValue};
+
+    let mut env = android_vm()?
+        .attach_current_thread()
+        .map_err(|error| anyhow::anyhow!("attach_current_thread failed: {error}"))?;
+
+    let local_ip = env.new_string(local_ip)?;
+    let remote_ip = env.new_string(remote_ip)?;
+    let result = env.call_static_method(
+        "com/hydra/network/hydra_mobile/AppResolver",
+        "resolveByConnectionJson",
+        "(ILjava/lang/String;ILjava/lang/String;I)Ljava/lang/String;",
+        &[
+            JValue::Int(protocol),
+            JValue::Object(&local_ip),
+            JValue::Int(i32::from(local_port)),
+            JValue::Object(&remote_ip),
+            JValue::Int(i32::from(remote_port)),
+        ],
+    )?;
+
+    let value = result.l()?;
+    if value.is_null() {
+        return Ok("null".to_string());
+    }
+
+    let value = JString::from(value);
+    let resolved: String = env.get_string(&value)?.into();
+    Ok(resolved)
+}
+
+#[cfg(target_os = "android")]
+fn resolve_android_with_retries(
+    protocol: i32,
+    local_ip: &str,
+    local_port: u16,
+    remote_ip: &str,
+    remote_port: u16,
+) -> Option<AppAttribution> {
+    let retry_delays = [0_u64, 30, 90];
+    for delay_ms in retry_delays {
+        if delay_ms > 0 {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
+
+        match android_resolve_app_json(protocol, local_ip, local_port, remote_ip, remote_port) {
+            Ok(json) => {
+                if let Some(attr) = parse_attribution_json(&json) {
+                    return Some(attr);
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    protocol,
+                    local_ip,
+                    local_port,
+                    remote_ip,
+                    remote_port,
+                    "android app resolve failed: {error}"
+                );
+            }
+        }
+    }
+
+    None
+}
+
+pub async fn resolve_app_for_connection(
+    protocol: i32,
+    local_ip: &str,
+    local_port: u16,
+    remote_ip: &str,
+    remote_port: u16,
+) -> Option<CoreAppAttribution> {
+    let key = connection_key(protocol, local_ip, local_port, remote_ip, remote_port);
+    if let Some(attr) = connection_cache().get(&key) {
+        return attr.to_core();
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let local_ip = local_ip.to_string();
+        let remote_ip = remote_ip.to_string();
+        let resolved = tokio::task::spawn_blocking(move || {
+            resolve_android_with_retries(protocol, &local_ip, local_port, &remote_ip, remote_port)
+        })
+        .await
+        .ok()
+        .flatten();
+
+        if let Some(attr) = resolved {
+            cache_resolution(&key, attr.clone());
+            return attr.to_core();
+        }
+    }
+
+    None
 }
 
 pub fn get_cached_attribution(host: &str, port: u16) -> Option<AppAttribution> {
@@ -147,11 +299,6 @@ pub(crate) fn queue_resolution(
         return attr.to_core();
     }
 
-    if let Some(attr) = get_cached_attribution(remote_ip, remote_port) {
-        cache_resolution(&key, attr.clone());
-        return attr.to_core();
-    }
-
     if let Ok(mut pending) = PENDING_RESOLUTIONS.lock() {
         let request = PendingAppResolution {
             connection_id,
@@ -169,7 +316,7 @@ pub(crate) fn queue_resolution(
     None
 }
 
-pub(crate) fn take_completed_resolutions() -> Vec<(u64, hydra_core::connections::AppAttribution)> {
+pub(crate) fn take_completed_resolutions() -> Vec<(u64, CoreAppAttribution)> {
     if let Ok(mut completed) = COMPLETED_RESOLUTIONS.lock() {
         std::mem::take(&mut *completed)
             .into_iter()

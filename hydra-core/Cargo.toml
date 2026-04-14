@@ -36,6 +36,7 @@ serde_json = { workspace = true }
 uuid = "1"
 whois-rust = { version = "1.6", features = ["tokio"] }
 regex = "1"
+russh = { version = "0.60", default-features = false, features = ["aws-lc-rs", "rsa"] }
 
 [dev-dependencies]
 tempfile = "3"

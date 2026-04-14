@@ -173,7 +173,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             leading: const Icon(Icons.smart_toy_outlined),
             title: const Text('Manage local models'),
             subtitle: const Text(
-              'No LLM model is bundled in the APK. Download one later if you want on-device analysis.',
+              'Qwen 3.5 (0.8B) is bundled for on-device analysis. You can still download lighter or larger local models here.',
             ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () {

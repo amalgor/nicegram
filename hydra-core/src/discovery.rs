@@ -32,6 +32,7 @@ impl DiscoveredRoute {
         let kind = match self.transport_config {
             TransportConfig::Wss { .. } => TransportKind::Wss,
             TransportConfig::Vless { .. } => TransportKind::Vless,
+            TransportConfig::Ssh { .. } => TransportKind::Ssh,
         };
         let mut built = build_transports(std::slice::from_ref(&self.transport_config))?;
         let mut configured = built.pop().expect("single config should build");

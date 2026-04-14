@@ -152,26 +152,47 @@ pub enum TransportConfig {
     },
     /// VLESS transport encoded as a raw vless:// URL.
     Vless { url: String, mode: TransportMode },
+    /// SSH tunnel transport: each connection opens a direct-tcpip channel.
+    Ssh {
+        /// SSH server hostname or IP
+        host: String,
+        /// SSH server port
+        #[serde(default = "default_ssh_port")]
+        port: u16,
+        /// SSH username
+        username: String,
+        /// Path to private key file (PEM/OpenSSH format)
+        #[serde(default)]
+        key_path: Option<String>,
+        /// Password (used if key_path is not set)
+        #[serde(default)]
+        password: Option<String>,
+        mode: TransportMode,
+    },
+}
+
+fn default_ssh_port() -> u16 {
+    22
 }
 
 impl TransportConfig {
     pub fn mode(&self) -> TransportMode {
         match self {
-            Self::Wss { mode, .. } | Self::Vless { mode, .. } => *mode,
+            Self::Wss { mode, .. } | Self::Vless { mode, .. } | Self::Ssh { mode, .. } => *mode,
         }
     }
 
     pub fn wss_endpoint(&self) -> Option<&str> {
         match self {
             Self::Wss { endpoints, .. } => endpoints.first().map(String::as_str),
-            Self::Vless { .. } => None,
+            Self::Vless { .. } | Self::Ssh { .. } => None,
         }
     }
 
     pub fn wss_device_id(&self) -> Option<&str> {
         match self {
             Self::Wss { device_id, .. } => Some(device_id.as_str()),
-            Self::Vless { .. } => None,
+            Self::Vless { .. } | Self::Ssh { .. } => None,
         }
     }
 }
@@ -448,7 +469,7 @@ impl HydraConfig {
                     };
                     (endpoint, device_id)
                 }),
-                TransportConfig::Vless { .. } => None,
+                TransportConfig::Vless { .. } | TransportConfig::Ssh { .. } => None,
             })
     }
 

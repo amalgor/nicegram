@@ -66,6 +66,7 @@ async fn test_socks5_direct_connection() {
         None,
         None,
         None,
+        None,
         &hydra_config::IntelligenceConfig::default(),
     ).unwrap();
     tokio::spawn(async move {
@@ -146,6 +147,7 @@ async fn test_socks5_rejects_unsupported_auth() {
         None,
         None,
         None,
+        None,
         &hydra_config::IntelligenceConfig::default(),
     ).unwrap();
     tokio::spawn(async move {
@@ -208,6 +210,7 @@ async fn test_socks5_domain_connect() {
         econ,
         empty_transports(),
         "off".to_string(),
+        None,
         None,
         None,
         None,
@@ -293,6 +296,7 @@ async fn test_connection_registry_tracking() {
         econ,
         empty_transports(),
         "off".to_string(),
+        None,
         None,
         None,
         None,

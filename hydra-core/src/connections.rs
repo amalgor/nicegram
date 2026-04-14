@@ -12,6 +12,7 @@ pub enum RouteType {
     Direct,
     Wss,
     Vless,
+    Ssh,
     P2P,
     Blocked,
 }
@@ -22,13 +23,14 @@ impl RouteType {
             RouteType::Direct => "direct",
             RouteType::Wss => "wss",
             RouteType::Vless => "vless",
+            RouteType::Ssh => "ssh",
             RouteType::P2P => "p2p",
             RouteType::Blocked => "blocked",
         }
     }
 
     fn is_proxied(&self) -> bool {
-        matches!(self, Self::Wss | Self::Vless | Self::P2P)
+        matches!(self, Self::Wss | Self::Vless | Self::Ssh | Self::P2P)
     }
 }
 

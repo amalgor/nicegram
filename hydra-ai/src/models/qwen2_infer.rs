@@ -95,8 +95,10 @@ impl Qwen2Infer {
         }
 
         for _ in 0..max_tokens {
-            let token = sampler.sample(&ctx, n_cur - 1);
-            sampler.accept(token);
+            // `sample()` expects an output-row index from the last decode, not the absolute
+            // token position in the context. In our batching pattern only the last decoded
+            // token has logits enabled, so `-1` is the correct "last output" selector.
+            let token = sampler.sample(&ctx, -1);
 
             tracing::debug!("Sampled token: {}", token);
 
@@ -130,5 +132,28 @@ impl Qwen2Infer {
         tracing::info!("Generation finished: output_chars={}, output_bytes={}", output.chars().count(), output.len());
 
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Qwen2Infer;
+    use std::path::PathBuf;
+
+    #[test]
+    #[ignore = "Loads a local GGUF file and runs real inference."]
+    fn ignored_short_prompt_smoke_test() {
+        let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../hydra_mobile/assets/models/qwen2.5-0.5b.gguf");
+        assert!(
+            model_path.exists(),
+            "expected bundled smoke-test model at {}",
+            model_path.display()
+        );
+
+        let mut infer = Qwen2Infer::load(&model_path, None).expect("model should load");
+        infer
+            .generate("hi", 8)
+            .expect("short prompt generation should not fail");
     }
 }

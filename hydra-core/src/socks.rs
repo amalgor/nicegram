@@ -25,7 +25,8 @@ pub const AUTH_USER_PASS: u8 = 0x02;
 pub const AUTH_NO_ACCEPTABLE: u8 = 0xFF;
 
 /// Source connection info extracted from SOCKS5 username field.
-/// Format: "username|protocol|src_ip|src_port" or "username|protocol|src_ip|src_port|dst_ip"
+/// Format: "username|protocol|src_ip|src_port" (upstream tun2proxy v0.7.20+).
+/// Legacy format with 5th field dst_ip is also accepted but no longer sent.
 #[derive(Debug, Clone, Default)]
 pub struct SourceInfo {
     pub username: String,
@@ -37,7 +38,8 @@ pub struct SourceInfo {
 
 impl SourceInfo {
     /// Parse source info from username field.
-    /// Expected format: "username|protocol|src_ip|src_port" or "username|protocol|src_ip|src_port|dst_ip"
+    /// Expected format: "username|protocol|src_ip|src_port" (tun2proxy v0.7.20+).
+    /// Also accepts legacy 5-field format with dst_ip.
     /// Falls back to treating entire string as username if parsing fails.
     pub fn parse(raw: &str) -> Self {
         let parts: Vec<&str> = raw.splitn(5, '|').collect();
