@@ -274,14 +274,14 @@ class _RoutesScreenState extends State<RoutesScreen>
     final portCtrl = TextEditingController(text: '22');
     final userCtrl = TextEditingController();
     final credCtrl = TextEditingController();
+    var authType = 'password';
+    String? keyFilePath;
 
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
       builder: (context) {
-        var authType = 'password';
-        String? keyFilePath;
         return StatefulBuilder(
           builder: (context, setModalState) {
             return Padding(
