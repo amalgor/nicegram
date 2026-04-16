@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use hydra_core::connections::AppAttribution as CoreAppAttribution;
+pub use hydra_core::connections::AppAttribution as CoreAppAttribution;
 use moka::sync::Cache;
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, OnceLock};
