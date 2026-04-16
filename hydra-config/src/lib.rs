@@ -164,7 +164,10 @@ pub enum TransportConfig {
         /// Path to private key file (PEM/OpenSSH format)
         #[serde(default)]
         key_path: Option<String>,
-        /// Password (used if key_path is not set)
+        /// Inline PEM/OpenSSH private key content (saved to app sandbox on first use)
+        #[serde(default)]
+        key_pem: Option<String>,
+        /// Password (used if key_path and key_pem are not set)
         #[serde(default)]
         password: Option<String>,
         mode: TransportMode,

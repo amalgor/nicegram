@@ -9,6 +9,7 @@ import 'package:hydra_mobile/screens/connections_screen.dart';
 import 'package:hydra_mobile/screens/relay_usage_screen.dart';
 import 'package:hydra_mobile/screens/routes_screen.dart';
 import 'package:hydra_mobile/screens/settings_screen.dart';
+import 'package:hydra_mobile/screens/terminal_screen.dart';
 import 'package:hydra_mobile/src/rust/api/model_manager.dart';
 import 'package:hydra_mobile/src/rust/api/simple.dart';
 import 'package:hydra_mobile/src/rust/frb_generated.dart';
@@ -154,6 +155,7 @@ class _MainScreenState extends State<MainScreen> {
     'Intelligence',
     'Connections',
     'Routes',
+    'Terminal',
     'Relay',
     'Settings',
   ];
@@ -162,6 +164,7 @@ class _MainScreenState extends State<MainScreen> {
     ConnectScreen(),
     ConnectionsScreen(),
     RoutesScreen(),
+    TerminalScreen(),
     RelayUsageScreen(),
     SettingsScreen(),
   ];
@@ -189,6 +192,10 @@ class _MainScreenState extends State<MainScreen> {
             label: 'Connections',
           ),
           NavigationDestination(icon: Icon(Icons.route), label: 'Routes'),
+          NavigationDestination(
+            icon: Icon(Icons.terminal),
+            label: 'Terminal',
+          ),
           NavigationDestination(
             icon: Icon(Icons.query_stats),
             label: 'Relay',

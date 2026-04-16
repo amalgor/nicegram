@@ -19,6 +19,8 @@ const CHANNEL_BUF_SIZE: usize = 32768;
 pub enum SshAuth {
     /// Path to PEM/OpenSSH private key file.
     KeyFile(String),
+    /// Inline PEM/OpenSSH private key content.
+    KeyPem(String),
     /// Password string.
     Password(String),
 }
@@ -107,23 +109,15 @@ impl SshTransport {
                         "Failed to load SSH key '{}': {}. Check file exists and is valid PEM/OpenSSH format.",
                         path, e
                     ))?;
-                let auth_res = session
-                    .authenticate_publickey(
-                        username,
-                        PrivateKeyWithHashAlg::new(
-                            Arc::new(key_pair),
-                            session.best_supported_rsa_hash().await?.flatten(),
-                        ),
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!("SSH pubkey auth error: {}", e))?;
-
-                if !auth_res.success() {
-                    anyhow::bail!(
-                        "SSH pubkey auth failed for user '{}' on {}. Check key is authorized on server.",
-                        username, addr
-                    );
-                }
+                Self::authenticate_pubkey(&mut session, username, key_pair, &addr).await?;
+            }
+            SshAuth::KeyPem(pem_content) => {
+                let key_pair = russh::keys::decode_secret_key(pem_content, None)
+                    .map_err(|e| anyhow::anyhow!(
+                        "Failed to decode inline PEM key: {}. Check key content is valid PEM/OpenSSH format.",
+                        e
+                    ))?;
+                Self::authenticate_pubkey(&mut session, username, key_pair, &addr).await?;
             }
             SshAuth::Password(password) => {
                 let auth_res = session
@@ -142,6 +136,32 @@ impl SshTransport {
 
         info!(addr = %addr, user = %username, "SSH: authenticated");
         Ok(session)
+    }
+
+    async fn authenticate_pubkey(
+        session: &mut client::Handle<SshClient>,
+        username: &str,
+        key_pair: russh::keys::PrivateKey,
+        addr: &str,
+    ) -> Result<()> {
+        let auth_res = session
+            .authenticate_publickey(
+                username,
+                PrivateKeyWithHashAlg::new(
+                    Arc::new(key_pair),
+                    session.best_supported_rsa_hash().await?.flatten(),
+                ),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("SSH pubkey auth error: {}", e))?;
+
+        if !auth_res.success() {
+            anyhow::bail!(
+                "SSH pubkey auth failed for user '{}' on {}. Check key is authorized on server.",
+                username, addr
+            );
+        }
+        Ok(())
     }
 
     async fn open_channel(&self, target: &str) -> Result<TransportStream> {

@@ -4,7 +4,7 @@
 
 ## Shipping Status (2026-04-05)
 - Текущий shipping target в репозитории: **Android MVP network utility**, а не embedded-wallet marketplace.
-- Primary surface в `hydra_mobile`: `Intelligence`, `Connections`, `Routes`, `Relay`, `Settings`.
+- Primary surface в `hydra_mobile`: `Intelligence`, `Connections`, `Routes`, `Terminal`, `Relay`, `Settings`.
 - В APK больше **не бандлится GGUF-модель**. LLM остаётся optional download из `Settings -> Optional AI`.
 - Пользовательский routing state хранится рядом с `hydra.toml` в:
   - `mobile_routes.json` — built-in WSS + imported VLESS profiles и их порядок
@@ -34,7 +34,7 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 - **[econ]** — `db_path`, `settlement_threshold_bytes`
 - **[telegram]** — `api_id`, `api_hash`, `session_path`
 - **[content]** — `db_path`, `summarization_max_tokens`, `cache_ttl_seconds`
-- **[[transports]]** — transport list в порядке failover/приоритета: `type = "wss" | "vless"`, `mode = "telegram" | "all"`, transport-specific поля (`endpoints`, `device_id`, `url`)
+- **[[transports]]** — transport list в порядке failover/приоритета: `type = "wss" | "vless" | "ssh"`, `mode = "telegram" | "all"`, transport-specific поля (`endpoints`, `device_id`, `url`, SSH: `host`, `port`, `username`, `key_path`, `key_pem`, `password`)
 - **[crypto]** — `enabled`, `chain`, `rpc_url`, `route_book_address`, `deal_board_address`, `identity_registry_address`, `reputation_registry_address`, `usdc_address`
 - **[agent]** — P2P deal agent: `auto_spend_limit`, `max_rate_premium`, `preferred_payment_methods`, `min_dealer_reputation`
 - **[discovery]** — параметры опроса `HydraRouteBook`: `poll_interval_secs`, `max_offers`, `prefer_free`, `rpc_timeout_secs`
@@ -45,8 +45,8 @@ Hydra — это мульти-агентная P2P сеть, предназна�
 На мобильном устройстве конфигурация загружается из `{app_documents_dir}/hydra.toml`, относительные пути автоматически разрешаются относительно `app_documents_dir`.
 На Android/iOS этот файл теперь materialize-ится из bundled asset `hydra_mobile/assets/hydra.toml` при первом запуске приложения, если в documents dir ещё нет `hydra.toml`. Это защищает release build от silent fallback на `HydraConfig::default()`.
 Для Android MVP поверх `hydra.toml` живут file-based overlays:
-- `mobile_routes.json` — built-in `Hydra WSS Relay` + imported raw/subscription `vless://` profiles; runtime hot-reload-ит этот файл и перестраивает transports без FRB codegen.
-- `route_policies.json` — persisted policies `Auto | Direct | WSS(profile_id) | VLESS(profile_id) | Block` для app/domain групп.
+- `mobile_routes.json` — built-in `Hydra WSS Relay` + imported raw/subscription `vless://` profiles + user-created SSH tunnel profiles; runtime hot-reload-ит этот файл и перестраивает transports без FRB codegen.
+- `route_policies.json` — persisted policies `Auto | Direct | WSS(profile_id) | VLESS(profile_id) | SSH(profile_id) | Block` для app/domain групп.
 - `relay_usage.json` — hourly buckets только для `WSS` transport; direct/VLESS bytes туда не пишутся.
 Bundled mobile defaults для shipping APK: `[network].proxy_mode = "full"` и `[crypto].enabled = false`.
 
@@ -76,6 +76,7 @@ Bundled mobile defaults для shipping APK: `[network].proxy_mode = "full"` и 
 - Android `VpnService` -> `tun2proxy` -> local SOCKS5 -> selected route `Auto | Direct | WSS | VLESS | Block`
 - built-in profile: `Hydra WSS Relay`
 - user import: raw `vless://...` и V2Ray base64 subscription (newline list, import only `vless://`)
+- user-created SSH tunnel profiles (host, port, username + password/PEM key/key file)
 - live traffic control: `Connections` screen группирует потоки по app/domain и сохраняет пользовательский policy choice
 - app-level route policy теперь вычисляется до выбора transport: original source tuple из `tun2proxy` используется для синхронного Android app resolve в момент SOCKS5 handshake, поэтому `Block / Direct / WSS / VLESS` для app-групп применяются на первом соединении, а не только после фонового refresh.
 - relay accounting: `Relay Usage` показывает только local WSS usage + estimated Cloudflare cost + external support link
@@ -145,7 +146,9 @@ Bundled mobile defaults для shipping APK: `[network].proxy_mode = "full"` и 
 ### 5. Ядро (hydra-core)
 - **SOCKS5 Server**: Принимает соединения от локальных приложений, порт из `[network].socks5_port`.
 - **Multi-hop Relay**: Последовательно устанавливает stream-каналы через промежуточные узлы.
-- **Transport layer** (`transport/`): `Socks5Server` работает со списком `ConfiguredTransport` в порядке TOML-конфига. Поддерживаются `WssTransport` и `VlessTransport`. Для VLESS shipping path теперь корректно различает plain TCP/WS credentials без `flow` и Reality/Vision credentials с `flow=xtls-rprx-vision`; `grpc+reality` URL пока остаётся parse-only.
+- **Transport layer** (`transport/`): `Socks5Server` работает со списком `ConfiguredTransport` в порядке TOML-конфига. Поддерживаются `WssTransport`, `VlessTransport` и `SshTransport`. Для VLESS shipping path теперь корректно различает plain TCP/WS credentials без `flow` и Reality/Vision credentials с `flow=xtls-rprx-vision`; `grpc+reality` URL пока остаётся parse-only.
+- **SSH Transport** (`transport/ssh.rs`): SSH tunnel через `russh` 0.60. Открывает `direct-tcpip` каналы через persistent SSH сессию (аналог `ssh -L`). Аутентификация: password, key file (PEM/OpenSSH), inline PEM key (`key_pem`). Session auto-reconnect при обрыве. Connect timeout 10s, inactivity timeout 600s, channel buffer 32 KiB. Мост SSH channel ↔ local TCP pair через `tokio::select!`.
+- **Shell Executor** (`shell_executor.rs`): Выполнение shell-команд на устройстве для AI-агента. Блокирует опасные команды (rm, kill, reboot и др.). Max output 128 KiB, default timeout 10s. FRB API: `shell_exec(command)`, `shell_exec_batch(commands)`, `inspect_device_network()`, `quick_network_summary()`.
 - **Routing policy**: глобальный `proxy_mode` остаётся в `[network]` (`off | telegram | full`). Для proxied-трафика действует fail-closed: если подходящие transports исчерпаны, соединение закрывается без direct fallback.
 - **App Attribution** (Android 10+): `ConnectionInfo` и `ConnectionSnapshot` теперь содержат `app_uid`, `app_label`, `package_name`. На Android используется `ConnectivityManager.getConnectionOwnerUid()` через platform channel для определения приложения-источника по реальному `(protocol, src, dst)` tuple, полученному из `tun2proxy` source metadata. Важная operational detail: в текущем vendored `tun2proxy` session info включается через SOCKS5 `USER/PASS`, когда username оканчивается на `+info`, поэтому mobile VPN bridge теперь подключается к локальному SOCKS5 как `socks5://hydra+info:session@127.0.0.1:<port>`. Для `getConnectionOwnerUid()` destination host больше не резолвится принудительно: domain targets передаются через `InetSocketAddress.createUnresolved(host, port)`, а IP literals остаются resolved. Kotlin-side `AppResolver` держит UID LRU cache, Rust mobile bridge (`hydra_mobile/rust/src/api/app_resolver.rs`) держит `moka` caches и pending/completed resolution queues, а snapshot writer применяет завершённые app verdicts обратно в `ConnectionRegistry`. Dart-сторона стартует resolution loop после boot runtime и опрашивает pending queue каждые 500ms.
 - **Network Intelligence state**: `ConnectionInfo` / `ConnectionSnapshot` дополнены `reverse_dns`, `whois_org`, `whois_asn`, `whois_country` и flattened classification fields (`classification_category`, `classification_confidence`, `classification_source`, `classification_explanation`). `ConnectionRegistry` умеет обновлять enrichment/classification постфактум, а `ConnectionStats` теперь считает `blocked_count` и `tracker_count`.
@@ -173,13 +176,14 @@ Bundled mobile defaults для shipping APK: `[network].proxy_mode = "full"` и 
 - **Ops report**: точные deploy/verification outputs сохранены в `reports/2026-04-03-ops-validation.md`.
 
 ### 7. Мобильный слой (hydra_mobile)
-- **Flutter UI**: 5 primary вкладок — `Connect`, `Connections`, `Routes`, `Relay Usage`, `Settings`. Это и есть каноническая shipping surface для первого Android APK.
+- **Flutter UI**: 6 primary вкладок — `Intelligence`, `Connections`, `Routes`, `Terminal`, `Relay`, `Settings`. Это и есть каноническая shipping surface для первого Android APK.
 - **Hidden surfaces**: `Balance`, `Marketplace`, `Payments`, `Providers`, `Content`, `Logs`, model/content/provider/payment widgets и exchange repositories остаются в repo, но не участвуют в primary navigation.
 - **Bundled default model**: `pubspec.yaml` включает `assets/models/`, а `main.dart` materialize-ит bundled `Qwen3.5-0.8B-Q4_K_M.gguf` в `Documents/models/qwen3.5-0.8b.gguf` при first launch. `Settings -> Optional AI` всё ещё позволяет вручную переключаться на другие локальные GGUF models.
 - **Route store**: Flutter напрямую читает/пишет `mobile_routes.json`, `route_policies.json`, `relay_usage.json` в app documents dir. Это сознательный file-based contract, потому что FRB codegen для новых route APIs в текущем dev environment недоступен.
-- **Routes screen**: built-in WSS relay profile + imported VLESS profiles. Поддерживаются enable/disable, rename, mode (`all` / `telegram`), priority reorder и delete для imported profiles.
+- **Routes screen**: built-in WSS relay profile + imported VLESS profiles + user-created SSH tunnel profiles. Поддерживаются enable/disable, rename, mode (`all` / `telegram`), priority reorder и delete для imported profiles. SSH профили создаются через кнопку "Add SSH" с выбором аутентификации: password, вставка PEM ключа или file picker.
+- **Terminal screen**: локальный shell-терминал для AI-агента. Выполняет команды через `shell_exec` (Rust FRB), отображает stdout/stderr/exit code с monospace форматированием. Кнопка "Network Inspect" — `quick_network_summary()`. Блокировка опасных команд на Rust-стороне (rm, kill и др.).
 - **VLESS runtime note (2026-04-05)**: импортированные VLESS credentials больше не форсятся в `xtls-rprx-vision`. Runtime формирует standard VLESS header для обычных URI без `flow` и включает Vision extension только когда URI явно содержит `flow=xtls-rprx-vision`. Это закрывает observed Android bug: `SOCKS5 request granted`, но downstream bytes не идут из-за неверного VLESS request header.
-- **Connections screen**: traffic группируется по `app` (best-effort; сейчас guaranteed для Telegram) или `domain` fallback. Пользователь может сохранить policy: `Auto`, `Direct`, `Block`, explicit `WSS(profile_id)`, explicit `VLESS(profile_id)`.
+- **Connections screen**: traffic группируется по `app` (best-effort; сейчас guaranteed для Telegram) или `domain` fallback. Пользователь может сохранить policy: `Auto`, `Direct`, `Block`, explicit `WSS(profile_id)`, explicit `VLESS(profile_id)`, explicit `SSH(profile_id)`.
 - **Android app attribution (2026-04-12)**: проблема была не в manifest permissions, а в цепочке `UID -> AppInfo -> policy`. `HydraVpnService` теперь сначала делает direct `getPackagesForUid(uid)`, затем fallback по `appId = uid % 100000` через installed applications и, если package всё равно не находится, создаёт synthetic stable identity `uid.<N>`. Это покрывает third-party traffic, идущий через Virtual DNS / tun2proxy, где UID owner определяется, но прямой package lookup может не сработать.
 - **Relay Usage screen**: локальные hourly buckets только для WSS, today/7d/30d aggregation, estimated cost по локальному `USD/GB` rate и external support link/QR/share.
 - **Settings**: global proxy mode (`off | telegram | full`), relay estimate rate, optional AI models. Shipping mobile defaults: `full` mode.

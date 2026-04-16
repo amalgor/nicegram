@@ -207,15 +207,18 @@ pub fn build_transports(configs: &[TransportConfig]) -> Result<Vec<ConfiguredTra
                 port,
                 username,
                 key_path,
+                key_pem,
                 password,
                 mode,
             } => {
                 let auth = if let Some(key) = key_path {
                     ssh::SshAuth::KeyFile(key.clone())
+                } else if let Some(pem) = key_pem {
+                    ssh::SshAuth::KeyPem(pem.clone())
                 } else if let Some(pass) = password {
                     ssh::SshAuth::Password(pass.clone())
                 } else {
-                    anyhow::bail!("SSH transport requires either key_path or password");
+                    anyhow::bail!("SSH transport requires key_path, key_pem, or password");
                 };
                 transports.push(ConfiguredTransport {
                     kind: TransportKind::Ssh,

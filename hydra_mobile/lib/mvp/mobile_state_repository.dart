@@ -65,6 +65,7 @@ class RouteProfile {
   bool get isBuiltin => source == 'builtin';
   bool get isWss => kind == 'wss';
   bool get isVless => kind == 'vless';
+  bool get isSsh => kind == 'ssh';
 
   String get endpointSummary {
     if (isWss) {
@@ -74,6 +75,12 @@ class RouteProfile {
           .where((value) => value.isNotEmpty)
           .toList();
       return endpoints.isEmpty ? 'No endpoint' : endpoints.join('\n');
+    }
+    if (isSsh) {
+      final host = config['host'] as String? ?? '';
+      final port = config['port'] ?? 22;
+      final username = config['username'] as String? ?? '';
+      return '$username@$host:$port';
     }
     return config['url'] as String? ?? '';
   }
@@ -86,6 +93,17 @@ class RouteProfile {
           .where((value) => value.isNotEmpty)
           .toList();
       return endpoints.isEmpty ? 'No endpoint' : endpoints.first;
+    }
+    if (isSsh) {
+      final host = config['host'] as String? ?? '';
+      final port = config['port'] ?? 22;
+      final username = config['username'] as String? ?? '';
+      final authType = config['key_path'] != null
+          ? 'key_file'
+          : config['key_pem'] != null
+              ? 'key_pem'
+              : 'password';
+      return '$username@$host:$port [$authType]';
     }
     final url = config['url'] as String? ?? '';
     if (url.isEmpty) {
@@ -800,6 +818,8 @@ Color routeTypeColor(String routeType) {
       return const Color(0xFF22C55E);
     case 'blocked':
       return const Color(0xFFEF4444);
+    case 'ssh':
+      return const Color(0xFFA78BFA);
     case 'p2p':
       return const Color(0xFFF59E0B);
     default:

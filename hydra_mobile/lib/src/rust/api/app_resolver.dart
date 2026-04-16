@@ -7,8 +7,22 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `cache_resolution`, `connection_cache`, `connection_key`, `queue_resolution`, `take_completed_resolutions`, `take_pending_resolution_requests`, `to_core`, `uid_cache`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `COMPLETED_RESOLUTIONS`, `PENDING_RESOLUTIONS`, `PendingAppResolution`, `SubmittedAppResolution`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `deref`, `deref`, `eq`, `fmt`, `fmt`, `fmt`, `initialize`, `initialize`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `COMPLETED_RESOLUTIONS`, `MobileAppResolver`, `PENDING_RESOLUTIONS`, `PendingAppResolution`, `SubmittedAppResolution`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `deref`, `deref`, `eq`, `fmt`, `fmt`, `fmt`, `initialize`, `initialize`, `resolve_app`
+
+Future<CoreAppAttribution?> resolveAppForConnection({
+  required int protocol,
+  required String localIp,
+  required int localPort,
+  required String remoteIp,
+  required int remotePort,
+}) => RustLib.instance.api.crateApiAppResolverResolveAppForConnection(
+  protocol: protocol,
+  localIp: localIp,
+  localPort: localPort,
+  remoteIp: remoteIp,
+  remotePort: remotePort,
+);
 
 Future<AppAttribution?> getCachedAttribution({
   required String host,
@@ -74,6 +88,9 @@ String getCachedAppAttribution({required String host, required int port}) =>
 
 String getAppCacheStats() =>
     RustLib.instance.api.crateApiAppResolverGetAppCacheStats();
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<CoreAppAttribution>>
+abstract class CoreAppAttribution implements RustOpaqueInterface {}
 
 class AppAttribution {
   final int uid;

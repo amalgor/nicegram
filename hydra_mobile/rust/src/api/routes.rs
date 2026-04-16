@@ -400,6 +400,68 @@ pub async fn clear_route_policy(group_kind: String, group_key: String) -> Result
     })
 }
 
+/// Create an SSH route profile.
+/// auth_type: "password", "key_pem", or "key_file"
+/// credential: password string, PEM key content, or file path (depending on auth_type)
+pub async fn create_ssh_route_profile(
+    host: String,
+    port: u16,
+    username: String,
+    auth_type: String,
+    credential: String,
+) -> Result<String> {
+    if host.trim().is_empty() {
+        bail!("SSH host must not be empty");
+    }
+    if username.trim().is_empty() {
+        bail!("SSH username must not be empty");
+    }
+    if credential.trim().is_empty() {
+        bail!("SSH credential must not be empty");
+    }
+
+    let (key_path, key_pem, password) = match auth_type.as_str() {
+        "password" => (None, None, Some(credential)),
+        "key_pem" => (None, Some(credential), None),
+        "key_file" => (Some(credential), None, None),
+        other => bail!("Unknown SSH auth_type: '{}'. Use password, key_pem, or key_file.", other),
+    };
+
+    let label = format!("SSH {}@{}:{}", username, host, port);
+    let priority = with_state(|state| Ok(next_priority(&state.profiles)))?;
+    let id = format!("imported-ssh-{}", now_epoch_millis());
+
+    let profile = RouteProfile::new(
+        id,
+        label,
+        RouteProfileKind::Ssh,
+        TransportMode::All,
+        true,
+        priority,
+        RouteProfileSource::ImportedRaw,
+        TransportConfig::Ssh {
+            host,
+            port,
+            username,
+            key_path,
+            key_pem,
+            password,
+            mode: TransportMode::All,
+        },
+    );
+
+    let normalized = normalize_profile(profile)?;
+
+    with_state_mut(|state| {
+        state.profiles.push(normalized.clone());
+        persist_json(&state.base_dir.join(MOBILE_ROUTES_FILE), &state.profiles)?;
+        sync_transports_locked(state)?;
+        Ok(())
+    })?;
+
+    to_json(&normalized)
+}
+
 pub async fn get_relay_usage_summary() -> Result<String> {
     let summary = with_state(|state| state.relay_usage.summary())?;
     to_json(&summary)
@@ -578,6 +640,26 @@ fn normalize_profile(mut profile: RouteProfile) -> Result<RouteProfile> {
                 .with_context(|| "Invalid VLESS URL")?;
             profile.config = TransportConfig::Vless {
                 url: url.clone(),
+                mode: profile.mode,
+            };
+        }
+        (RouteProfileKind::Ssh, TransportConfig::Ssh { host, port, username, key_path, key_pem, password, .. }) => {
+            if host.trim().is_empty() {
+                bail!("SSH profile requires a host");
+            }
+            if username.trim().is_empty() {
+                bail!("SSH profile requires a username");
+            }
+            if key_path.is_none() && key_pem.is_none() && password.is_none() {
+                bail!("SSH profile requires key_path, key_pem, or password");
+            }
+            profile.config = TransportConfig::Ssh {
+                host: host.clone(),
+                port: *port,
+                username: username.clone(),
+                key_path: key_path.clone(),
+                key_pem: key_pem.clone(),
+                password: password.clone(),
                 mode: profile.mode,
             };
         }

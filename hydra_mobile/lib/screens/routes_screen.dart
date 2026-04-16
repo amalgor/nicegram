@@ -1,5 +1,7 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:hydra_mobile/mvp/mobile_state_repository.dart';
+import 'package:hydra_mobile/src/rust/api/routes.dart' as routes_api;
 
 class RoutesScreen extends StatefulWidget {
   const RoutesScreen({super.key});
@@ -267,6 +269,205 @@ class _RoutesScreenState extends State<RoutesScreen>
     }
   }
 
+  Future<void> _showSshCreateSheet() async {
+    final hostCtrl = TextEditingController();
+    final portCtrl = TextEditingController(text: '22');
+    final userCtrl = TextEditingController();
+    final credCtrl = TextEditingController();
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) {
+        var authType = 'password';
+        String? keyFilePath;
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.fromLTRB(
+                16,
+                8,
+                16,
+                MediaQuery.of(context).viewInsets.bottom + 16,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Add SSH Tunnel',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: hostCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Host',
+                        border: OutlineInputBorder(),
+                        hintText: '192.168.1.100',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: portCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Port',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: userCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Username',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment<String>(
+                          value: 'password',
+                          label: Text('Password'),
+                          icon: Icon(Icons.lock),
+                        ),
+                        ButtonSegment<String>(
+                          value: 'key_pem',
+                          label: Text('Paste PEM'),
+                          icon: Icon(Icons.key),
+                        ),
+                        ButtonSegment<String>(
+                          value: 'key_file',
+                          label: Text('Key File'),
+                          icon: Icon(Icons.file_open),
+                        ),
+                      ],
+                      selected: {authType},
+                      onSelectionChanged: (selection) {
+                        setModalState(() {
+                          authType = selection.first;
+                          credCtrl.clear();
+                          keyFilePath = null;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    if (authType == 'password')
+                      TextField(
+                        controller: credCtrl,
+                        obscureText: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Password',
+                          border: OutlineInputBorder(),
+                        ),
+                      )
+                    else if (authType == 'key_pem')
+                      TextField(
+                        controller: credCtrl,
+                        minLines: 4,
+                        maxLines: 8,
+                        decoration: const InputDecoration(
+                          labelText: 'Paste PEM private key',
+                          border: OutlineInputBorder(),
+                          hintText: '-----BEGIN OPENSSH PRIVATE KEY-----',
+                        ),
+                      )
+                    else ...[
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              keyFilePath ?? 'No file selected',
+                              style: Theme.of(context).textTheme.bodySmall,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          FilledButton.icon(
+                            onPressed: () async {
+                              final result = await FilePicker.platform
+                                  .pickFiles(type: FileType.any);
+                              if (result != null &&
+                                  result.files.single.path != null) {
+                                setModalState(() {
+                                  keyFilePath = result.files.single.path!;
+                                  credCtrl.text = keyFilePath!;
+                                });
+                              }
+                            },
+                            icon: const Icon(Icons.folder_open),
+                            label: const Text('Browse'),
+                          ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: () async {
+                          Navigator.of(context).pop();
+                          await _createSshProfile(
+                            host: hostCtrl.text.trim(),
+                            port: int.tryParse(portCtrl.text.trim()) ?? 22,
+                            username: userCtrl.text.trim(),
+                            authType: authType,
+                            credential: credCtrl.text,
+                          );
+                        },
+                        icon: const Icon(Icons.add),
+                        label: const Text('Create SSH Profile'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _createSshProfile({
+    required String host,
+    required int port,
+    required String username,
+    required String authType,
+    required String credential,
+  }) async {
+    if (host.isEmpty || username.isEmpty || credential.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('All fields are required')),
+      );
+      return;
+    }
+
+    try {
+      await routes_api.createSshRouteProfile(
+        host: host,
+        port: port,
+        username: username,
+        authType: authType,
+        credential: credential,
+      );
+      await _loadProfiles();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('SSH profile $username@$host:$port created')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to create SSH profile: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -307,6 +508,11 @@ class _RoutesScreenState extends State<RoutesScreen>
                         onPressed: () => _showImportSheet('subscription'),
                         icon: const Icon(Icons.article_outlined),
                         label: const Text('Import Subscription'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _showSshCreateSheet,
+                        icon: const Icon(Icons.terminal),
+                        label: const Text('Add SSH'),
                       ),
                     ],
                   ),
@@ -353,7 +559,11 @@ class _RoutesScreenState extends State<RoutesScreen>
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Icon(
-                    profile.isWss ? Icons.cloud_queue : Icons.vpn_key,
+                    profile.isSsh
+                        ? Icons.terminal
+                        : profile.isWss
+                            ? Icons.cloud_queue
+                            : Icons.vpn_key,
                     color: routeColor,
                   ),
                 ),
@@ -386,7 +596,11 @@ class _RoutesScreenState extends State<RoutesScreen>
               runSpacing: 8,
               children: [
                 _pill(
-                  label: profile.isWss ? 'WSS' : 'VLESS',
+                  label: profile.isSsh
+                      ? 'SSH'
+                      : profile.isWss
+                          ? 'WSS'
+                          : 'VLESS',
                   color: routeColor,
                 ),
                 _pill(

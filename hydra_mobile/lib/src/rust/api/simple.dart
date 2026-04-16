@@ -99,3 +99,26 @@ Future<String> getConnectionsByCategory() =>
 /// Returns JSON: { "groups": [ { "country": "...", "count": N, "bytes": N, "trackers": N } ] }
 Future<String> getConnectionsByCountry() =>
     RustLib.instance.api.crateApiSimpleGetConnectionsByCountry();
+
+/// Execute a shell command on the device.
+/// Returns JSON: { "exit_code": N|null, "stdout": "...", "stderr": "...", "truncated": bool, "timed_out": bool }
+///
+/// Only read-only inspection commands are allowed (ls, cat, ps, etc.).
+/// Destructive commands (rm, kill, reboot, etc.) are blocked.
+Future<String> shellExec({required String command}) =>
+    RustLib.instance.api.crateApiSimpleShellExec(command: command);
+
+/// Execute multiple shell commands sequentially.
+/// Returns JSON array of results.
+Future<String> shellExecBatch({required List<String> commands}) =>
+    RustLib.instance.api.crateApiSimpleShellExecBatch(commands: commands);
+
+/// Collect a full network inspection from the device.
+/// Returns JSON with tcp_connections, udp_sockets, processes, net_interfaces,
+/// dns_config, routes, uid_stats, and any errors encountered.
+Future<String> inspectDeviceNetwork() =>
+    RustLib.instance.api.crateApiSimpleInspectDeviceNetwork();
+
+/// Quick one-line network summary: established/listening TCP counts + top UIDs.
+Future<String> quickNetworkSummary() =>
+    RustLib.instance.api.crateApiSimpleQuickNetworkSummary();

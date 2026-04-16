@@ -57,6 +57,23 @@ Future<void> clearRoutePolicy({
   groupKey: groupKey,
 );
 
+/// Create an SSH route profile.
+/// auth_type: "password", "key_pem", or "key_file"
+/// credential: password string, PEM key content, or file path (depending on auth_type)
+Future<String> createSshRouteProfile({
+  required String host,
+  required int port,
+  required String username,
+  required String authType,
+  required String credential,
+}) => RustLib.instance.api.crateApiRoutesCreateSshRouteProfile(
+  host: host,
+  port: port,
+  username: username,
+  authType: authType,
+  credential: credential,
+);
+
 Future<String> getRelayUsageSummary() =>
     RustLib.instance.api.crateApiRoutesGetRelayUsageSummary();
 
