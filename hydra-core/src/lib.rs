@@ -141,6 +141,47 @@ impl Socks5Server {
         })
     }
 
+    /// Simplified constructor for proxy-only mode:
+    /// no P2P, no AI, no Econ, no app resolver — just SOCKS5 + transports.
+    pub fn new_proxy_only(
+        addr: SocketAddr,
+        transports: Vec<ConfiguredTransport>,
+        proxy_mode: String,
+        usage_recorder: Option<Arc<dyn UsageRecorder>>,
+    ) -> Result<Self> {
+        let ai = Arc::new(AiNegotiator::new(&hydra_config::AiConfig::default()));
+        let p2p = hydra_p2p::P2PNode::dummy_handle();
+        let econ_dir = std::env::temp_dir().join(format!("hydra_proxy_only_{}", std::process::id()));
+        std::fs::create_dir_all(&econ_dir)?;
+        let econ = Arc::new(EconLedger::new(econ_dir.to_str().unwrap())?);
+        let enrichment = EnrichmentService::new()?;
+        let intelligence_config = IntelligenceConfig::default();
+        let tracker_db = Arc::new(TrackerDatabase::new());
+        let (classifier, llm_rx) = ConnectionClassifier::new(tracker_db, &intelligence_config);
+        let classification_log = Arc::new(ClassificationEventLog::new(
+            crate::classification_log::default_base_dir(),
+        )?);
+
+        Ok(Self {
+            addr,
+            ai,
+            p2p,
+            econ,
+            transports: Arc::new(RwLock::new(transports)),
+            proxy_mode: Arc::new(RwLock::new(proxy_mode)),
+            registry: Arc::new(ConnectionRegistry::new()),
+            discovery: None,
+            credit: None,
+            provider_metrics: None,
+            usage_recorder,
+            app_resolver: None,
+            enrichment: Arc::new(enrichment),
+            classifier: Arc::new(classifier),
+            classification_log,
+            llm_rx: std::sync::Mutex::new(Some(llm_rx)),
+        })
+    }
+
     pub fn registry(&self) -> Arc<ConnectionRegistry> {
         self.registry.clone()
     }

@@ -155,7 +155,6 @@ impl UsageRecorder for RelayUsageStore {
         }
 
         self.record_wss_usage(bytes_total)?;
-        crate::api::quota::record_bytes(bytes_total);
         Ok(())
     }
 }

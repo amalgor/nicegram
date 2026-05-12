@@ -2,16 +2,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart' show Color;
-import 'package:hydra_mobile/platform/hydra_platform_gateway.dart';
-import 'package:hydra_mobile/screens/connect_screen.dart' show categoryLabel;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
 
 const String kMobileRoutesFile = 'mobile_routes.json';
 const String kRoutePoliciesFile = 'route_policies.json';
 const String kRelayUsageFile = 'relay_usage.json';
-const String kRelayCostPerGbPref = 'relay_cost_per_gb_usd';
-const double kDefaultRelayCostPerGb = 0.12;
-const String kRelaySupportUrl = 'https://hydra-net.work';
 
 class RouteProfile {
   const RouteProfile({
@@ -303,7 +298,7 @@ class ConnectionGroupModel {
     final category = json['category'] as String? ?? 'unknown';
     return ConnectionGroupModel(
       key: category,
-      label: categoryLabel(category),
+      label: category,
       count: (json['count'] as num?)?.toInt() ?? 0,
       bytes: (json['bytes'] as num?)?.toInt() ?? 0,
       trackers: 0,
@@ -646,60 +641,6 @@ class MobileStateRepository {
     );
   }
 
-  Future<double> loadRelayCostPerGb() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getDouble(kRelayCostPerGbPref) ?? kDefaultRelayCostPerGb;
-  }
-
-  Future<void> saveRelayCostPerGb(double value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble(kRelayCostPerGbPref, value);
-  }
-
-  Future<List<ConnectionSnapshotModel>> loadConnections() async {
-    final jsonText = await HydraPlatformGateway.instance.getActiveConnections();
-    final decoded = jsonDecode(jsonText) as List<dynamic>;
-    return decoded
-        .map(
-          (entry) => ConnectionSnapshotModel.fromJson(
-            Map<String, dynamic>.from(entry as Map),
-          ),
-        )
-        .toList();
-  }
-
-  Future<ConnectionStatsModel> loadConnectionStats() async {
-    final jsonText = await HydraPlatformGateway.instance.getConnectionStats();
-    final decoded = jsonDecode(jsonText) as Map<String, dynamic>;
-    return ConnectionStatsModel.fromJson(decoded);
-  }
-
-  Future<List<ConnectionGroupModel>> loadConnectionsByApp() async {
-    final jsonText = await HydraPlatformGateway.instance.getConnectionsByApp();
-    final decoded = jsonDecode(jsonText) as Map<String, dynamic>;
-    final groups = decoded['groups'] as List<dynamic>? ?? [];
-    return groups
-        .map((e) => ConnectionGroupModel.fromAppJson(Map<String, dynamic>.from(e as Map)))
-        .toList();
-  }
-
-  Future<List<ConnectionGroupModel>> loadConnectionsByCategory() async {
-    final jsonText = await HydraPlatformGateway.instance.getConnectionsByCategory();
-    final decoded = jsonDecode(jsonText) as Map<String, dynamic>;
-    final groups = decoded['groups'] as List<dynamic>? ?? [];
-    return groups
-        .map((e) => ConnectionGroupModel.fromCategoryJson(Map<String, dynamic>.from(e as Map)))
-        .toList();
-  }
-
-  Future<List<ConnectionGroupModel>> loadConnectionsByCountry() async {
-    final jsonText = await HydraPlatformGateway.instance.getConnectionsByCountry();
-    final decoded = jsonDecode(jsonText) as Map<String, dynamic>;
-    final groups = decoded['groups'] as List<dynamic>? ?? [];
-    return groups
-        .map((e) => ConnectionGroupModel.fromCountryJson(Map<String, dynamic>.from(e as Map)))
-        .toList();
-  }
 
   List<String> _parseRaw(String payload) {
     return payload
@@ -763,8 +704,8 @@ class MobileStateRepository {
   }
 
   Future<File> _file(String fileName) async {
-    final baseDir = await HydraPlatformGateway.instance.resolveBaseDir();
-    return File('$baseDir/$fileName');
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/$fileName');
   }
 }
 

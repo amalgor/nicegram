@@ -6,14 +6,13 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `classification_log_paths`, `ensure_snapshot_writer`, `init_quota_from_config`, `is_tracker_category`, `protocol_number`, `shared_p2p_handle`, `sync_pending_app_resolutions`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AppGroup`, `CategoryGroup`, `CountryGroup`, `NODE_STARTED`, `SHARED_CLASSIFIER`, `SHARED_P2P_HANDLE`, `SHARED_PROXY_MODE`, `SHARED_REGISTRY`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `deref`, `deref`, `deref`, `deref`, `deref`, `initialize`, `initialize`, `initialize`, `initialize`, `initialize`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NODE_STARTED`, `SHARED_PROXY_MODE`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `deref`, `deref`, `initialize`, `initialize`
 
 String greet({required String name}) =>
     RustLib.instance.api.crateApiSimpleGreet(name: name);
 
-Future<void> initApp() => RustLib.instance.api.crateApiSimpleInitApp();
+void initApp() => RustLib.instance.api.crateApiSimpleInitApp();
 
 Future<void> initExtensionRuntime({required String baseDir}) =>
     RustLib.instance.api.crateApiSimpleInitExtensionRuntime(baseDir: baseDir);
@@ -21,84 +20,20 @@ Future<void> initExtensionRuntime({required String baseDir}) =>
 Future<void> prepareLocalRuntime({required String baseDir}) =>
     RustLib.instance.api.crateApiSimplePrepareLocalRuntime(baseDir: baseDir);
 
+/// Start SOCKS5 proxy server with configured transports (VLESS, SSH).
+/// No VPN, no P2P, no AI, no classifier — pure proxy mode.
 Future<void> startHydraNode({required String baseDir}) =>
     RustLib.instance.api.crateApiSimpleStartHydraNode(baseDir: baseDir);
 
-/// Get active connections as JSON for Flutter UI.
-Future<String> getActiveConnections() =>
-    RustLib.instance.api.crateApiSimpleGetActiveConnections();
-
-/// Get connection stats summary as JSON.
-Future<String> getConnectionStats() =>
-    RustLib.instance.api.crateApiSimpleGetConnectionStats();
-
-/// Toggle proxy for a specific connection.
-Future<void> setConnectionProxy({
-  required BigInt connId,
-  required bool proxied,
-}) => RustLib.instance.api.crateApiSimpleSetConnectionProxy(
-  connId: connId,
-  proxied: proxied,
-);
-
 /// Set proxy mode at runtime. Values: "off", "telegram", "full".
-/// Called from Flutter Settings when user changes proxy mode.
 Future<void> setProxyMode({required String mode}) =>
     RustLib.instance.api.crateApiSimpleSetProxyMode(mode: mode);
 
-/// Connection security analysis using classifier stats and cached verdicts.
-/// Returns a structured JSON summary instead of free-text LLM output.
-Future<String> analyzeConnections({required String connectionsJson}) => RustLib
-    .instance
-    .api
-    .crateApiSimpleAnalyzeConnections(connectionsJson: connectionsJson);
+/// Get SOCKS5 proxy listen port.
+int getSocks5Port() => RustLib.instance.api.crateApiSimpleGetSocks5Port();
 
-/// Get classifier statistics as JSON.
-Future<String> getClassifierStats() =>
-    RustLib.instance.api.crateApiSimpleGetClassifierStats();
-
-/// Toggle intelligence auto-block feature at runtime.
-Future<void> setIntelligenceAutoBlock({required bool enabled}) => RustLib
-    .instance
-    .api
-    .crateApiSimpleSetIntelligenceAutoBlock(enabled: enabled);
-
-/// Host classification lookup — returns cached verdict from the intelligence pipeline.
-/// If no classification is cached yet, returns "pending" status.
-Future<String> analyzeHost({
-  required String host,
-  required int port,
-  required bool isProxied,
-  required BigInt bytesTotal,
-}) => RustLib.instance.api.crateApiSimpleAnalyzeHost(
-  host: host,
-  port: port,
-  isProxied: isProxied,
-  bytesTotal: bytesTotal,
-);
-
-/// Get classification log stats as JSON.
-Future<String> getClassificationLogStats() =>
-    RustLib.instance.api.crateApiSimpleGetClassificationLogStats();
-
-/// Export the last N classification events as a JSON array.
-Future<String> exportClassificationEvents({required int limit}) =>
-    RustLib.instance.api.crateApiSimpleExportClassificationEvents(limit: limit);
-
-/// Group connections by application (package_name).
-/// Returns JSON: { "groups": [ { "app": "...", "label": "...", "count": N, "bytes": N, "trackers": N } ] }
-Future<String> getConnectionsByApp() =>
-    RustLib.instance.api.crateApiSimpleGetConnectionsByApp();
-
-/// Group connections by classification category.
-/// Returns JSON: { "groups": [ { "category": "...", "count": N, "bytes": N } ] }
-Future<String> getConnectionsByCategory() =>
-    RustLib.instance.api.crateApiSimpleGetConnectionsByCategory();
-
-/// Group connections by country (from WHOIS).
-/// Returns JSON: { "groups": [ { "country": "...", "count": N, "bytes": N, "trackers": N } ] }
-Future<String> getConnectionsByCountry() =>
-    RustLib.instance.api.crateApiSimpleGetConnectionsByCountry();
+/// Check if the SOCKS5 node is running.
+bool isNodeRunning() => RustLib.instance.api.crateApiSimpleIsNodeRunning();
 
 /// Execute a shell command on the device.
 /// Returns JSON: { "exit_code": N|null, "stdout": "...", "stderr": "...", "truncated": bool, "timed_out": bool }
@@ -114,8 +49,6 @@ Future<String> shellExecBatch({required List<String> commands}) =>
     RustLib.instance.api.crateApiSimpleShellExecBatch(commands: commands);
 
 /// Collect a full network inspection from the device.
-/// Returns JSON with tcp_connections, udp_sockets, processes, net_interfaces,
-/// dns_config, routes, uid_stats, and any errors encountered.
 Future<String> inspectDeviceNetwork() =>
     RustLib.instance.api.crateApiSimpleInspectDeviceNetwork();
 
