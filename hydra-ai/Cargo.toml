@@ -3,10 +3,14 @@ name = "hydra-ai"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["llm"]
+llm = ["dep:llama-cpp-2"]
+
 [dependencies]
 hydra-config = { path = "../hydra-config" }
 hydra-exchange = { path = "../hydra-exchange" }
-llama-cpp-2 = { workspace = true }
+llama-cpp-2 = { workspace = true, optional = true }
 tokio.workspace = true
 anyhow = { workspace = true }
 serde = { workspace = true }

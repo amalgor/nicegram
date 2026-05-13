@@ -10,7 +10,7 @@ crate-type = ["cdylib", "staticlib"]
 flutter_rust_bridge = "=2.12.0"
 hydra-config = { path = "../../hydra-config" }
 hydra-core = { path = "../../hydra-core" }
-hydra-ai = { path = "../../hydra-ai" }
+hydra-ai = { path = "../../hydra-ai", default-features = false }
 hydra-p2p = { path = "../../hydra-p2p" }
 hydra-econ = { path = "../../hydra-econ" }
 tokio = { workspace = true }

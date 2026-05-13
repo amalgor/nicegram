@@ -12,7 +12,11 @@ use hydra_config::AiConfig;
 pub mod deal_agent;
 pub mod models;
 pub use deal_agent::DealAgent;
+#[cfg(feature = "llm")]
 pub use models::qwen2_infer::Qwen2Infer;
+
+#[cfg(not(feature = "llm"))]
+pub use self::stub_infer::Qwen2Infer;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct PeerInfo {
@@ -36,6 +40,23 @@ pub struct RoutingInstruction {
     pub path: Vec<String>,
     pub transport: String,
     pub max_price: f64,
+}
+
+#[cfg(not(feature = "llm"))]
+mod stub_infer {
+    use anyhow::Result;
+    use std::path::PathBuf;
+
+    pub struct Qwen2Infer;
+
+    impl Qwen2Infer {
+        pub fn load(_path: &PathBuf, _password: Option<&str>) -> Result<Self> {
+            Ok(Self)
+        }
+        pub fn generate(&mut self, _prompt: &str, _max_tokens: usize) -> Result<String> {
+            anyhow::bail!("LLM not available in proxy-only build")
+        }
+    }
 }
 
 pub struct AiNegotiator {
