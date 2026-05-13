@@ -23,7 +23,7 @@ protobuf = "3.6"
 vpn-link-serde = "0.1.5"
 hydra-config = { path = "../hydra-config" }
 hydra-p2p = { path = "../hydra-p2p" }
-hydra-ai = { path = "../hydra-ai" }
+hydra-ai = { path = "../hydra-ai", default-features = false }
 hydra-econ = { path = "../hydra-econ" }
 hydra-exchange = { path = "../hydra-exchange" }
 libp2p-dns = "0.44.0"

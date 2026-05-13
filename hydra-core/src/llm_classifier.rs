@@ -2,7 +2,7 @@ use crate::classifier::{ClassificationRequest, VerdictCache, VerdictKey};
 use crate::connections::{
     ClassificationSource, ConnectionClassification, ConnectionRegistry, TrafficCategory,
 };
-use hydra_ai::models::qwen2_infer::Qwen2Infer;
+use hydra_ai::Qwen2Infer;
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::sync::Arc;

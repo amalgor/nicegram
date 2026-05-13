@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 use hydra_config::AgentConfig;
 use hydra_exchange::{DealBoardClient, DealOfferView, ExchangeConfig};
 
-use crate::models::qwen2_infer::Qwen2Infer;
+use crate::Qwen2Infer;
 
 /// Result of deal scoring and selection by the agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
