@@ -40,6 +40,11 @@ dependencies:
   path_provider: ^2.1.5
   file_picker: ^8.3.7
 
+dependency_overrides:
+  # Pin to avoid objective_c 9.x which requires newer Xcode/Dart
+  path_provider_foundation: 2.4.0
+  objective_c: 2.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
