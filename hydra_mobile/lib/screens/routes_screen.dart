@@ -1,4 +1,3 @@
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:hydra_mobile/mvp/mobile_state_repository.dart';
 import 'package:hydra_mobile/src/rust/api/routes.dart' as routes_api;
@@ -375,35 +374,15 @@ class _RoutesScreenState extends State<RoutesScreen>
                           hintText: '-----BEGIN OPENSSH PRIVATE KEY-----',
                         ),
                       )
-                    else ...[
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              keyFilePath ?? 'No file selected',
-                              style: Theme.of(context).textTheme.bodySmall,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          FilledButton.icon(
-                            onPressed: () async {
-                              final result = await FilePicker.platform
-                                  .pickFiles(type: FileType.any);
-                              if (result != null &&
-                                  result.files.single.path != null) {
-                                setModalState(() {
-                                  keyFilePath = result.files.single.path!;
-                                  credCtrl.text = keyFilePath!;
-                                });
-                              }
-                            },
-                            icon: const Icon(Icons.folder_open),
-                            label: const Text('Browse'),
-                          ),
-                        ],
+                    else
+                      TextField(
+                        controller: credCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Key file path',
+                          border: OutlineInputBorder(),
+                          hintText: '/path/to/id_rsa',
+                        ),
                       ),
-                    ],
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
