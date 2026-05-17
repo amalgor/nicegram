@@ -5,6 +5,8 @@
 ## Shipping Status (2026-04-05)
 - Текущий shipping target в репозитории: **Android MVP network utility**, а не embedded-wallet marketplace.
 - Primary surface в `hydra_mobile`: `Intelligence`, `Connections`, `Routes`, `Terminal`, `Relay`, `Settings`.
+- iOS remains a validation target rather than a shipping VPN target: current iOS app path is proxy-only and does not provide a Network Extension tunnel.
+- iOS first-run hardening (2026-05-17): Flutter now renders a startup screen before `RustLib.init()` / local runtime preparation. Rust/FRB/plugin/config failures and Rust startup timeouts are shown in-app with retry instead of leaving the device on a blank white screen.
 - В APK больше **не бандлится GGUF-модель**. LLM остаётся optional download из `Settings -> Optional AI`.
 - Пользовательский routing state хранится рядом с `hydra.toml` в:
   - `mobile_routes.json` — built-in WSS + imported VLESS profiles и их порядок

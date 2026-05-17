@@ -22,27 +22,23 @@ Future<void> _materializeBundledConfigIfNeeded(String baseDir) async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  runApp(const HydraApp(home: StartupScreen()));
+}
+
+Future<void> _bootstrapHydraRuntime() async {
   await RustLib.init();
   simple_api.initApp();
 
-  try {
-    final dir = await getApplicationDocumentsDirectory();
-    final baseDir = dir.path;
-    await _materializeBundledConfigIfNeeded(baseDir);
-    await simple_api.prepareLocalRuntime(baseDir: baseDir);
+  final dir = await getApplicationDocumentsDirectory();
+  final baseDir = dir.path;
+  await _materializeBundledConfigIfNeeded(baseDir);
+  await simple_api.prepareLocalRuntime(baseDir: baseDir);
 
-    unawaited(
-      simple_api
-          .startHydraNode(baseDir: baseDir)
-          .catchError((Object error) {
-            debugPrint('Hydra proxy start error: $error');
-          }),
-    );
-  } catch (e) {
-    debugPrint('Init error: $e');
-  }
-
-  runApp(const HydraApp());
+  unawaited(
+    simple_api.startHydraNode(baseDir: baseDir).catchError((Object error) {
+      debugPrint('Hydra proxy start error: $error');
+    }),
+  );
 }
 
 class HydraApp extends StatelessWidget {
@@ -62,6 +58,125 @@ class HydraApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFF08111F),
       ),
       home: home ?? const MainScreen(),
+    );
+  }
+}
+
+class StartupScreen extends StatefulWidget {
+  const StartupScreen({super.key});
+
+  @override
+  State<StartupScreen> createState() => _StartupScreenState();
+}
+
+class _StartupScreenState extends State<StartupScreen> {
+  Object? _error;
+  bool _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _start();
+  }
+
+  Future<void> _start() async {
+    try {
+      await _bootstrapHydraRuntime().timeout(
+        const Duration(seconds: 20),
+        onTimeout: () => throw TimeoutException(
+          'Hydra startup timed out while initializing the Rust runtime.',
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        _ready = true;
+        _error = null;
+      });
+    } catch (error, stackTrace) {
+      debugPrint('Hydra startup error: $error\n$stackTrace');
+      if (!mounted) return;
+      setState(() {
+        _error = error;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_ready) {
+      return const MainScreen();
+    }
+
+    final error = _error;
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: error == null
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 36,
+                          height: 36,
+                          child: CircularProgressIndicator(strokeWidth: 3),
+                        ),
+                        const SizedBox(height: 20),
+                        Text(
+                          'Starting Hydra Proxy',
+                          style: theme.textTheme.titleLarge,
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    )
+                  : Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Icon(
+                              Icons.error_outline,
+                              size: 40,
+                              color: theme.colorScheme.error,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'Hydra could not start',
+                              style: theme.textTheme.titleLarge,
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 12),
+                            SelectableText(
+                              error.toString(),
+                              style: theme.textTheme.bodySmall,
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 16),
+                            FilledButton.icon(
+                              onPressed: () {
+                                setState(() {
+                                  _error = null;
+                                });
+                                _start();
+                              },
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Retry'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
