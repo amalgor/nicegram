@@ -1,4 +1,4 @@
-package com.hydra.network.hydra_mobile
+package work.hydranet.nicegram
 
 import io.flutter.embedding.android.FlutterActivity
 
