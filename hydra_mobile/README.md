@@ -20,6 +20,15 @@ Startup order is intentionally defensive:
 
 If iOS cannot load the Rust library, cannot register a Flutter plugin, times out during Rust startup, or fails while preparing local runtime files, the app now shows an on-screen error and retry button instead of staying on a blank white screen.
 
+## Application IDs
+
+Keep these aligned with App Store Connect / Google Play Console:
+
+| Platform | ID | Notes |
+|----------|-----|--------|
+| iOS | `work.hydra-net.nicegram` | Set in `ios/Runner.xcodeproj` (Debug / Profile / Release) |
+| Android | `work.hydra_net.nicegram` | `android/app/build.gradle.kts` — underscore instead of hyphen (Gradle rule) |
+
 ## iOS Notes
 
 For a first physical-device run:
@@ -36,7 +45,9 @@ If the app shows the startup error screen, inspect the device log for:
 - `MissingPluginException`
 - CocoaPods or code signing errors around `rust_lib_hydra_mobile`
 
-The iOS Pod builds the Rust static library through `rust_builder/cargokit`. A successful iOS build must link `librust_lib_hydra_mobile.a` into `Runner.app`.
+The iOS Pod builds the Rust static library through `rust_builder/cargokit`. A successful iOS build must link `librust_lib_hydra_mobile.a` into `Runner.app` (`-force_load` via `rust_lib_hydra_mobile.podspec` `user_target_xcconfig`, plus `-framework SystemConfiguration` for Rust networking deps). Dart calls `ExternalLibrary.process()` on iOS/macOS because there is no `rust_lib_hydra_mobile.framework` at runtime.
+
+**Physical device** is the supported iOS test path (Developer Mode on, USB trust). Intel Mac simulators may build `Runner` as x86_64 while Flutter ships arm64-only plugin frameworks (`objective_c`); use a real device or an Apple Silicon Mac for simulator runs.
 
 ## Validation
 

@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "work.hydranet.nicegram"
+    namespace = "work.hydra_net.nicegram"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -20,7 +20,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "work.hydranet.nicegram"
+        applicationId = "work.hydra_net.nicegram"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

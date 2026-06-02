@@ -1,4 +1,4 @@
-package work.hydranet.nicegram
+package work.hydra_net.nicegram
 
 import io.flutter.embedding.android.FlutterActivity
 

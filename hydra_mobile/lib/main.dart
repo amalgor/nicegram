@@ -7,6 +7,7 @@ import 'package:hydra_mobile/screens/proxy_screen.dart';
 import 'package:hydra_mobile/screens/routes_screen.dart';
 import 'package:hydra_mobile/screens/settings_screen.dart';
 import 'package:hydra_mobile/screens/terminal_screen.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:hydra_mobile/src/rust/api/simple.dart' as simple_api;
 import 'package:hydra_mobile/src/rust/frb_generated.dart';
 import 'package:path_provider/path_provider.dart';
@@ -25,8 +26,22 @@ Future<void> main() async {
   runApp(const HydraApp(home: StartupScreen()));
 }
 
-Future<void> _bootstrapHydraRuntime() async {
+Future<void> _initRustLib() async {
+  // Cargokit links librust_lib_hydra_mobile.a statically on Apple platforms.
+  if (Platform.isIOS || Platform.isMacOS) {
+    await RustLib.init(
+      externalLibrary: ExternalLibrary.process(
+        iKnowHowToUseIt: true,
+        debugInfo: ' (cargokit static .a)',
+      ),
+    );
+    return;
+  }
   await RustLib.init();
+}
+
+Future<void> _bootstrapHydraRuntime() async {
+  await _initRustLib();
   simple_api.initApp();
 
   final dir = await getApplicationDocumentsDirectory();
@@ -137,10 +152,11 @@ class _StartupScreenState extends State<StartupScreen> {
                   : Card(
                       child: Padding(
                         padding: const EdgeInsets.all(20),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
                             Icon(
                               Icons.error_outline,
                               size: 40,
@@ -170,6 +186,7 @@ class _StartupScreenState extends State<StartupScreen> {
                               label: const Text('Retry'),
                             ),
                           ],
+                          ),
                         ),
                       ),
                     ),
