@@ -41,5 +41,8 @@ A new Flutter FFI plugin project.
   s.user_target_xcconfig = {
     'LIBRARY_SEARCH_PATHS' => '$(inherited) "${PODS_CONFIGURATION_BUILD_DIR}/rust_lib_hydra_mobile"',
     'OTHER_LDFLAGS' => '$(inherited) -force_load "${PODS_CONFIGURATION_BUILD_DIR}/rust_lib_hydra_mobile/librust_lib_hydra_mobile.a" -framework SystemConfiguration',
+    'DEAD_CODE_STRIPPING' => 'NO',
+    'STRIP_INSTALLED_PRODUCT' => 'NO',
+    'STRIP_STYLE' => 'debugging',
   }
 end
