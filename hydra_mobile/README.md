@@ -20,6 +20,50 @@ Startup order is intentionally defensive:
 
 If iOS cannot load the Rust library, cannot register a Flutter plugin, times out during Rust startup, or fails while preparing local runtime files, the app now shows an on-screen error and retry button instead of staying on a blank white screen.
 
+## Versioning
+
+Single source of truth: `pubspec.yaml`:
+
+```yaml
+version: 1.4.1+10401   # 1.4.1 = Version (App Store), 10401 = Build
+```
+
+After changing the version, refresh iOS/Xcode glue (do **not** edit `ios/Flutter/Generated.xcconfig` by hand):
+
+```bash
+cd hydra_mobile
+flutter pub get
+flutter build ios --config-only
+```
+
+Android picks up `versionName` / `versionCode` from `pubspec.yaml` automatically. iOS uses `$(FLUTTER_BUILD_NAME)` and `$(FLUTTER_BUILD_NUMBER)` in `Info.plist` via `Generated.xcconfig`.
+
+## TestFlight (Xcode)
+
+1. Bump `version:` in `pubspec.yaml` (build number must increase for every upload).
+2. Run `flutter build ios --config-only` (or a full `flutter build ios --release` once).
+3. Open **`ios/Runner.xcworkspace`** (not `.xcodeproj`).
+4. Select target **Runner**, scheme **Runner**, destination **Any iOS Device**.
+5. **Product → Archive** (Release configuration).
+6. In Organizer: **Distribute App → App Store Connect → Upload**.
+7. In App Store Connect, assign the build to TestFlight testers.
+
+Use bundle ID `work.hydra-net.nicegram` (must match the App Store Connect app record). Signing team is already set in the Xcode project (`DEVELOPMENT_TEAM`).
+
+Before archiving after dependency changes:
+
+```bash
+cd hydra_mobile
+flutter pub get
+cd ios && pod install && cd ..
+```
+
+If `pod install` warns that CocoaPods could not set the base configuration for **Profile**, ensure `ios/Flutter/Profile.xcconfig` exists and the Runner **Profile** configuration points to it (not only `Release.xcconfig`).
+
+**Upload Symbols / missing `objective_c.framework` dSYM:** newer `objective_c` (9.2+) can ship without valid DWARF for App Store. This repo pins `objective_c: 9.1.0` via `dependency_overrides` in `pubspec.yaml` (see [dart-lang/native#3004](https://github.com/dart-lang/native/issues/3004)). Xcode also runs `ios/scripts/embed_native_framework_dsyms.sh` after embed frameworks as a backup.
+
+**Release Rust:** cargokit links `librust_lib_hydra_mobile.a` via Pods (`-force_load`). Release also uses `-dead_strip`; `ios/Runner/rust_link_stub.c` anchors `frb_get_rust_content_hash` so Rust is not stripped from `Runner`. Debug loads `Runner.debug.dylib` via `lib/rust_init.dart`.
+
 ## Application IDs
 
 Keep these aligned with App Store Connect / Google Play Console:
@@ -45,7 +89,7 @@ If the app shows the startup error screen, inspect the device log for:
 - `MissingPluginException`
 - CocoaPods or code signing errors around `rust_lib_hydra_mobile`
 
-The iOS Pod builds the Rust static library through `rust_builder/cargokit`. A successful iOS build must link `librust_lib_hydra_mobile.a` into `Runner.app` (`-force_load` via `rust_lib_hydra_mobile.podspec` `user_target_xcconfig`, plus `-framework SystemConfiguration` for Rust networking deps). Dart calls `ExternalLibrary.process()` on iOS/macOS because there is no `rust_lib_hydra_mobile.framework` at runtime.
+The iOS Pod builds the Rust static library through `rust_builder/cargokit`. A successful iOS build must link `librust_lib_hydra_mobile.a` into `Runner.app` (`-force_load` via `rust_lib_hydra_mobile.podspec` `user_target_xcconfig`, plus `-framework SystemConfiguration` for Rust networking deps). There is no `rust_lib_hydra_mobile.framework` at runtime. On Flutter 3.41+ debug builds, `-force_load` lands in `Runner.debug.dylib`; `lib/rust_init.dart` opens that dylib when present, otherwise falls back to `ExternalLibrary.process()` for release-style single-binary links.
 
 **Physical device** is the supported iOS test path (Developer Mode on, USB trust). Intel Mac simulators may build `Runner` as x86_64 while Flutter ships arm64-only plugin frameworks (`objective_c`); use a real device or an Apple Silicon Mac for simulator runs.
 
