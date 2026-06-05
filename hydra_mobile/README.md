@@ -64,6 +64,15 @@ If `pod install` warns that CocoaPods could not set the base configuration for *
 
 **Release Rust:** cargokit links `librust_lib_hydra_mobile.a` via Pods (`-force_load`). Release also uses `-dead_strip`; `ios/Runner/rust_link_stub.c` anchors `frb_get_rust_content_hash` so Rust is not stripped from `Runner`. Debug loads `Runner.debug.dylib` via `lib/rust_init.dart`.
 
+**Rust bitcode vs Apple `ld` ("Hydra could not start" / `frb_get_rust_content_hash` symbol not found):** Rust defaults to `embed-bitcode=yes`, putting an `.llvmbc` section in the staticlib objects. With `-force_load`, Apple's `ld` must parse every member object and aborts on bitcode produced by a newer LLVM than the Xcode linker (`ld: ... Unknown attribute kind (NNN) (Producer: 'LLVM 22...' Reader: 'LLVM APPLE_1_...')`). When that happens the link silently drops the Rust objects, so `frb_get_rust_content_hash` ends up present in the `.a` but **absent from `Runner`**, and FRB's runtime `dlsym` fails. Fix: `.cargo/config.toml` forces `-C embed-bitcode=no` for the `*-apple-ios*` targets (we never use LTO). Diagnose by checking the symbol in both places on the Mac:
+
+```bash
+nm -arch arm64 <path>/librust_lib_hydra_mobile.a | grep frb_get_rust_content_hash   # present
+nm -gU <archive>/Runner.app/Runner            | grep frb_get_rust_content_hash      # must also be present
+```
+
+If it is in the `.a` but not in `Runner`, the bitcode/`-force_load` parse failure above is the cause (not `-dead_strip` and not the force_load path).
+
 ## Application IDs
 
 Keep these aligned with App Store Connect / Google Play Console:

@@ -15,3 +15,17 @@ linker = "/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linu
 
 [target.x86_64-linux-android]
 linker = "/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang"
+
+# iOS: omit LLVM bitcode (.llvmbc) from the staticlib.
+# Rust defaults embed-bitcode=yes; with -force_load, Apple ld must parse every
+# object and chokes on bitcode produced by a newer LLVM than Xcode's linker
+# ("Unknown attribute kind ..."). We never use LTO/bitcode for the device build,
+# so strip it. Applies to device + simulator arm64 (and x86_64 simulator).
+[target.aarch64-apple-ios]
+rustflags = ["-C", "embed-bitcode=no"]
+
+[target.aarch64-apple-ios-sim]
+rustflags = ["-C", "embed-bitcode=no"]
+
+[target.x86_64-apple-ios]
+rustflags = ["-C", "embed-bitcode=no"]
