@@ -38,10 +38,11 @@ pub struct SshTransport {
 impl SshTransport {
     pub fn new(host: String, port: u16, username: String, auth: SshAuth) -> Self {
         info!(
+            ssh_event = "created",
             ssh_host = %host,
             ssh_port = port,
             ssh_user = %username,
-            "SshTransport created"
+            "SSH transport profile created"
         );
         Self {
             host,
@@ -62,7 +63,7 @@ impl SshTransport {
         let needs_connect = match guard.as_ref() {
             Some(h) if !h.is_closed() => false,
             Some(_) => {
-                warn!("SSH session closed, reconnecting");
+                warn!(ssh_event = "reconnect", ssh_host = %host, ssh_port = port, "SSH session closed, reconnecting");
                 true
             }
             None => true,
@@ -88,7 +89,7 @@ impl SshTransport {
         let config = Arc::new(config);
 
         let addr = format!("{}:{}", host, port);
-        info!(addr = %addr, "SSH: connecting...");
+        info!(ssh_event = "connecting", ssh_addr = %addr, ssh_user = %username, "SSH: connecting to server");
 
         let sh = SshClient {};
         let mut session = tokio::time::timeout(
@@ -96,11 +97,18 @@ impl SshTransport {
             client::connect(config, &*addr, sh),
         )
         .await
-        .map_err(|_| anyhow::anyhow!(
-            "SSH connect to {} timed out after {}s. Check host/port and network.",
-            addr, SSH_CONNECT_TIMEOUT.as_secs()
-        ))?
-        .map_err(|e| anyhow::anyhow!("SSH connect to {} failed: {}. Verify server is running.", addr, e))?;
+        .map_err(|_| {
+            warn!(ssh_event = "connect_timeout", ssh_addr = %addr, timeout_s = SSH_CONNECT_TIMEOUT.as_secs(), "SSH connect timed out");
+            anyhow::anyhow!(
+                "SSH connect to {} timed out after {}s. Check host/port and network.",
+                addr, SSH_CONNECT_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| {
+            warn!(ssh_event = "connect_failed", ssh_addr = %addr, error = %e, "SSH connect failed");
+            anyhow::anyhow!("SSH connect to {} failed: {}. Verify server is running.", addr, e)
+        })?;
+        info!(ssh_event = "connected", ssh_addr = %addr, "SSH: transport connected, authenticating");
 
         match auth {
             SshAuth::KeyFile(path) => {
@@ -123,9 +131,13 @@ impl SshTransport {
                 let auth_res = session
                     .authenticate_password(username, password)
                     .await
-                    .map_err(|e| anyhow::anyhow!("SSH password auth error: {}", e))?;
+                    .map_err(|e| {
+                        warn!(ssh_event = "auth_error", ssh_addr = %addr, method = "password", error = %e, "SSH password auth error");
+                        anyhow::anyhow!("SSH password auth error: {}", e)
+                    })?;
 
                 if !auth_res.success() {
+                    warn!(ssh_event = "auth_failed", ssh_addr = %addr, method = "password", ssh_user = %username, "SSH password auth rejected");
                     anyhow::bail!(
                         "SSH password auth failed for user '{}' on {}. Check credentials.",
                         username, addr
@@ -134,7 +146,7 @@ impl SshTransport {
             }
         }
 
-        info!(addr = %addr, user = %username, "SSH: authenticated");
+        info!(ssh_event = "authenticated", ssh_addr = %addr, ssh_user = %username, "SSH: authenticated");
         Ok(session)
     }
 
@@ -153,9 +165,13 @@ impl SshTransport {
                 ),
             )
             .await
-            .map_err(|e| anyhow::anyhow!("SSH pubkey auth error: {}", e))?;
+            .map_err(|e| {
+                warn!(ssh_event = "auth_error", ssh_addr = %addr, method = "pubkey", error = %e, "SSH pubkey auth error");
+                anyhow::anyhow!("SSH pubkey auth error: {}", e)
+            })?;
 
         if !auth_res.success() {
+            warn!(ssh_event = "auth_failed", ssh_addr = %addr, method = "pubkey", ssh_user = %username, "SSH pubkey auth rejected");
             anyhow::bail!(
                 "SSH pubkey auth failed for user '{}' on {}. Check key is authorized on server.",
                 username, addr
@@ -179,14 +195,18 @@ impl SshTransport {
                 0,
             )
             .await
-            .map_err(|e| anyhow::anyhow!(
-                "SSH direct-tcpip to {}:{} failed: {}. Server may not allow TCP forwarding.",
-                target_host, target_port, e
-            ))?;
+            .map_err(|e| {
+                warn!(ssh_event = "channel_failed", target_addr = %target, error = %e, "SSH direct-tcpip channel failed");
+                anyhow::anyhow!(
+                    "SSH direct-tcpip to {}:{} failed: {}. Server may not allow TCP forwarding.",
+                    target_host, target_port, e
+                )
+            })?;
 
         drop(guard);
 
-        debug!(
+        info!(
+            ssh_event = "channel_open",
             target_addr = %target,
             "SSH: direct-tcpip channel opened"
         );
@@ -287,7 +307,7 @@ async fn bridge_ssh_channel(
     }
 
     let _ = bridge_write.shutdown().await;
-    debug!(target_addr = %target, "SSH bridge finished");
+    info!(ssh_event = "channel_closed", target_addr = %target, "SSH: channel closed");
     Ok(())
 }
 

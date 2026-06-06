@@ -73,6 +73,36 @@ nm -gU <archive>/Runner.app/Runner            | grep frb_get_rust_content_hash  
 
 If it is in the `.a` but not in `Runner`, the bitcode/`-force_load` parse failure above is the cause (not `-dead_strip` and not the force_load path).
 
+## Logging (in-memory live log)
+
+The app streams Rust runtime events to a live, in-memory log view. **No log files are written** — logs exist only for the app session.
+
+- **Source:** `tracing` events in Rust → `FlutterLogLayer` (`rust/src/api/telemetry.rs`) → FRB `Stream<String>` (`createLogStream`). Each line is `"[LEVEL] target: message"`.
+- **In-memory only:** `rust/src/api/shared_state.rs` keeps a bounded ring (`MAX_LOG_LINES = 5000`) for backfill; the per-line `logs.json` write was removed. The Flutter UI keeps its own session-length view.
+- **Wiring:** `lib/main.dart` `_bootstrapHydraRuntime` calls `LogStore.instance.bind(createLogStream)` before `initApp()`, then backfills via `readLogLines()`.
+- **Store:** `lib/logging/log_store.dart` — singleton `LogStore` (`ChangeNotifier`); parses each line once into `LogRecord { level, target, message, raw }`.
+- **UI:** `lib/screens/logs_screen.dart` — Logs tab. 10pt monospace, color-coded by level (error red, warn amber, info green, debug/trace slate). Verbosity selector (ERR/WARN/INFO/DEBUG/TRACE; **INFO default**, debug/trace available but off), SSH-only filter, text filter, copy, clear.
+- **Stable scroll:** the list is `reverse: true` (newest at offset 0). It sticks to the tail while the user is at the bottom; once scrolled up it **freezes** and new lines append off-screen without moving the viewport. A "jump to latest" FAB appears when not following.
+
+### SSH event logging
+
+`hydra-core/src/transport/ssh.rs` emits structured `tracing` events with an `ssh_event` field at every `russh` call site: `created`, `connecting`, `connected`, `authenticated`, `channel_open`, `channel_closed`, `reconnect` (INFO/WARN), and failures `connect_timeout`, `connect_failed`, `auth_error`, `auth_failed`, `channel_failed` (WARN). The mobile `EnvFilter` (`rust/src/api/simple.rs`) keeps `hydra_core::transport=debug` so byte-bridge details are available; lifecycle events are INFO and visible by default.
+
+### Connection activity indicators
+
+`lib/widgets/activity_indicators.dart` (shown on the Proxy tab status card) derives simple indicators from the log stream: an activity dot that pulses on new lines, and an SSH up/down dot driven by SSH lifecycle events. This is Phase 1; the full connection-classification UI (ad/telemetry/analytics, app attribution — `hydra-core/src/connections.rs` + the orphaned `ConnectionsScreen`) is a later phase that requires re-exposing `ConnectionRegistry` through FRB.
+
+### Rebuilding after these changes (Mac)
+
+The log stream uses the existing `createLogStream` FRB binding (no codegen needed). Rust changed, so the static lib must rebuild:
+
+```bash
+cd hydra_mobile
+cargo clean            # force cargokit to rebuild librust_lib_hydra_mobile.a
+flutter pub get
+flutter run -d <ios-device-id>     # or build/archive as usual
+```
+
 ## Application IDs
 
 Keep these aligned with App Store Connect / Google Play Console:

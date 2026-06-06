@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hydra_mobile/src/rust/api/simple.dart' as simple_api;
+import 'package:hydra_mobile/widgets/activity_indicators.dart';
 
 class ProxyScreen extends StatefulWidget {
   const ProxyScreen({super.key});
@@ -90,6 +91,10 @@ class _ProxyScreenState extends State<ProxyScreen>
                       ),
                     ],
                   ),
+                const SizedBox(height: 16),
+                const Divider(height: 1),
+                const SizedBox(height: 12),
+                const ActivityIndicators(),
               ],
             ),
           ),

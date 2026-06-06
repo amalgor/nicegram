@@ -3,12 +3,16 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:hydra_mobile/screens/logs_screen.dart';
 import 'package:hydra_mobile/screens/proxy_screen.dart';
 import 'package:hydra_mobile/screens/routes_screen.dart';
 import 'package:hydra_mobile/screens/settings_screen.dart';
 import 'package:hydra_mobile/screens/terminal_screen.dart';
+import 'package:hydra_mobile/logging/log_store.dart';
 import 'package:hydra_mobile/rust_init.dart';
 import 'package:hydra_mobile/src/rust/api/simple.dart' as simple_api;
+import 'package:hydra_mobile/src/rust/api/telemetry.dart' as telemetry_api;
+import 'package:hydra_mobile/src/rust/api/shared_state.dart' as shared_state_api;
 import 'package:path_provider/path_provider.dart';
 
 Future<void> _materializeBundledConfigIfNeeded(String baseDir) async {
@@ -27,7 +31,20 @@ Future<void> main() async {
 
 Future<void> _bootstrapHydraRuntime() async {
   await initHydraRustLib();
+
+  // Subscribe to the Rust log stream before initApp() installs the tracing
+  // subscriber, so the very first lines are captured live (in-memory only).
+  LogStore.instance.bind(telemetry_api.createLogStream);
+
   simple_api.initApp();
+
+  // Backfill anything buffered in Rust before the stream was attached.
+  unawaited(
+    shared_state_api
+        .readLogLines()
+        .then(LogStore.instance.seed)
+        .catchError((Object _) {}),
+  );
 
   final dir = await getApplicationDocumentsDirectory();
   final baseDir = dir.path;
@@ -196,6 +213,7 @@ class _MainScreenState extends State<MainScreen> {
   static const _titles = <String>[
     'Proxy',
     'Routes',
+    'Logs',
     'Terminal',
     'Settings',
   ];
@@ -203,6 +221,7 @@ class _MainScreenState extends State<MainScreen> {
   final List<Widget> _screens = const [
     ProxyScreen(),
     RoutesScreen(),
+    LogsScreen(),
     TerminalScreen(),
     SettingsScreen(),
   ];
@@ -226,6 +245,11 @@ class _MainScreenState extends State<MainScreen> {
             label: 'Proxy',
           ),
           NavigationDestination(icon: Icon(Icons.route), label: 'Routes'),
+          NavigationDestination(
+            icon: Icon(Icons.article_outlined),
+            selectedIcon: Icon(Icons.article),
+            label: 'Logs',
+          ),
           NavigationDestination(
             icon: Icon(Icons.terminal),
             label: 'Terminal',

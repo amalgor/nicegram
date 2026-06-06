@@ -5,7 +5,10 @@ use std::path::Path;
 pub use std::path::PathBuf;
 use std::sync::Mutex;
 
-const MAX_LOG_LINES: usize = 10_000;
+// In-memory live log ring. Logs are intentionally NOT persisted to disk:
+// the log view is a live, in-memory stream (see api::telemetry). This bound only
+// caps memory; the Flutter UI keeps its own unbounded view of received lines.
+const MAX_LOG_LINES: usize = 5_000;
 
 lazy_static! {
     static ref SHARED_BASE_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -16,20 +19,10 @@ pub fn init_shared_base_dir<P: AsRef<Path>>(base_dir: P) -> Result<()> {
     let path = base_dir.as_ref().to_path_buf();
     std::fs::create_dir_all(&path)?;
 
-    {
-        let mut guard = SHARED_BASE_DIR
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Shared base dir lock poisoned: {}", e))?;
-        *guard = Some(path.clone());
-    }
-
-    if let Ok(existing) = read_log_lines() {
-        let mut logs = LOG_LINES
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Log buffer lock poisoned: {}", e))?;
-        *logs = existing;
-    }
-
+    let mut guard = SHARED_BASE_DIR
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Shared base dir lock poisoned: {}", e))?;
+    *guard = Some(path);
     Ok(())
 }
 
@@ -37,32 +30,28 @@ pub fn shared_base_dir() -> Option<PathBuf> {
     SHARED_BASE_DIR.lock().ok().and_then(|guard| guard.clone())
 }
 
+/// Append a log line to the in-memory ring buffer (no disk I/O).
+///
+/// The buffer is a backfill source so a freshly-opened log view can show recent
+/// history; the primary delivery path is the live `StreamSink` in `api::telemetry`.
 pub fn append_log_line(line: String) {
-    let snapshot = {
-        let mut guard = match LOG_LINES.lock() {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
-        guard.push(line);
-        if guard.len() > MAX_LOG_LINES {
-            let overflow = guard.len() - MAX_LOG_LINES;
-            guard.drain(0..overflow);
-        }
-        guard.clone()
+    let mut guard = match LOG_LINES.lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
     };
-
-    let _ = write_json_array("logs.json", &snapshot);
+    guard.push(line);
+    if guard.len() > MAX_LOG_LINES {
+        let overflow = guard.len() - MAX_LOG_LINES;
+        guard.drain(0..overflow);
+    }
 }
 
+/// Snapshot of the in-memory log ring (used by Flutter to backfill on first open).
 pub fn read_log_lines() -> Result<Vec<String>> {
-    match read_json_value("logs.json")? {
-        Some(Value::Array(items)) => Ok(items
-            .into_iter()
-            .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-            .collect()),
-        Some(_) => Ok(Vec::new()),
-        None => Ok(Vec::new()),
-    }
+    Ok(LOG_LINES
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default())
 }
 
 pub fn persist_active_connections(json: &str) -> Result<()> {
@@ -97,7 +86,12 @@ pub fn snapshot_json() -> Result<String> {
             "resets_at": "",
         })
     });
-    let logs = read_json_value("logs.json")?.unwrap_or_else(|| Value::Array(Vec::new()));
+    let logs = Value::Array(
+        read_log_lines()?
+            .into_iter()
+            .map(Value::String)
+            .collect(),
+    );
 
     Ok(serde_json::json!({
         "active_connections": active_connections,
@@ -120,13 +114,6 @@ fn shared_file(name: &str) -> Result<PathBuf> {
 
 fn write_json_raw(name: &str, json: &str) -> Result<()> {
     let path = shared_file(name)?;
-    std::fs::write(path, json)?;
-    Ok(())
-}
-
-fn write_json_array(name: &str, lines: &[String]) -> Result<()> {
-    let path = shared_file(name)?;
-    let json = serde_json::to_vec(lines)?;
     std::fs::write(path, json)?;
     Ok(())
 }
@@ -162,13 +149,18 @@ mod tests {
         persist_active_connections(r#"[{"id":1}]"#).unwrap();
         persist_connection_stats(r#"{"active_count":1}"#).unwrap();
         persist_quota_status(r#"{"used":2,"limit":3,"remaining":1,"resets_at":"x"}"#).unwrap();
-        append_log_line("hello".to_string());
+        let marker = format!("hello-{}", unique);
+        append_log_line(marker.clone());
 
         let snapshot = snapshot_json().unwrap();
         let parsed: Value = serde_json::from_str(&snapshot).unwrap();
         assert_eq!(parsed["active_connections"][0]["id"], 1);
         assert_eq!(parsed["connection_stats"]["active_count"], 1);
-        assert_eq!(parsed["logs"][0], "hello");
+        let logs = parsed["logs"].as_array().unwrap();
+        assert!(
+            logs.iter().any(|line| line == &Value::String(marker.clone())),
+            "in-memory log snapshot should contain appended line"
+        );
         let _ = std::fs::remove_dir_all(tmp);
     }
 }
