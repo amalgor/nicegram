@@ -60,7 +60,7 @@ cd ios && pod install && cd ..
 
 If `pod install` warns that CocoaPods could not set the base configuration for **Profile**, ensure `ios/Flutter/Profile.xcconfig` exists and the Runner **Profile** configuration points to it (not only `Release.xcconfig`).
 
-**Upload Symbols / missing `objective_c.framework` dSYM:** newer `objective_c` (9.2+) can ship without valid DWARF for App Store. This repo pins `objective_c: 9.1.0` via `dependency_overrides` in `pubspec.yaml` (see [dart-lang/native#3004](https://github.com/dart-lang/native/issues/3004)). Xcode also runs `ios/scripts/embed_native_framework_dsyms.sh` after embed frameworks as a backup.
+**Upload Symbols / missing `objective_c.framework` dSYM:** keep `objective_c` on the current native-assets implementation (currently `9.4.1`). Older `9.1.0` avoids the upload warning but breaks runtime native-asset lookup on current Flutter. Xcode runs `ios/scripts/embed_native_framework_dsyms.sh` after embedding frameworks; it generates `objective_c.framework.dSYM` with `dsymutil` so App Store Connect receives the matching UUID.
 
 **Release Rust:** cargokit links `librust_lib_hydra_mobile.a` via Pods (`-force_load`). Release also uses `-dead_strip`; `ios/Runner/rust_link_stub.c` anchors `frb_get_rust_content_hash` so Rust is not stripped from `Runner`. Debug loads `Runner.debug.dylib` via `lib/rust_init.dart`.
 

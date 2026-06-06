@@ -18,6 +18,8 @@ if [ ! -d "${FRAMEWORKS_DIR}" ] || [ -z "${DSYM_DIR}" ]; then
   exit 0
 fi
 
+mkdir -p "${DSYM_DIR}"
+
 for fw in objective_c; do
   BINARY="${FRAMEWORKS_DIR}/${fw}.framework/${fw}"
   OUT="${DSYM_DIR}/${fw}.framework.dSYM"
@@ -29,6 +31,7 @@ for fw in objective_c; do
 
   if [ -d "${PREFAB}" ]; then
     echo "Copying ${fw}.framework.dSYM from native_assets"
+    rm -rf "${OUT}"
     cp -R "${PREFAB}" "${OUT}"
     continue
   fi

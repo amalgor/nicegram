@@ -52,15 +52,20 @@ post_install do |installer|
 
       next unless target.name == 'Runner'
 
-      unless target.shell_script_build_phases.any? { |phase| phase.name == dsym_phase_name }
+      phase = target.shell_script_build_phases.find { |p| p.name == dsym_phase_name }
+      unless phase
         phase = target.new_shell_script_build_phase(dsym_phase_name)
         phase.shell_script = "\"#{dsym_script}\"\n"
         phase.input_paths = []
         phase.output_paths = []
-        thin = target.shell_script_build_phases.find { |p| p.name == 'Thin Binary' }
-        if thin
-          target.build_phases.move(phase, target.build_phases.index(thin))
-        end
+      end
+
+      # Flutter's "Thin Binary" phase copies/thins native assets into Runner.app.
+      # Generate framework dSYMs after that phase so objective_c.framework exists.
+      thin = target.shell_script_build_phases.find { |p| p.name == 'Thin Binary' }
+      if thin
+        target.build_phases.delete(phase)
+        target.build_phases.insert(target.build_phases.index(thin) + 1, phase)
       end
     end
     project.save

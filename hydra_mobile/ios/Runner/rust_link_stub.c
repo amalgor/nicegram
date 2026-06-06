@@ -1,5 +1,5 @@
 // Keeps cargokit static Rust linked in Release/TestFlight when Xcode uses -dead_strip.
-// Without a root reference, -force_load still loads the .a but the linker may strip it.
+// Without a root reference, the linker may strip code that Dart resolves dynamically.
 
 #include <stdint.h>
 

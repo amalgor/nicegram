@@ -2,15 +2,12 @@ PODS:
   - Flutter (1.0.0)
   - integration_test (0.0.1):
     - Flutter
-  - objective_c (0.0.1):
-    - Flutter
   - rust_lib_hydra_mobile (0.0.1):
     - Flutter
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
-  - objective_c (from `.symlinks/plugins/objective_c/ios`)
   - rust_lib_hydra_mobile (from `.symlinks/plugins/rust_lib_hydra_mobile/ios`)
 
 EXTERNAL SOURCES:
@@ -18,17 +15,14 @@ EXTERNAL SOURCES:
     :path: Flutter
   integration_test:
     :path: ".symlinks/plugins/integration_test/ios"
-  objective_c:
-    :path: ".symlinks/plugins/objective_c/ios"
   rust_lib_hydra_mobile:
     :path: ".symlinks/plugins/rust_lib_hydra_mobile/ios"
 
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
-  objective_c: 89e720c30d716b036faf9c9684022048eee1eee2
-  rust_lib_hydra_mobile: bcdec93687892fea973befababe045ba7d2d4512
+  rust_lib_hydra_mobile: bdc2bfa194efe7aa130868a294aac3da02769104
 
-PODFILE CHECKSUM: fbf8ccbc443b73e6a0368765ebbc00959c276c25
+PODFILE CHECKSUM: e6d0828dacae0534ff5d2cefbf7ac52882a31db9
 
 COCOAPODS: 1.16.2
