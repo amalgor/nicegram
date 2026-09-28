@@ -25,8 +25,15 @@ If iOS cannot load the Rust library, cannot register a Flutter plugin, times out
 Single source of truth: `pubspec.yaml`:
 
 ```yaml
-version: 1.4.1+10401   # 1.4.1 = Version (App Store), 10401 = Build
+version: 1.5.3+10503   # 1.5.3 = Version (App Store), 10503 = Build
 ```
+
+Build number convention: `MAJOR*10000 + MINOR*100 + PATCH`. Upload history:
+
+| Version | Date | Notes |
+|---------|------|-------|
+| 1.5.2+10502 | 2026-06-06 | Proxy-only + in-memory log view. TestFlight build expired after 90 days (early Sep 2026). |
+| 1.5.3+10503 | 2026-09-28 | Rebuild of the same code for a fresh TestFlight build (not yet uploaded — archive on the Mac). |
 
 After changing the version, refresh iOS/Xcode glue (do **not** edit `ios/Flutter/Generated.xcconfig` by hand):
 
@@ -47,6 +54,24 @@ Android picks up `versionName` / `versionCode` from `pubspec.yaml` automatically
 5. **Product → Archive** (Release configuration).
 6. In Organizer: **Distribute App → App Store Connect → Upload**.
 7. In App Store Connect, assign the build to TestFlight testers.
+
+TestFlight builds expire 90 days after upload; re-uploading the same code still needs a higher build number.
+
+Clean rebuild on the Mac (from the `proxy-only` line, e.g. after a long gap or a Xcode/Flutter/Rust update):
+
+```bash
+git fetch origin && git checkout proxy-only && git pull   # or the release branch being shipped
+cd hydra_mobile
+flutter clean && (cd rust && cargo clean)
+flutter pub get
+(cd ios && pod install)
+flutter build ios --release          # sanity build; then Archive in Xcode as above
+# alternatively: flutter build ipa --release  → build/ios/ipa/*.ipa, upload via Transporter
+```
+
+After installing from TestFlight, check that the app gets past the startup screen (no "Hydra could not start"), and that the Logs tab shows SSH `connected`/`authenticated` events. If startup fails, check `frb_get_rust_content_hash` with the `nm` commands below.
+
+Note: the Linux dev VM cannot build the iOS target (`ring` needs Apple clang / the iOS SDK). `cargo +stable check -p rust_lib_hydra_mobile` works there as a host-side compile check; the workspace needs Rust ≥ 1.85 (edition 2024).
 
 Use bundle ID `work.hydra-net.nicegram` (must match the App Store Connect app record). Signing team is already set in the Xcode project (`DEVELOPMENT_TEAM`).
 
