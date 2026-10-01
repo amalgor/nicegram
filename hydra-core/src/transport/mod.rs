@@ -15,6 +15,15 @@ pub trait Transport: Send + Sync {
     async fn connect(&self, target: &str) -> Result<TransportStream>;
     fn name(&self) -> &str;
     fn supports_udp(&self) -> bool;
+
+    /// Establish any long-lived session up front (e.g. the SSH connection),
+    /// so configuration errors surface before the first proxied request.
+    async fn warm_up(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Drop any long-lived session; the next request reconnects.
+    async fn reset(&self) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
