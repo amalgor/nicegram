@@ -186,8 +186,8 @@ final class HydraNativeBridge {
 /// answering. Mixes with other audio, so it never interrupts music or calls.
 final class BackgroundKeepAlive {
   var log: ((String, String) -> Void)?
-  private let engine = AVAudioEngine()
-  private let player = AVAudioPlayerNode()
+  private var engine = AVAudioEngine()
+  private var player = AVAudioPlayerNode()
   private var wanted = false
   private var configured = false
 
@@ -201,11 +201,13 @@ final class BackgroundKeepAlive {
     center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
       guard let self, self.wanted else { return }
       self.log?("WARN", "Keep-alive: media services were reset, restarting audio")
+      self.engine = AVAudioEngine()
+      self.player = AVAudioPlayerNode()
       self.configured = false
       _ = self.start()
     }
-    center.addObserver(forName: AVAudioEngine.configurationChangeNotification, object: engine, queue: .main) { [weak self] _ in
-      guard let self, self.wanted else { return }
+    center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] note in
+      guard let self, self.wanted, (note.object as AnyObject?) === self.engine else { return }
       self.log?("INFO", "Keep-alive: audio configuration changed, restarting audio")
       _ = self.start()
     }
