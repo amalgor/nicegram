@@ -131,7 +131,7 @@ impl LlmClassifier {
             // Run inference
             let prompt = build_classification_prompt(&batch);
 
-            let mut guard = self.infer.lock().await;
+            let guard = self.infer.lock().await;
             if guard.is_none() {
                 warn!("LLM classifier: model disappeared mid-iteration");
                 apply_fallback(

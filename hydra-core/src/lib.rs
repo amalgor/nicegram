@@ -93,6 +93,9 @@ pub struct Socks5Server {
     classifier: Arc<ConnectionClassifier>,
     classification_log: Arc<ClassificationEventLog>,
     llm_rx: std::sync::Mutex<Option<mpsc::Receiver<ClassificationRequest>>>,
+    /// Classification, whois/rDNS enrichment and the LLM classifier. Enrichment
+    /// performs direct (non-tunneled) lookups, so proxy-only mode turns it off.
+    intelligence: bool,
 }
 
 impl Socks5Server {
@@ -138,6 +141,7 @@ impl Socks5Server {
             classifier: Arc::new(classifier),
             classification_log,
             llm_rx: std::sync::Mutex::new(Some(llm_rx)),
+            intelligence: true,
         })
     }
 
@@ -149,18 +153,26 @@ impl Socks5Server {
         proxy_mode: String,
         usage_recorder: Option<Arc<dyn UsageRecorder>>,
     ) -> Result<Self> {
+        static INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let instance = INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let scratch_dir = std::env::temp_dir().join(format!(
+            "hydra_proxy_only_{}_{}",
+            std::process::id(),
+            instance
+        ));
+        // sled locks its directory; a restarted server in the same process
+        // must not reuse the previous instance's path.
+        let _ = std::fs::remove_dir_all(&scratch_dir);
+        std::fs::create_dir_all(&scratch_dir)?;
+
         let ai = Arc::new(AiNegotiator::new(&hydra_config::AiConfig::default()));
         let p2p = hydra_p2p::P2PNode::dummy_handle();
-        let econ_dir = std::env::temp_dir().join(format!("hydra_proxy_only_{}", std::process::id()));
-        std::fs::create_dir_all(&econ_dir)?;
-        let econ = Arc::new(EconLedger::new(econ_dir.to_str().unwrap())?);
+        let econ = Arc::new(EconLedger::new(scratch_dir.join("econ"))?);
         let enrichment = EnrichmentService::new()?;
         let intelligence_config = IntelligenceConfig::default();
         let tracker_db = Arc::new(TrackerDatabase::new());
         let (classifier, llm_rx) = ConnectionClassifier::new(tracker_db, &intelligence_config);
-        let classification_log = Arc::new(ClassificationEventLog::new(
-            crate::classification_log::default_base_dir(),
-        )?);
+        let classification_log = Arc::new(ClassificationEventLog::new(scratch_dir.join("classification"))?);
 
         Ok(Self {
             addr,
@@ -179,7 +191,12 @@ impl Socks5Server {
             classifier: Arc::new(classifier),
             classification_log,
             llm_rx: std::sync::Mutex::new(Some(llm_rx)),
+            intelligence: false,
         })
+    }
+
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
     }
 
     pub fn registry(&self) -> Arc<ConnectionRegistry> {
@@ -210,12 +227,30 @@ impl Socks5Server {
     }
 
     pub async fn run(&self) -> Result<()> {
+        let listener = self.bind().await?;
+        self.serve(listener).await
+    }
+
+    /// Bind the listen socket. Separate from [`Self::serve`] so callers can
+    /// surface "address in use" and similar errors synchronously.
+    pub async fn bind(&self) -> Result<TcpListener> {
+        TcpListener::bind(self.addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("Cannot listen on {}: {}", self.addr, e))
+    }
+
+    pub async fn serve(&self, listener: TcpListener) -> Result<()> {
         if let Some(discovery) = &self.discovery {
             discovery.start_polling();
         }
 
         // Spawn LLM classifier task (Tier 3: best-effort async classification)
-        if let Some(llm_rx) = self.llm_rx.lock().unwrap().take() {
+        let llm_rx = if self.intelligence {
+            self.llm_rx.lock().unwrap().take()
+        } else {
+            None
+        };
+        if let Some(llm_rx) = llm_rx {
             let infer = self.ai.infer().clone();
             let registry = self.registry.clone();
             let verdict_cache = self.classifier.verdict_cache().clone();
@@ -226,12 +261,39 @@ impl Socks5Server {
             info!("LLM classifier task spawned for Tier 3 classification");
         }
 
-        let listener = TcpListener::bind(self.addr).await?;
-        info!("Socks5 server listening on {}", self.addr);
+        info!(
+            socks_event = "listening",
+            "SOCKS5 server listening on {} (intelligence={})",
+            self.addr,
+            self.intelligence
+        );
 
+        let mut consecutive_accept_errors: u32 = 0;
         loop {
-            let (stream, peer_addr) = listener.accept().await?;
+            // accept() can fail transiently (EMFILE, ECONNABORTED after an iOS
+            // suspend/resume). Never let that end the server.
+            let (stream, peer_addr) = match listener.accept().await {
+                Ok(pair) => {
+                    consecutive_accept_errors = 0;
+                    pair
+                }
+                Err(e) => {
+                    consecutive_accept_errors = consecutive_accept_errors.saturating_add(1);
+                    let backoff_ms = (50u64 << consecutive_accept_errors.min(6)).min(2_000);
+                    warn!(
+                        socks_event = "accept_error",
+                        error = %e,
+                        consecutive = consecutive_accept_errors,
+                        backoff_ms,
+                        "SOCKS5 accept failed, retrying"
+                    );
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    continue;
+                }
+            };
+            let _ = stream.set_nodelay(true);
             debug!("Accepted connection from {}", peer_addr);
+            let intelligence = self.intelligence;
 
             let transports = self
                 .transports
@@ -269,10 +331,11 @@ impl Socks5Server {
                     enrichment,
                     classifier,
                     classification_log,
+                    intelligence,
                 )
                 .await
                 {
-                    error!("Error handling connection from {}: {}", peer_addr, e);
+                    warn!("SOCKS5 session from {} ended with error: {:#}", peer_addr, e);
                 }
             });
 
@@ -360,6 +423,7 @@ async fn handle_connection(
     enrichment: Arc<EnrichmentService>,
     classifier: Arc<ConnectionClassifier>,
     classification_log: Arc<ClassificationEventLog>,
+    intelligence: bool,
 ) -> Result<()> {
     // 1. Negotiation (Handshake)
     let mut buf = [0u8; 2];
@@ -451,7 +515,7 @@ async fn handle_connection(
         _ => return Err(anyhow::anyhow!("Unsupported address type")),
     };
 
-    info!("Target requested: {}", target_addr);
+    debug!("Target requested: {}", target_addr);
 
     let (target_host_str, target_port) = socks::split_target(&target_addr)
         .map(|(h, p)| (h.to_string(), p))
@@ -560,7 +624,11 @@ async fn handle_connection(
         .as_ref()
         .map(|attr| attr.package_name.clone());
 
-    let fast_verdict = classifier.classify_fast(&target_host_str, target_port, app_uid);
+    let fast_verdict = if intelligence {
+        classifier.classify_fast(&target_host_str, target_port, app_uid)
+    } else {
+        ClassificationResult::Pending
+    };
     if let ClassificationResult::Verdict(ref classification) = fast_verdict {
         registry.update_classification(conn_id, classification.clone());
         classification_log.log_event(crate::classification_log::make_event(
@@ -611,7 +679,7 @@ async fn handle_connection(
     }
 
     // Spawn async enrichment + enriched classification task (non-blocking)
-    {
+    if intelligence {
         let enrichment = enrichment.clone();
         let registry = registry.clone();
         let classifier = classifier.clone();
@@ -709,7 +777,7 @@ async fn handle_connection(
     let mut errors = Vec::new();
     for configured in plan.transports {
         let connect_started = Instant::now();
-        info!(
+        debug!(
             "Connection #{}: trying transport {} to {}",
             conn_id,
             configured.kind.as_str(),
@@ -740,9 +808,27 @@ async fn handle_connection(
                     t2c_registry.update_bytes(conn_id, 0, bytes);
                 });
                 let (res_up, res_down) = tokio::join!(c2t, t2c);
-                let up = res_up.unwrap_or(0);
-                let down = res_down.unwrap_or(0);
+                let up = res_up.as_ref().copied().unwrap_or(0);
+                let down = res_down.as_ref().copied().unwrap_or(0);
                 let duration = started_at.elapsed();
+                let io_error = res_up
+                    .err()
+                    .or(res_down.err())
+                    .map(|e| format!(", io_error={e}"))
+                    .unwrap_or_default();
+                info!(
+                    socks_event = "closed",
+                    conn_id,
+                    "Connection #{}: closed {} via {} up={}B down={}B connect={}ms duration={}ms{}",
+                    conn_id,
+                    target_addr,
+                    configured.metadata.label,
+                    up,
+                    down,
+                    connect_latency_ms,
+                    duration.as_millis(),
+                    io_error
+                );
                 if let Some(controller) = &credit {
                     if let Err(error) = controller
                         .record_usage(&configured, up.saturating_add(down), duration)

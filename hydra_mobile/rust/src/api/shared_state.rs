@@ -2,7 +2,7 @@ use anyhow::Result;
 use lazy_static::lazy_static;
 use serde_json::Value;
 use std::path::Path;
-pub use std::path::PathBuf;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 // In-memory live log ring. Logs are intentionally NOT persisted to disk:
@@ -15,6 +15,7 @@ lazy_static! {
     static ref LOG_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 }
 
+#[flutter_rust_bridge::frb(ignore)]
 pub fn init_shared_base_dir<P: AsRef<Path>>(base_dir: P) -> Result<()> {
     let path = base_dir.as_ref().to_path_buf();
     std::fs::create_dir_all(&path)?;
@@ -26,6 +27,7 @@ pub fn init_shared_base_dir<P: AsRef<Path>>(base_dir: P) -> Result<()> {
     Ok(())
 }
 
+#[flutter_rust_bridge::frb(ignore)]
 pub fn shared_base_dir() -> Option<PathBuf> {
     SHARED_BASE_DIR.lock().ok().and_then(|guard| guard.clone())
 }
@@ -34,6 +36,7 @@ pub fn shared_base_dir() -> Option<PathBuf> {
 ///
 /// The buffer is a backfill source so a freshly-opened log view can show recent
 /// history; the primary delivery path is the live `StreamSink` in `api::telemetry`.
+#[flutter_rust_bridge::frb(ignore)]
 pub fn append_log_line(line: String) {
     let mut guard = match LOG_LINES.lock() {
         Ok(guard) => guard,
@@ -54,14 +57,17 @@ pub fn read_log_lines() -> Result<Vec<String>> {
         .unwrap_or_default())
 }
 
+#[flutter_rust_bridge::frb(ignore)]
 pub fn persist_active_connections(json: &str) -> Result<()> {
     write_json_raw("active_connections.json", json)
 }
 
+#[flutter_rust_bridge::frb(ignore)]
 pub fn persist_connection_stats(json: &str) -> Result<()> {
     write_json_raw("connection_stats.json", json)
 }
 
+#[flutter_rust_bridge::frb(ignore)]
 pub fn persist_quota_status(json: &str) -> Result<()> {
     write_json_raw("quota_status.json", json)
 }

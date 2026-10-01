@@ -189,14 +189,16 @@ pub(crate) fn attach_runtime_handles(
     let policies = load_policies(&state.base_dir)?;
     registry.replace_policies(policies);
     state.registry = Some(registry);
+    // The server was just built from `state.profiles`; later edits re-sync.
     state.transports_handle = Some(transports_handle);
-    sync_transports_locked(state)
+    Ok(())
 }
 
 pub(crate) fn current_profiles() -> Result<Vec<RouteProfile>> {
     with_state(|state| Ok(state.profiles.clone()))
 }
 
+#[allow(dead_code)]
 pub(crate) fn reload_from_disk() -> Result<()> {
     with_state_mut(|state| {
         let profiles_path = state.base_dir.join(MOBILE_ROUTES_FILE);
@@ -453,12 +455,354 @@ pub async fn create_ssh_route_profile(
 
     with_state_mut(|state| {
         state.profiles.push(normalized.clone());
-        persist_json(&state.base_dir.join(MOBILE_ROUTES_FILE), &state.profiles)?;
+        activate_only(state, &normalized.id);
+        persist_profiles_locked(state)?;
         sync_transports_locked(state)?;
         Ok(())
     })?;
 
     to_json(&normalized)
+}
+
+// ---------------------------------------------------------------------------
+// Server-centric API used by the proxy UI. Exactly one profile is "active"
+// (enabled) at a time; secrets never leave Rust except as `has_credential`.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct ServerView {
+    id: String,
+    label: String,
+    kind: &'static str,
+    active: bool,
+    builtin: bool,
+    host: Option<String>,
+    port: Option<u16>,
+    username: Option<String>,
+    auth_type: Option<&'static str>,
+    has_credential: bool,
+    public_key: Option<String>,
+    key_fingerprint: Option<String>,
+    pinned_host_key: Option<String>,
+}
+
+fn server_view(profile: &RouteProfile) -> ServerView {
+    let mut view = ServerView {
+        id: profile.id.clone(),
+        label: profile.label.clone(),
+        kind: kind_name(profile.kind),
+        active: profile.enabled,
+        builtin: matches!(profile.source, RouteProfileSource::Builtin),
+        host: None,
+        port: None,
+        username: None,
+        auth_type: None,
+        has_credential: false,
+        public_key: None,
+        key_fingerprint: None,
+        pinned_host_key: None,
+    };
+    if let TransportConfig::Ssh { host, port, username, key_path, key_pem, password, .. } = &profile.config {
+        view.host = Some(host.clone());
+        view.port = Some(*port);
+        view.username = Some(username.clone());
+        view.pinned_host_key = hydra_core::transport::ssh::known_host_fingerprint(host, *port);
+        if let Some(pem) = key_pem {
+            view.auth_type = Some("key");
+            view.has_credential = !pem.trim().is_empty();
+            if let Ok(info) = hydra_core::transport::ssh::describe_private_key(pem) {
+                view.public_key = Some(info.public_openssh);
+                view.key_fingerprint = Some(info.fingerprint);
+            }
+        } else if let Some(pw) = password {
+            view.auth_type = Some("password");
+            view.has_credential = !pw.is_empty();
+        } else if key_path.is_some() {
+            view.auth_type = Some("key_file");
+            view.has_credential = true;
+        }
+    }
+    view
+}
+
+pub async fn list_servers() -> Result<String> {
+    let views = with_state(|state| Ok(state.profiles.iter().map(server_view).collect::<Vec<_>>()))?;
+    to_json(&views)
+}
+
+fn ssh_secret(auth_type: &str, credential: String) -> Result<(Option<String>, Option<String>)> {
+    match auth_type {
+        "password" => {
+            if credential.is_empty() {
+                bail!("Password must not be empty");
+            }
+            Ok((None, Some(credential)))
+        }
+        "key" | "key_pem" => {
+            hydra_core::transport::ssh::describe_private_key(&credential)?;
+            Ok((Some(credential.trim().to_string() + "\n"), None))
+        }
+        other => bail!("Unknown SSH auth type '{other}' (use password or key)"),
+    }
+}
+
+fn activate_only(state: &mut RouteRuntimeState, id: &str) {
+    for profile in state.profiles.iter_mut() {
+        profile.enabled = profile.id == id;
+    }
+}
+
+/// Create (`id` = None) or update an SSH server. `credential` = None keeps
+/// the stored password/key (only allowed when the auth type is unchanged).
+#[allow(clippy::too_many_arguments)]
+pub async fn save_ssh_server(
+    id: Option<String>,
+    label: String,
+    host: String,
+    port: u16,
+    username: String,
+    auth_type: String,
+    credential: Option<String>,
+    activate: bool,
+) -> Result<String> {
+    let host = host.trim().to_string();
+    let username = username.trim().to_string();
+    if host.is_empty() {
+        bail!("Server address must not be empty");
+    }
+    if host.contains(char::is_whitespace) || host.contains('@') {
+        bail!("Server address must be a host name or IP, without user@ or spaces");
+    }
+    if username.is_empty() {
+        bail!("Username must not be empty");
+    }
+    if port == 0 {
+        bail!("Port must be between 1 and 65535");
+    }
+    let label = if label.trim().is_empty() {
+        format!("{username}@{host}")
+    } else {
+        label.trim().to_string()
+    };
+
+    let saved = with_state_mut(|state| {
+        let existing = id
+            .as_ref()
+            .and_then(|id| state.profiles.iter().position(|p| &p.id == id));
+        if id.is_some() && existing.is_none() {
+            bail!("Unknown server");
+        }
+
+        let (key_pem, password) = match credential {
+            Some(credential) => ssh_secret(&auth_type, credential)?,
+            None => {
+                let Some(index) = existing else {
+                    bail!("A password or private key is required");
+                };
+                match (&state.profiles[index].config, auth_type.as_str()) {
+                    (TransportConfig::Ssh { key_pem: Some(pem), .. }, "key" | "key_pem") => (Some(pem.clone()), None),
+                    (TransportConfig::Ssh { password: Some(pw), .. }, "password") => (None, Some(pw.clone())),
+                    _ => bail!("Enter the new {} for this server", if auth_type == "password" { "password" } else { "private key" }),
+                }
+            }
+        };
+
+        let config = TransportConfig::Ssh {
+            host: host.clone(),
+            port,
+            username: username.clone(),
+            key_path: None,
+            key_pem,
+            password,
+            mode: TransportMode::All,
+        };
+
+        let profile_id = match existing {
+            Some(index) => {
+                let profile = &mut state.profiles[index];
+                if !matches!(profile.kind, RouteProfileKind::Ssh) {
+                    bail!("Only SSH servers can be edited here");
+                }
+                profile.label = label.clone();
+                profile.mode = TransportMode::All;
+                profile.config = config;
+                profile.id.clone()
+            }
+            None => {
+                let profile = RouteProfile::new(
+                    format!("ssh-{}", now_epoch_millis()),
+                    label.clone(),
+                    RouteProfileKind::Ssh,
+                    TransportMode::All,
+                    false,
+                    next_priority(&state.profiles),
+                    RouteProfileSource::ImportedRaw,
+                    config,
+                );
+                let id = profile.id.clone();
+                state.profiles.push(normalize_profile(profile)?);
+                id
+            }
+        };
+
+        if activate {
+            activate_only(state, &profile_id);
+        }
+        persist_profiles_locked(state)?;
+        sync_transports_locked(state)?;
+        let profile = state
+            .profiles
+            .iter()
+            .find(|p| p.id == profile_id)
+            .ok_or_else(|| anyhow!("saved server vanished"))?;
+        tracing::info!(
+            route_event = "server_saved",
+            profile_id = %profile_id,
+            active = profile.enabled,
+            auth = auth_type.as_str(),
+            "Saved SSH server {}",
+            profile.label
+        );
+        Ok(server_view(profile))
+    })?;
+
+    warm_up_running().await;
+    to_json(&saved)
+}
+
+pub async fn set_active_server(id: String) -> Result<String> {
+    let view = with_state_mut(|state| {
+        let Some(profile) = state.profiles.iter().find(|p| p.id == id) else {
+            bail!("Unknown server");
+        };
+        tracing::info!(route_event = "server_activated", profile_id = %id, "Active server: {}", profile.label);
+        activate_only(state, &id);
+        persist_profiles_locked(state)?;
+        sync_transports_locked(state)?;
+        Ok(state.profiles.iter().find(|p| p.id == id).map(server_view))
+    })?;
+    warm_up_running().await;
+    to_json(&view)
+}
+
+pub async fn delete_server(id: String) -> Result<()> {
+    delete_route_profile(id.clone()).await?;
+    tracing::info!(route_event = "server_deleted", profile_id = %id, "Server deleted");
+    Ok(())
+}
+
+pub async fn forget_server_host_key(id: String) -> Result<()> {
+    let (host, port) = with_state(|state| match state.profiles.iter().find(|p| p.id == id).map(|p| &p.config) {
+        Some(TransportConfig::Ssh { host, port, .. }) => Ok((host.clone(), *port)),
+        _ => bail!("Unknown SSH server"),
+    })?;
+    hydra_core::transport::ssh::forget_known_host(&host, port)
+}
+
+#[flutter_rust_bridge::frb(sync)]
+pub fn generate_ssh_key(comment: String) -> Result<String> {
+    let comment = if comment.trim().is_empty() { "hydra-ios".to_string() } else { comment };
+    let key = hydra_core::transport::ssh::generate_ed25519_key(&comment)?;
+    tracing::info!(route_event = "key_generated", fingerprint = %key.fingerprint, "Generated new ed25519 key");
+    to_json(&key)
+}
+
+#[flutter_rust_bridge::frb(sync)]
+pub fn describe_ssh_key(private_key: String) -> Result<String> {
+    let mut key = hydra_core::transport::ssh::describe_private_key(&private_key)?;
+    key.private_openssh.clear();
+    to_json(&key)
+}
+
+#[derive(Serialize)]
+struct SshTestResult {
+    ok: bool,
+    error: Option<String>,
+    elapsed_ms: u64,
+    host_key_fingerprint: Option<String>,
+    tunnel_check: Option<String>,
+}
+
+/// Connect + authenticate with the given settings (or the stored secret of
+/// `id` when `credential` is None), then open one test channel.
+pub async fn test_ssh_server(
+    id: Option<String>,
+    host: String,
+    port: u16,
+    username: String,
+    auth_type: String,
+    credential: Option<String>,
+) -> Result<String> {
+    use hydra_core::transport::ssh::{SshAuth, SshTransport};
+    use hydra_core::transport::Transport;
+
+    let (key_pem, password) = match credential {
+        Some(credential) => ssh_secret(&auth_type, credential)?,
+        None => with_state(|state| {
+            match id
+                .as_ref()
+                .and_then(|id| state.profiles.iter().find(|p| &p.id == id))
+                .map(|p| &p.config)
+            {
+                Some(TransportConfig::Ssh { key_pem, password, .. }) => Ok((key_pem.clone(), password.clone())),
+                _ => bail!("A password or private key is required"),
+            }
+        })?,
+    };
+    let auth = match (key_pem, password) {
+        (Some(pem), _) => SshAuth::KeyPem(pem),
+        (None, Some(pw)) => SshAuth::Password(pw),
+        _ => bail!("A password or private key is required"),
+    };
+
+    let host = host.trim().to_string();
+    tracing::info!(route_event = "server_test", ssh_addr = %format!("{}@{}:{}", username.trim(), host, port), "Testing SSH server");
+    let started = std::time::Instant::now();
+    let transport = SshTransport::new(host.clone(), port, username.trim().to_string(), auth);
+    let mut result = SshTestResult {
+        ok: false,
+        error: None,
+        elapsed_ms: 0,
+        host_key_fingerprint: None,
+        tunnel_check: None,
+    };
+    match transport.warm_up().await {
+        Ok(()) => {
+            result.ok = true;
+            // Forwarding can be disabled server-side even when login works.
+            match tokio::time::timeout(Duration::from_secs(10), transport.connect("1.1.1.1:443")).await {
+                Ok(Ok(_stream)) => result.tunnel_check = Some("TCP forwarding works (opened 1.1.1.1:443 through the server)".into()),
+                Ok(Err(e)) => {
+                    result.ok = false;
+                    result.error = Some(format!("Login works, but forwarding failed: {e:#}"));
+                }
+                Err(_) => result.tunnel_check = Some("Login works; test channel timed out".into()),
+            }
+        }
+        Err(e) => result.error = Some(format!("{e:#}")),
+    }
+    result.elapsed_ms = started.elapsed().as_millis() as u64;
+    result.host_key_fingerprint = hydra_core::transport::ssh::status_snapshot()
+        .into_iter()
+        .find(|s| s.endpoint == format!("{}@{}:{}", username.trim(), host, port))
+        .and_then(|s| s.host_key_fingerprint);
+    transport.reset().await;
+    tracing::info!(route_event = "server_test_result", ok = result.ok, elapsed_ms = result.elapsed_ms, error = ?result.error, "SSH server test finished");
+    to_json(&result)
+}
+
+async fn warm_up_running() {
+    if let Some(transports) = crate::api::simple::running_transports().await {
+        crate::api::simple::warm_up_transports(transports);
+    }
+}
+
+/// Profiles with secrets removed, for diagnostics reports.
+#[flutter_rust_bridge::frb(ignore)]
+pub(crate) fn redacted_profiles_json() -> String {
+    with_state(|state| Ok(state.profiles.iter().map(server_view).collect::<Vec<_>>()))
+        .and_then(|views| Ok(serde_json::to_string_pretty(&views)?))
+        .unwrap_or_else(|e| format!("<unavailable: {e}>"))
 }
 
 pub async fn get_relay_usage_summary() -> Result<String> {

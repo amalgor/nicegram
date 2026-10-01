@@ -33,11 +33,15 @@ extension LogLevelMeta on LogLevel {
 @immutable
 class LogRecord {
   const LogRecord({
+    this.time,
     required this.level,
     required this.target,
     required this.message,
     required this.raw,
   });
+
+  /// `HH:MM:SS.mmm` local time stamped by the Rust logger, when present.
+  final String? time;
 
   final LogLevel level;
 
@@ -53,10 +57,20 @@ class LogRecord {
   /// True when this line came from the SSH transport.
   bool get isSsh => target.contains('transport::ssh') || raw.contains('ssh_event');
 
-  /// Rust lines arrive as `"[LEVEL] target: message"` (see api::telemetry).
+  static final _timePrefix = RegExp(r'^(\d\d:\d\d:\d\d\.\d{3}) ');
+
+  /// Rust lines arrive as `"HH:MM:SS.mmm [LEVEL] target: message"` (see
+  /// `rust/src/logging.rs`); the time is optional for older lines.
   /// Anything that doesn't match is kept verbatim at [LogLevel.other].
-  factory LogRecord.parse(String line) {
+  factory LogRecord.parse(String raw) {
     LogLevel level = LogLevel.other;
+    String? time;
+    var line = raw;
+    final stamp = _timePrefix.firstMatch(line);
+    if (stamp != null) {
+      time = stamp.group(1);
+      line = line.substring(stamp.end);
+    }
     var rest = line;
 
     if (line.startsWith('[')) {
@@ -75,7 +89,7 @@ class LogRecord {
       message = rest.substring(colon + 2);
     }
 
-    return LogRecord(level: level, target: target, message: message, raw: line);
+    return LogRecord(time: time, level: level, target: target, message: message, raw: raw);
   }
 
   static LogLevel _levelFromTag(String tag) {
@@ -99,30 +113,28 @@ class LogRecord {
 
 /// Process-wide, in-memory log store fed by the Rust log stream.
 ///
-/// Single source of truth for the Logs screen and for the activity indicators.
-/// Intentionally has no disk persistence: logs live only for the app session.
+/// Backs the Logs screen. Persistence is handled on the Rust side (rotating
+/// files in the app's log directory); this keeps only the newest [maxRecords].
 class LogStore extends ChangeNotifier {
   LogStore._();
   static final LogStore instance = LogStore._();
 
-  final List<LogRecord> _records = <LogRecord>[];
+  static const maxRecords = 20000;
 
-  /// Monotonic counter of total lines ever received (used by activity indicators
-  /// to detect "new activity" without diffing the list).
+  final ListQueue<LogRecord> _records = ListQueue<LogRecord>();
+
+  /// Monotonic counter of total lines ever received.
   int _totalReceived = 0;
-
-  /// Timestamp of the most recent SSH event (for tunnel up/down heuristics).
-  DateTime? _lastSshEventAt;
-  bool _sshConnected = false;
 
   StreamSubscription<String>? _subscription;
   bool _bound = false;
 
-  UnmodifiableListView<LogRecord> get records =>
-      UnmodifiableListView<LogRecord>(_records);
+  int get length => _records.length;
+  LogRecord at(int index) => _records.elementAt(index);
+  Iterable<LogRecord> get records => _records;
   int get totalReceived => _totalReceived;
-  DateTime? get lastSshEventAt => _lastSshEventAt;
-  bool get sshConnected => _sshConnected;
+
+  Timer? _notifyTimer;
 
   /// Subscribe to the Rust log stream exactly once. Safe to call repeatedly.
   void bind(Stream<String> Function() openStream) {
@@ -143,31 +155,19 @@ class LogStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Notifications are coalesced so a burst of lines costs one rebuild.
   void add(String line) {
     _ingest(line);
-    notifyListeners();
+    _notifyTimer ??= Timer(const Duration(milliseconds: 150), () {
+      _notifyTimer = null;
+      notifyListeners();
+    });
   }
 
   void _ingest(String line) {
-    final record = LogRecord.parse(line);
-    _records.add(record);
+    _records.add(LogRecord.parse(line));
+    if (_records.length > maxRecords) _records.removeFirst();
     _totalReceived++;
-    if (record.isSsh) {
-      _lastSshEventAt = DateTime.now();
-      _updateSshState(record);
-    }
-  }
-
-  void _updateSshState(LogRecord record) {
-    final raw = record.raw;
-    if (raw.contains('authenticated') || raw.contains('channel_open')) {
-      _sshConnected = true;
-    } else if (raw.contains('connect_failed') ||
-        raw.contains('connect_timeout') ||
-        raw.contains('auth_failed') ||
-        raw.contains('auth_error')) {
-      _sshConnected = false;
-    }
   }
 
   void clear() {
@@ -177,6 +177,7 @@ class LogStore extends ChangeNotifier {
 
   @override
   void dispose() {
+    _notifyTimer?.cancel();
     _subscription?.cancel();
     super.dispose();
   }

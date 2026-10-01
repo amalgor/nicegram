@@ -6,13 +6,16 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `NODE_STARTED`, `SHARED_PROXY_MODE`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `deref`, `deref`, `initialize`, `initialize`
+// These functions are ignored because they are not marked as `pub`: `last_error`, `now_ms`, `running_transports`, `set_last_error`, `snapshot_transports`, `start_inner`, `warm_up_transports`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ProxyStatus`, `RouteStatus`, `RunningNode`
 
 String greet({required String name}) =>
     RustLib.instance.api.crateApiSimpleGreet(name: name);
 
-void initApp() => RustLib.instance.api.crateApiSimpleInitApp();
+/// Install logging. `log_dir` enables persistent, rotating log files.
+/// Safe to call more than once (later calls only add the file sink if missing).
+void initApp({String? logDir}) =>
+    RustLib.instance.api.crateApiSimpleInitApp(logDir: logDir);
 
 Future<void> initExtensionRuntime({required String baseDir}) =>
     RustLib.instance.api.crateApiSimpleInitExtensionRuntime(baseDir: baseDir);
@@ -20,10 +23,23 @@ Future<void> initExtensionRuntime({required String baseDir}) =>
 Future<void> prepareLocalRuntime({required String baseDir}) =>
     RustLib.instance.api.crateApiSimplePrepareLocalRuntime(baseDir: baseDir);
 
-/// Start SOCKS5 proxy server with configured transports (VLESS, SSH).
-/// No VPN, no P2P, no AI, no classifier — pure proxy mode.
+/// Start the local SOCKS5 server (127.0.0.1:<socks5_port>) over the enabled
+/// route profiles. Idempotent. Returns an error if the port cannot be bound.
 Future<void> startHydraNode({required String baseDir}) =>
     RustLib.instance.api.crateApiSimpleStartHydraNode(baseDir: baseDir);
+
+/// Stop the SOCKS5 server and drop SSH sessions.
+Future<void> stopHydraNode() =>
+    RustLib.instance.api.crateApiSimpleStopHydraNode();
+
+/// Drop and re-establish long-lived transport sessions. Call after network
+/// changes or when returning to the foreground.
+Future<void> reconnectTransports({required String reason}) =>
+    RustLib.instance.api.crateApiSimpleReconnectTransports(reason: reason);
+
+/// JSON snapshot for the UI; cheap enough to poll every second.
+Future<String> getProxyStatus() =>
+    RustLib.instance.api.crateApiSimpleGetProxyStatus();
 
 /// Set proxy mode at runtime. Values: "off", "telegram", "full".
 Future<void> setProxyMode({required String mode}) =>
@@ -32,7 +48,7 @@ Future<void> setProxyMode({required String mode}) =>
 /// Get SOCKS5 proxy listen port.
 int getSocks5Port() => RustLib.instance.api.crateApiSimpleGetSocks5Port();
 
-/// Check if the SOCKS5 node is running.
+/// True while the SOCKS5 server task is alive.
 bool isNodeRunning() => RustLib.instance.api.crateApiSimpleIsNodeRunning();
 
 /// Execute a shell command on the device.

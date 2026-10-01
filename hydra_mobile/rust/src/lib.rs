@@ -1,5 +1,6 @@
 pub mod api;
 mod frb_generated;
+mod logging;
 
 #[cfg(test)]
 pub mod test_support {

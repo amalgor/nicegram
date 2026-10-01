@@ -4,33 +4,16 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
-import '../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `read_json_value`, `shared_file`, `write_json_array`, `write_json_raw`
-// These functions are ignored because they have generic arguments: `init_shared_base_dir`
+// These functions are ignored because they are not marked as `pub`: `read_json_value`, `shared_file`, `write_json_raw`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `LOG_LINES`, `SHARED_BASE_DIR`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `deref`, `deref`, `initialize`, `initialize`
+// These functions are ignored (category: IgnoreBecauseExplicitAttribute): `append_log_line`, `init_shared_base_dir`, `persist_active_connections`, `persist_connection_stats`, `persist_quota_status`, `shared_base_dir`
 
-Future<PathBuf?> sharedBaseDir() =>
-    RustLib.instance.api.crateApiSharedStateSharedBaseDir();
-
-Future<void> appendLogLine({required String line}) =>
-    RustLib.instance.api.crateApiSharedStateAppendLogLine(line: line);
-
+/// Snapshot of the in-memory log ring (used by Flutter to backfill on first open).
 Future<List<String>> readLogLines() =>
     RustLib.instance.api.crateApiSharedStateReadLogLines();
-
-Future<void> persistActiveConnections({required String json}) => RustLib
-    .instance
-    .api
-    .crateApiSharedStatePersistActiveConnections(json: json);
-
-Future<void> persistConnectionStats({required String json}) =>
-    RustLib.instance.api.crateApiSharedStatePersistConnectionStats(json: json);
-
-Future<void> persistQuotaStatus({required String json}) =>
-    RustLib.instance.api.crateApiSharedStatePersistQuotaStatus(json: json);
 
 Future<String> snapshotJson() =>
     RustLib.instance.api.crateApiSharedStateSnapshotJson();
