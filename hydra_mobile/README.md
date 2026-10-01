@@ -8,17 +8,31 @@ Flutter client for the Hydra mobile runtime.
 - iOS is currently a proxy-only validation surface. It starts the Rust/FRB runtime and exposes a local SOCKS5 proxy UI, but it does not provide an iOS Network Extension VPN tunnel.
 - The bundled first-run config is `assets/hydra.toml`; the app copies it into the platform documents directory as `hydra.toml` if no user config exists yet.
 
+## SSH `-D` proxy (iOS)
+
+Goal: the equivalent of `ssh -D 1080 user@host` on the phone. Apps on the device (Telegram, browsers with proxy support) use SOCKS5 at `127.0.0.1:1080`; every connection becomes a `direct-tcpip` channel on one shared SSH session.
+
+- **Rust core** (`hydra-core/src/transport/ssh.rs`): one `russh` session per server, shared through `Arc<Handle>` so channels open concurrently. Timeouts are DNS 10 s, TCP 10 s, handshake 20 s, auth 20 s, channel 15 s. Keepalive runs every 15 s and gives up after 3 misses. After a failure there is a 3 s hold-down; a channel that hits a dead session reconnects once. Host keys are pinned on first use (TOFU) in `ssh_known_hosts.json` in the documents dir. The core also exposes live status (`status_snapshot()`: state, last error, host key, channels, bytes) and ed25519 key generation.
+- **SOCKS5 server** (`hydra-core/src/lib.rs`): `bind()` happens before `serve()`, so a port conflict reaches the UI as an error. Accept errors are logged and retried, never fatal. On iOS the node is built with `new_proxy_only` (no classification, enrichment or LLM, so no direct DNS/whois leaks around the tunnel). Each connection logs one `socks_event=closed` summary.
+- **Mobile Rust API** (`rust/src/api/simple.rs`, `routes.rs`, `diagnostics.rs`):
+  - `startHydraNode` / `stopHydraNode` / `reconnectTransports` / `getProxyStatus` (JSON).
+  - Server CRUD: `saveSshServer`, `setActiveServer`, `deleteServer`, `forgetServerHostKey`. Exactly one SSH server is active; the built-in relay profiles are disabled when one is selected.
+  - Keys and checks: `generateSshKey`, `describeSshKey`, and `testSshServer` (connects, authenticates, opens a test channel to 1.1.1.1:443).
+- **Dart app layer** (`lib/app/`): `ProxyController` (lifecycle, 1 s status polling in the foreground and 10 s in the background, auto-restart with backoff, reconnect on network change and resume, a heartbeat log line every 60 s, start-on-launch), `NativeBridge` (channel `hydra/native`), `AppSettings` (`app_settings.json`, no secrets), `models.dart` (typed JSON views and an `ssh user@host -p N` parser).
+- **UI** (Material 3, light and dark): tabs are **Proxy** (status, Start/Stop, copyable address, "Use in Telegram" `tg://socks` link, traffic stats, last error), **Servers** (list, active radio, editor), **Logs** and **Settings**. Settings has the keep-alive and start-on-launch switches, the log folder, and an Advanced section with the legacy Routes and Network shell screens. The server editor accepts a pasted `ssh …` command, generates a key and shows the public key to copy into `authorized_keys`, accepts a pasted private key, runs "Test connection" and can reset the pinned host key.
+- **Background** (`ios/Runner/AppDelegate.swift`): iOS suspends apps a few seconds after they leave the foreground, which kills a local proxy. While the proxy runs and "Keep running in background" is on, `BackgroundKeepAlive` plays a silent looping buffer (`UIBackgroundModes: audio`, `.mixWithOthers`) and restarts after audio interruptions. This is acceptable for TestFlight, but **App Store review may reject it**; the long-term path is a Network Extension. `NWPathMonitor` reports network changes to Dart, which reconnects SSH. Memory warnings, Low Power Mode and app lifecycle changes are logged.
+- **Secrets** (passwords, private keys) are stored in the route profiles file in the app's documents dir, not in the Keychain yet. Diagnostics reports redact them.
+
 ## First Launch
 
-Startup order is intentionally defensive:
+`lib/main.dart` runs inside `runZonedGuarded`, with `FlutterError.onError` and `PlatformDispatcher.onError` wired to the log. Startup steps are logged with their duration:
 
-1. Flutter renders a startup screen immediately.
-2. The app initializes `flutter_rust_bridge` / Rust.
-3. The app creates or loads `hydra.toml`.
-4. The app prepares route/runtime files.
-5. The app starts the local SOCKS5 node in the background.
+1. Flutter renders the startup screen.
+2. The Rust library loads (`initHydraRustLib`), the live log stream is bound, and `initApp(logDir: <Application Support>/logs)` installs tracing with file logging. Dart lines buffered before this point are replayed.
+3. Device info is logged, `hydra.toml` is materialized, and `prepareLocalRuntime` runs.
+4. `ProxyController.init()` loads servers and auto-starts the proxy if an SSH server is active and "Start on launch" is on.
 
-If iOS cannot load the Rust library, cannot register a Flutter plugin, times out during Rust startup, or fails while preparing local runtime files, the app now shows an on-screen error and retry button instead of staying on a blank white screen.
+On failure the startup screen shows the error with **Retry** and **Show logs** buttons.
 
 ## Versioning
 
@@ -101,35 +115,39 @@ nm -gU <archive>/Runner.app/Runner            | grep frb_get_rust_content_hash  
 
 If it is in the `.a` but not in `Runner`, the bitcode/`-force_load` parse failure above is the cause (not `-dead_strip` and not the force_load path).
 
-## Logging (in-memory live log)
+## Logging and diagnostics
 
-The app streams Rust runtime events to a live, in-memory log view. **No log files are written** — logs exist only for the app session.
+Logs are designed so that one export from the device explains a failure, without a debugger attached.
 
-- **Source:** `tracing` events in Rust → `FlutterLogLayer` (`rust/src/api/telemetry.rs`) → FRB `Stream<String>` (`createLogStream`). Each line is `"[LEVEL] target: message"`.
-- **In-memory only:** `rust/src/api/shared_state.rs` keeps a bounded ring (`MAX_LOG_LINES = 5000`) for backfill; the per-line `logs.json` write was removed. The Flutter UI keeps its own session-length view.
-- **Wiring:** `lib/main.dart` `_bootstrapHydraRuntime` calls `LogStore.instance.bind(createLogStream)` before `initApp()`, then backfills via `readLogLines()`.
-- **Store:** `lib/logging/log_store.dart` — singleton `LogStore` (`ChangeNotifier`); parses each line once into `LogRecord { level, target, message, raw }`.
-- **UI:** `lib/screens/logs_screen.dart` — Logs tab. 10pt monospace, color-coded by level (error red, warn amber, info green, debug/trace slate). Verbosity selector (ERR/WARN/INFO/DEBUG/TRACE; **INFO default**, debug/trace available but off), SSH-only filter, text filter, copy, clear.
-- **Stable scroll:** the list is `reverse: true` (newest at offset 0). It sticks to the tail while the user is at the bottom; once scrolled up it **freezes** and new lines append off-screen without moving the viewport. A "jump to latest" FAB appears when not following.
+- **Line format:** `HH:MM:SS.mmm [LEVEL] target: message key=value…`. All tracing fields are kept. Dart lines use target `dart::<area>` (`AppLog` in `lib/app/app_log.dart`), and iOS native lines arrive as `dart::ios`.
+- **Pipeline** (`rust/src/logging.rs`): each line goes to (1) stderr in debug builds and on iOS (visible in Xcode / Console.app), (2) a non-blocking file sink, and (3) the live FRB stream (`createLogStream`) plus the backfill ring (`readLogLines`).
+- **Files:** `<Application Support>/logs/hydra-YYYYMMDD-HHMMSS.mmm.log`, rotated at 8 MB, keeping at most 10 files. A Rust panic is written synchronously to `panic.log`; on the next launch it is reported in the log and renamed to `panic.reported.log`.
+- **Verbosity:** `debug` by default, with `russh` and other noisy crates at `info`. Override with the `HYDRA_LOG` env filter.
+- **Key events:**
+  - `ssh_event` (connecting, connected, authenticated, channel_open, failures with a reason);
+  - `socks_event=closed` (target, route, bytes, duration, error);
+  - `dart::startup` step timings;
+  - `dart::controller` (start/stop, SSH state transitions, restarts);
+  - `dart::heartbeat` every 60 s (running, foreground, keep-alive, connections, bytes, network);
+  - `dart::lifecycle`, `dart::network`, and `dart::flutter`/`dart::uncaught` errors.
+- **Export:** on the Logs tab, the share button writes `diagnostics-<time>.txt` (proxy status, servers with secrets removed, `hydra.toml`, file list, last 1500 lines, device info) and opens the iOS share sheet with the report plus the three newest log files (AirDrop to the Mac works). The Settings tab shows the log folder.
+- **Live view** (`lib/logging/log_store.dart`, `lib/screens/logs_screen.dart`): keeps the newest 20k records, coalesces UI updates (150 ms), and offers level chips (Info by default), an SSH-only filter, a text filter, copy and clear. The list sticks to the tail until you scroll up.
 
-### SSH event logging
+## Debugging without long device builds
 
-`hydra-core/src/transport/ssh.rs` emits structured `tracing` events with an `ssh_event` field at every `russh` call site: `created`, `connecting`, `connected`, `authenticated`, `channel_open`, `channel_closed`, `reconnect` (INFO/WARN), and failures `connect_timeout`, `connect_failed`, `auth_error`, `auth_failed`, `channel_failed` (WARN). The mobile `EnvFilter` (`rust/src/api/simple.rs`) keeps `hydra_core::transport=debug` so byte-bridge details are available; lifecycle events are INFO and visible by default.
-
-### Connection activity indicators
-
-`lib/widgets/activity_indicators.dart` (shown on the Proxy tab status card) derives simple indicators from the log stream: an activity dot that pulses on new lines, and an SSH up/down dot driven by SSH lifecycle events. This is Phase 1; the full connection-classification UI (ad/telemetry/analytics, app attribution — `hydra-core/src/connections.rs` + the orphaned `ConnectionsScreen`) is a later phase that requires re-exposing `ConnectionRegistry` through FRB.
-
-### Rebuilding after these changes (Mac)
-
-The log stream uses the existing `createLogStream` FRB binding (no codegen needed). Rust changed, so the static lib must rebuild:
+Most of the proxy can be tested on the Mac, without iOS:
 
 ```bash
 cd hydra_mobile
-cargo clean            # force cargokit to rebuild librust_lib_hydra_mobile.a
-flutter pub get
-flutter run -d <ios-device-id>     # or build/archive as usual
+tool/e2e_local_ssh.sh                 # throwaway sshd on 127.0.0.1:2222 + 12 SOCKS scenarios via the host harness
+cargo run --manifest-path rust/Cargo.toml --example proxy_harness -- \
+  --base-dir /tmp/hydra-harness --ssh user@host:22 --key ~/.ssh/id_ed25519 --status-every 5
 ```
+
+- `rust/examples/proxy_harness.rs` drives the same mobile Rust API as the app (`init_app`, `prepare_local_runtime`, `test_ssh_server`, `save_ssh_server`, `start_hydra_node`, periodic status). Use `--ssh user@host:port` with `--key <file>` or `--password <pw>` to point it at a real server, then `curl --socks5-hostname 127.0.0.1:1080 https://example.com`.
+- The e2e script only kills its own sshd and harness processes.
+- Device run: `flutter run --release -d <udid>` and watch the console, or install from TestFlight and use **Logs → Share**.
+- If `xcrun devicectl list devices` stays at `connecting` ("tunnel connection failed"), a Mac VPN (Sota Connect, WireGuard, v2RayTun) is usually capturing the CoreDevice tunnel. Disconnect it while running from Xcode/Flutter.
 
 ## Application IDs
 
@@ -166,8 +184,16 @@ Useful local checks:
 
 ```bash
 cd hydra_mobile
-flutter analyze lib/main.dart
-flutter test test/widget_test.dart
+flutter analyze lib/main.dart lib/app lib/logging lib/screens/{home,servers,server_editor,logs,settings}_screen.dart
+flutter test test/widget_test.dart test/proxy_models_test.dart
+(cd rust && cargo test) && (cd ../hydra-core && cargo test transport::ssh)
+tool/e2e_local_ssh.sh
 ```
 
-Full-project `flutter analyze` is currently blocked by older hidden/latent screens and stale generated FRB imports that are not part of the proxy-only navigation surface.
+Full-project `flutter analyze` is currently blocked by older hidden/latent screens (wallet, marketplace, `share_plus`/`url_launcher` widgets) that are not part of the proxy-only navigation surface.
+
+## Next steps
+
+- Store SSH secrets in the Keychain instead of the profiles file.
+- Move the proxy into a Network Extension (packet tunnel or app proxy) so it survives without background audio and passes App Store review.
+- Optional: a dynamic-port `-L` forward and per-server SOCKS port.
