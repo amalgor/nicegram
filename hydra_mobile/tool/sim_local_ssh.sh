@@ -113,6 +113,14 @@ codes=$(seq 1 20 | xargs -P 20 -I{} curl -sS -m 30 -o /dev/null -w '%{http_code}
 [[ "$codes" == " 20 200" ]] && ok "20 parallel requests" || bad "parallel requests: $codes"
 wait_for "SSH .*-> connected" "$WORK/app.log" 10 && ok "controller saw SSH connected" || bad "no SSH connected transition"
 ls "$DATA/Library/Application Support/logs"/hydra-*.log >/dev/null 2>&1 && ok "log files written" || bad "no log files in Application Support/logs"
+grep -q "dart::network: Network path" "$WORK/app.log" && ok "network path reported" || bad "no network path in log"
+
+say "background (Safari in front for 20 s)"
+xcrun simctl launch "$UDID" com.apple.mobilesafari >/dev/null
+sleep 20
+code=$(fetch https://example.com); [[ "$code" == 200 ]] && ok "proxy answers while in background" || bad "background fetch -> $code"
+grep -q "App paused\|App inactive" "$WORK/app.log" && ok "lifecycle change logged" || bad "no lifecycle log"
+xcrun simctl launch "$UDID" "$BUNDLE_ID" >/dev/null
 grep -E "\[(ERROR)\]" "$WORK/app.log" | head -5 || true
 
 if [[ "${KEEP:-}" == 1 ]]; then
