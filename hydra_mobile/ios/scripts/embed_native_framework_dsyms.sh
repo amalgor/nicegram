@@ -4,6 +4,23 @@
 
 set -e
 
+# Flutter caches native-asset frameworks in build/native_assets/ios without
+# keying on the SDK, so a device build after a simulator build can embed the
+# simulator objective_c.framework (App Store Connect errors 90087 / 91169, and
+# the app would not load it on a phone). Fail the build instead.
+FRAMEWORKS_CHECK_DIR="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+if [ "${PLATFORM_NAME}" = "iphoneos" ] && [ -d "${FRAMEWORKS_CHECK_DIR}" ]; then
+  for binary in "${FRAMEWORKS_CHECK_DIR}"/*.framework/*; do
+    [ -f "${binary}" ] && file -b "${binary}" | grep -q "Mach-O" || continue
+    if xcrun vtool -show-build "${binary}" 2>/dev/null | grep -q "platform IOSSIMULATOR" \
+      || lipo -archs "${binary}" 2>/dev/null | grep -q "x86_64"; then
+      echo "error: ${binary#${FRAMEWORKS_CHECK_DIR}/} is a simulator build ($(lipo -archs "${binary}")) inside a device build."
+      echo "error: Stale native assets. Run: rm -rf build/native_assets .dart_tool/flutter_build (or tool/build_ipa.sh) and rebuild."
+      exit 1
+    fi
+  done
+fi
+
 if [ "${ACTION}" = "install" ] || [ "${CONFIGURATION}" = "Release" ] || [ "${CONFIGURATION}" = "Profile" ]; then
   :
 else

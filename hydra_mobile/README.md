@@ -81,7 +81,7 @@ flutter clean && (cd rust && cargo clean)
 flutter pub get
 (cd ios && pod install)
 flutter build ios --release          # sanity build; then Archive in Xcode as above
-# alternatively: flutter build ipa --release  → build/ios/ipa/*.ipa, upload via Transporter
+# alternatively: tool/build_ipa.sh (flutter build ipa + architecture checks) → build/ios/ipa/*.ipa
 nm -gU build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app/Runner | grep frb_get_rust_content_hash   # must print a symbol
 ```
 
@@ -102,6 +102,10 @@ cd ios && pod install && cd ..
 ```
 
 If `pod install` warns that CocoaPods could not set the base configuration for **Profile**, ensure `ios/Flutter/Profile.xcconfig` exists and the Runner **Profile** configuration points to it (not only `Release.xcconfig`).
+
+**Stale simulator `objective_c.framework` in the archive (App Store Connect 90087 "Unsupported Architectures [x86_64]" / 91169 "references an unsupported platform"):** Flutter installs native-asset frameworks into one shared `build/native_assets/ios`, but its up-to-date stamps in `.dart_tool/flutter_build` are per configuration. A `flutter build ipa` that runs after a simulator build therefore sees a "fresh" stamp and embeds the simulator framework: x86_64+arm64, with both slices built for `IOSSIMULATOR`, so it would not load on a phone either. This happened with the first 1.5.4 (10504) upload. Guards:
+- Build release IPAs with `tool/build_ipa.sh`. It deletes `build/native_assets` and `.dart_tool/flutter_build` first (deleting only `build/native_assets` makes the archive fail with "NativeAssetsManifest.json references objective_c, which was not found"), then prints the architecture and platform of every embedded binary and fails unless all are arm64 / `IOS`.
+- `ios/scripts/embed_native_framework_dsyms.sh` (Runner build phase) fails any `iphoneos` build that embeds a simulator or x86_64 framework. Xcode Archive is covered too.
 
 **Upload Symbols / missing `objective_c.framework` dSYM:** keep `objective_c` on the current native-assets implementation (currently `9.4.1`). Older `9.1.0` avoids the upload warning but breaks runtime native-asset lookup on current Flutter. Xcode runs `ios/scripts/embed_native_framework_dsyms.sh` after embedding frameworks; it generates `objective_c.framework.dSYM` with `dsymutil` so App Store Connect receives the matching UUID.
 
