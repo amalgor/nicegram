@@ -31,6 +31,9 @@ final class HydraNativeBridge {
   private let keepAlive = BackgroundKeepAlive()
   private let pathMonitor = NWPathMonitor()
   private var lastPathSummary: String?
+  /// Main-queue copy of the newest path report; Dart pulls it on attach
+  /// because the first report usually fires before Dart has a handler.
+  private var lastPath: [String: Any]?
   private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
   init(messenger: FlutterBinaryMessenger) {
@@ -49,6 +52,8 @@ final class HydraNativeBridge {
     case "setKeepAlive":
       let enabled = args["enabled"] as? Bool ?? false
       result(enabled ? keepAlive.start() : keepAlive.stop())
+    case "networkState":
+      result(lastPath)
     case "keepAliveState":
       result(keepAlive.isRunning)
     case "shareFiles":
@@ -99,14 +104,16 @@ final class HydraNativeBridge {
       let summary = "\(status) [\(interfaces.joined(separator: ","))]"
       let changed = self.lastPathSummary != nil && self.lastPathSummary != summary
       self.lastPathSummary = summary
+      let report: [String: Any] = [
+        "status": status,
+        "interfaces": interfaces,
+        "expensive": path.isExpensive,
+        "constrained": path.isConstrained,
+        "changed": changed,
+      ]
       DispatchQueue.main.async {
-        self.channel.invokeMethod("networkChanged", arguments: [
-          "status": status,
-          "interfaces": interfaces,
-          "expensive": path.isExpensive,
-          "constrained": path.isConstrained,
-          "changed": changed,
-        ])
+        self.lastPath = report
+        self.channel.invokeMethod("networkChanged", arguments: report)
       }
     }
     pathMonitor.start(queue: DispatchQueue(label: "hydra.path-monitor"))

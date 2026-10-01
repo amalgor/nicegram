@@ -185,7 +185,7 @@ class _ServerCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final ssh = ProxyScope.of(context).status.activeSsh;
     final subtitle = [
-      server.endpoint,
+      if (!server.endpoint.startsWith(server.label)) server.endpoint else 'port ${server.port}',
       if (ssh?.connectedSince != null) 'up ${formatDuration(DateTime.now().difference(ssh!.connectedSince!))}',
     ].join(' · ');
     return Card(

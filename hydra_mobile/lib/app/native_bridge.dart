@@ -57,17 +57,28 @@ class NativeBridge {
             AppLog.info('ios', message);
         }
       case 'networkChanged':
-        final info = NetworkInfo(
-          status: args['status'] as String? ?? 'unknown',
-          interfaces: (args['interfaces'] as List?)?.cast<String>() ?? const [],
-          expensive: args['expensive'] as bool? ?? false,
-          changed: args['changed'] as bool? ?? false,
-        );
-        _lastNetwork = info;
-        AppLog.info('network', 'Network path: $info${info.changed ? ' (changed)' : ''}');
-        _network.add(info);
+        _onNetwork(args);
     }
     return null;
+  }
+
+  void _onNetwork(Map<String, Object?> args) {
+    final info = NetworkInfo(
+      status: args['status'] as String? ?? 'unknown',
+      interfaces: (args['interfaces'] as List?)?.cast<String>() ?? const [],
+      expensive: args['expensive'] as bool? ?? false,
+      changed: args['changed'] as bool? ?? false,
+    );
+    _lastNetwork = info;
+    AppLog.info('network', 'Network path: $info${info.changed ? ' (changed)' : ''}');
+    _network.add(info);
+  }
+
+  /// Pulls the current path; the first native report predates the handler.
+  Future<void> refreshNetwork() async {
+    if (_lastNetwork != null) return;
+    final state = await _invoke<Map>('networkState');
+    if (state != null && _lastNetwork == null) _onNetwork({...state.cast<String, Object?>(), 'changed': false});
   }
 
   Future<T?> _invoke<T>(String method, [Map<String, Object?>? args]) async {

@@ -146,6 +146,7 @@ cargo run --manifest-path rust/Cargo.toml --example proxy_harness -- \
 
 - `rust/examples/proxy_harness.rs` drives the same mobile Rust API as the app (`init_app`, `prepare_local_runtime`, `test_ssh_server`, `save_ssh_server`, `start_hydra_node`, periodic status). Use `--ssh user@host:port` with `--key <file>` or `--password <pw>` to point it at a real server, then `curl --socks5-hostname 127.0.0.1:1080 https://example.com`.
 - The e2e script only kills its own sshd and harness processes.
+- **Real app in the Simulator** (about 1 minute after a build, no taps needed): `tool/sim_local_ssh.sh` (or `SKIP_BUILD=1 KEEP=1 …`). It starts an sshd on 127.0.0.1:2223, seeds `mobile_routes.json` / `ssh_known_hosts.json` with the harness, copies them into the app's Documents dir, launches the app with its console in `/tmp/hydra-sim/app.log`, then checks auto-start, SOCKS fetches, 20 parallel requests, the SSH state transition and log files. Last run: 7/7.
 - Device run: `flutter run --release -d <udid>` and watch the console, or install from TestFlight and use **Logs → Share**.
 - If `xcrun devicectl list devices` stays at `connecting` ("tunnel connection failed"), a Mac VPN (Sota Connect, WireGuard, v2RayTun) is usually capturing the CoreDevice tunnel. Disconnect it while running from Xcode/Flutter.
 
@@ -176,7 +177,7 @@ If the app shows the startup error screen, inspect the device log for:
 
 The iOS Pod builds the Rust static library through `rust_builder/cargokit`. A successful iOS build must link `librust_lib_hydra_mobile.a` into `Runner.app` (`-force_load` via `rust_lib_hydra_mobile.podspec` `user_target_xcconfig`, plus `-framework SystemConfiguration` for Rust networking deps). There is no `rust_lib_hydra_mobile.framework` at runtime. On Flutter 3.41+ debug builds, `-force_load` lands in `Runner.debug.dylib`; `lib/rust_init.dart` opens that dylib when present, otherwise falls back to `ExternalLibrary.process()` for release-style single-binary links.
 
-**Physical device** is the supported iOS test path (Developer Mode on, USB trust). Intel Mac simulators may build `Runner` as x86_64 while Flutter ships arm64-only plugin frameworks (`objective_c`); use a real device or an Apple Silicon Mac for simulator runs.
+**Simulator** works on Intel Macs too. The Podfile used to force `ARCHS[sdk=iphonesimulator*] = arm64` (an Intel Mac cannot run that: "Failed to find matching arch"). The override was removed because current `objective_c` native assets build for x86_64, so `flutter build ios --simulator` now produces a universal x86_64+arm64 `Runner.app`. Do not re-add the override. Background audio, the share sheet and the network monitor behave as on a device; the Simulator shares the Mac's loopback.
 
 ## Validation
 

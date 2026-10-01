@@ -73,6 +73,7 @@ Future<ProxyController> _bootstrap() async {
 
   final device = await NativeBridge.instance.deviceInfo();
   AppLog.info('startup', 'Launch: $device');
+  await NativeBridge.instance.refreshNetwork();
 
   final baseDir = (await getApplicationDocumentsDirectory()).path;
   await step('materialize config', () => _materializeBundledConfigIfNeeded(baseDir));

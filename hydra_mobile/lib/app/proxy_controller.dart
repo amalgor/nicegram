@@ -228,8 +228,13 @@ class ProxyController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _refreshStatus() async {
     if (_polling || _disposed) return;
     _polling = true;
+    final watch = Stopwatch()..start();
     try {
-      final next = ProxyStatus.fromJson(await simple_api.getProxyStatus());
+      final raw = await simple_api.getProxyStatus();
+      if (watch.elapsedMilliseconds > 2000) {
+        AppLog.warn('controller', 'Status poll took ${watch.elapsedMilliseconds} ms');
+      }
+      final next = ProxyStatus.fromJson(raw);
       _observe(_status, next);
       _status = next;
       _notify();
