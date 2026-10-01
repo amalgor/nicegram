@@ -6,73 +6,119 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `attach_runtime_handles`, `bootstrap`, `build_imported_vless_profile`, `current_hour_bucket`, `current_profiles`, `decode_base64_relaxed`, `history`, `kind_name`, `load_or_seed_profiles`, `load_policies`, `load`, `next_priority`, `normalize_profile`, `normalize_profiles`, `now_epoch_millis`, `now_epoch_secs`, `parse_group_kind`, `parse_policy_action`, `parse_raw_payload`, `parse_subscription_payload`, `persist_json`, `persist_profiles_locked`, `profile_url`, `record_wss_usage`, `reload_from_disk`, `renumber_priorities`, `seed_profiles`, `sort_profiles`, `start_of_day`, `summary`, `sync_transports_locked`, `to_json`, `with_state_mut`, `with_state`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ImportReport`, `ROUTE_RUNTIME`, `RelayUsageSample`, `RelayUsageStore`, `RelayUsageSummary`, `RouteRuntimeState`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `deref`, `fmt`, `fmt`, `fmt`, `fmt`, `initialize`, `record_usage`
+// These functions are ignored because they are not marked as `pub`: `activate_only`, `attach_runtime_handles`, `bootstrap`, `build_imported_vless_profile`, `current_hour_bucket`, `current_profiles`, `decode_base64_relaxed`, `history`, `kind_name`, `load_or_seed_profiles`, `load_policies`, `load`, `next_priority`, `normalize_profile`, `normalize_profiles`, `now_epoch_millis`, `now_epoch_secs`, `parse_group_kind`, `parse_policy_action`, `parse_raw_payload`, `parse_subscription_payload`, `persist_json`, `persist_profiles_locked`, `profile_url`, `record_wss_usage`, `redacted_profiles_json`, `reload_from_disk`, `renumber_priorities`, `seed_profiles`, `server_view`, `sort_profiles`, `ssh_secret`, `start_of_day`, `summary`, `sync_transports_locked`, `to_json`, `warm_up_running`, `with_state_mut`, `with_state`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ImportReport`, `ROUTE_RUNTIME`, `RelayUsageSample`, `RelayUsageStore`, `RelayUsageSummary`, `RouteRuntimeState`, `ServerView`, `SshTestResult`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `deref`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `initialize`, `record_usage`
 
 Future<String> listRouteProfiles() =>
     RustLib.instance.api.crateApiRoutesListRouteProfiles();
 
-Future<String> importRouteProfiles({
-  required String payload,
-  required String importFormat,
-}) => RustLib.instance.api.crateApiRoutesImportRouteProfiles(
-  payload: payload,
-  importFormat: importFormat,
-);
+Future<String> importRouteProfiles(
+        {required String payload, required String importFormat}) =>
+    RustLib.instance.api.crateApiRoutesImportRouteProfiles(
+        payload: payload, importFormat: importFormat);
 
-Future<String> updateRouteProfile({required String profileJson}) => RustLib
-    .instance
-    .api
-    .crateApiRoutesUpdateRouteProfile(profileJson: profileJson);
+Future<String> updateRouteProfile({required String profileJson}) =>
+    RustLib.instance.api
+        .crateApiRoutesUpdateRouteProfile(profileJson: profileJson);
 
 Future<void> deleteRouteProfile({required String profileId}) =>
     RustLib.instance.api.crateApiRoutesDeleteRouteProfile(profileId: profileId);
 
-Future<String> reorderRouteProfiles({required String profileIdsJson}) => RustLib
-    .instance
-    .api
-    .crateApiRoutesReorderRouteProfiles(profileIdsJson: profileIdsJson);
+Future<String> reorderRouteProfiles({required String profileIdsJson}) =>
+    RustLib.instance.api
+        .crateApiRoutesReorderRouteProfiles(profileIdsJson: profileIdsJson);
 
 Future<String> listRoutePolicies() =>
     RustLib.instance.api.crateApiRoutesListRoutePolicies();
 
-Future<String> setRoutePolicy({
-  required String groupKind,
-  required String groupKey,
-  required String action,
-  required String profileId,
-}) => RustLib.instance.api.crateApiRoutesSetRoutePolicy(
-  groupKind: groupKind,
-  groupKey: groupKey,
-  action: action,
-  profileId: profileId,
-);
+Future<String> setRoutePolicy(
+        {required String groupKind,
+        required String groupKey,
+        required String action,
+        required String profileId}) =>
+    RustLib.instance.api.crateApiRoutesSetRoutePolicy(
+        groupKind: groupKind,
+        groupKey: groupKey,
+        action: action,
+        profileId: profileId);
 
-Future<void> clearRoutePolicy({
-  required String groupKind,
-  required String groupKey,
-}) => RustLib.instance.api.crateApiRoutesClearRoutePolicy(
-  groupKind: groupKind,
-  groupKey: groupKey,
-);
+Future<void> clearRoutePolicy(
+        {required String groupKind, required String groupKey}) =>
+    RustLib.instance.api.crateApiRoutesClearRoutePolicy(
+        groupKind: groupKind, groupKey: groupKey);
 
 /// Create an SSH route profile.
 /// auth_type: "password", "key_pem", or "key_file"
 /// credential: password string, PEM key content, or file path (depending on auth_type)
-Future<String> createSshRouteProfile({
-  required String host,
-  required int port,
-  required String username,
-  required String authType,
-  required String credential,
-}) => RustLib.instance.api.crateApiRoutesCreateSshRouteProfile(
-  host: host,
-  port: port,
-  username: username,
-  authType: authType,
-  credential: credential,
-);
+Future<String> createSshRouteProfile(
+        {required String host,
+        required int port,
+        required String username,
+        required String authType,
+        required String credential}) =>
+    RustLib.instance.api.crateApiRoutesCreateSshRouteProfile(
+        host: host,
+        port: port,
+        username: username,
+        authType: authType,
+        credential: credential);
+
+Future<String> listServers() =>
+    RustLib.instance.api.crateApiRoutesListServers();
+
+/// Create (`id` = None) or update an SSH server. `credential` = None keeps
+/// the stored password/key (only allowed when the auth type is unchanged).
+Future<String> saveSshServer(
+        {String? id,
+        required String label,
+        required String host,
+        required int port,
+        required String username,
+        required String authType,
+        String? credential,
+        required bool activate}) =>
+    RustLib.instance.api.crateApiRoutesSaveSshServer(
+        id: id,
+        label: label,
+        host: host,
+        port: port,
+        username: username,
+        authType: authType,
+        credential: credential,
+        activate: activate);
+
+Future<String> setActiveServer({required String id}) =>
+    RustLib.instance.api.crateApiRoutesSetActiveServer(id: id);
+
+Future<void> deleteServer({required String id}) =>
+    RustLib.instance.api.crateApiRoutesDeleteServer(id: id);
+
+Future<void> forgetServerHostKey({required String id}) =>
+    RustLib.instance.api.crateApiRoutesForgetServerHostKey(id: id);
+
+String generateSshKey({required String comment}) =>
+    RustLib.instance.api.crateApiRoutesGenerateSshKey(comment: comment);
+
+String describeSshKey({required String privateKey}) =>
+    RustLib.instance.api.crateApiRoutesDescribeSshKey(privateKey: privateKey);
+
+/// Connect + authenticate with the given settings (or the stored secret of
+/// `id` when `credential` is None), then open one test channel.
+Future<String> testSshServer(
+        {String? id,
+        required String host,
+        required int port,
+        required String username,
+        required String authType,
+        String? credential}) =>
+    RustLib.instance.api.crateApiRoutesTestSshServer(
+        id: id,
+        host: host,
+        port: port,
+        username: username,
+        authType: authType,
+        credential: credential);
 
 Future<String> getRelayUsageSummary() =>
     RustLib.instance.api.crateApiRoutesGetRelayUsageSummary();
