@@ -33,7 +33,7 @@ Build number convention: `MAJOR*10000 + MINOR*100 + PATCH`. Upload history:
 | Version | Date | Notes |
 |---------|------|-------|
 | 1.5.2+10502 | 2026-06-06 | Proxy-only + in-memory log view. TestFlight build expired after 90 days (early Sep 2026). |
-| 1.5.3+10503 | 2026-09-28 | Rebuild of the same code for a fresh TestFlight build (not yet uploaded — archive on the Mac). |
+| 1.5.3+10503 | 2026-10-01 | Rebuild of the same code for a fresh TestFlight build. Clean `flutter build ipa --release` succeeded with no fixes needed (Xcode 26.5, rustc 1.95.0); `_frb_get_rust_content_hash` is present in `Runner`. No App Store Connect API key on the Mac, so the archive was opened in Organizer for a manual upload. |
 
 After changing the version, refresh iOS/Xcode glue (do **not** edit `ios/Flutter/Generated.xcconfig` by hand):
 
@@ -67,7 +67,10 @@ flutter pub get
 (cd ios && pod install)
 flutter build ios --release          # sanity build; then Archive in Xcode as above
 # alternatively: flutter build ipa --release  → build/ios/ipa/*.ipa, upload via Transporter
+nm -gU build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app/Runner | grep frb_get_rust_content_hash   # must print a symbol
 ```
+
+Uploading the `.ipa`: with an App Store Connect API key (`AuthKey_<KEY_ID>.p8` in `~/.appstoreconnect/private_keys/`) run `xcrun altool --upload-app --type ios -f build/ios/ipa/*.ipa --apiKey <KEY_ID> --apiIssuer <ISSUER_ID>`. Without a key, `open build/ios/archive/Runner.xcarchive` and use **Distribute App → App Store Connect → Upload** in Organizer. `flutter clean` + `pod install` normally leave `Podfile.lock` and `project.pbxproj` unchanged; commit them if they do change.
 
 After installing from TestFlight, check that the app gets past the startup screen (no "Hydra could not start"), and that the Logs tab shows SSH `connected`/`authenticated` events. If startup fails, check `frb_get_rust_content_hash` with the `nm` commands below.
 
