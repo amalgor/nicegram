@@ -39,7 +39,7 @@ On failure the startup screen shows the error with **Retry** and **Show logs** b
 Single source of truth: `pubspec.yaml`:
 
 ```yaml
-version: 1.5.3+10503   # 1.5.3 = Version (App Store), 10503 = Build
+version: 1.5.4+10504   # 1.5.4 = Version (App Store), 10504 = Build
 ```
 
 Build number convention: `MAJOR*10000 + MINOR*100 + PATCH`. Upload history:
@@ -48,6 +48,7 @@ Build number convention: `MAJOR*10000 + MINOR*100 + PATCH`. Upload history:
 |---------|------|-------|
 | 1.5.2+10502 | 2026-06-06 | Proxy-only + in-memory log view. TestFlight build expired after 90 days (early Sep 2026). |
 | 1.5.3+10503 | 2026-10-01 | Rebuild of the same code for a fresh TestFlight build. Clean `flutter build ipa --release` succeeded with no fixes needed (Xcode 26.5, rustc 1.95.0); `_frb_get_rust_content_hash` is present in `Runner`. No App Store Connect API key on the Mac, so the archive was opened in Organizer for a manual upload. |
+| 1.5.4+10504 | 2026-10-01 | SSH `-D` proxy rework: reliable SSH transport, persistent logs and diagnostics export, background keep-alive, new UI. Archive built (`_frb_get_rust_content_hash` present, `UIBackgroundModes: audio`). `flutter build ipa` export failed with "No Accounts / No signing certificate iOS Distribution" (only an Apple Development identity in the keychain and no Xcode account session in the shell); the API-key export (`xcodebuild -exportArchive -authenticationKey*`) failed the same way. Upload from Organizer, or sign in to Xcode → Settings → Accounts and rerun. |
 
 After changing the version, refresh iOS/Xcode glue (do **not** edit `ios/Flutter/Generated.xcconfig` by hand):
 
